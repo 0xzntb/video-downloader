@@ -830,7 +830,9 @@ class ResultScreen(Screen):
     def action_copy_path(self) -> None:
         if self.saved_path is None:
             return
-        self._copy(str(self.saved_path))
+        # Copying can be asynchronous, so it has to run in a worker: calling
+        # the coroutine directly would silently do nothing at all.
+        self.run_worker(self._copy(str(self.saved_path)))
 
     async def _copy(self, text: str) -> None:
         try:

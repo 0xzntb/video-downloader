@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import threading
 import time
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from viddl import download as download_mod
 from viddl.download import DownloadCancelled, DownloadJob, probe_video
 from viddl.engine import Tool, ToolError
 from viddl.formats import MediaOption
@@ -65,14 +67,15 @@ sys.exit(1)
 
 
 class FakeEngine:
-    def __init__(self, prefix):
+    def __init__(self, prefix, ffmpeg_args=None):
         self._tool = Tool("yt-dlp", prefix, "viddl", version="fake")
+        self._ffmpeg_args = ffmpeg_args or []
 
     def ensure_ytdlp(self, **kwargs):
         return self._tool
 
     def ffmpeg_location_args(self):
-        return []
+        return self._ffmpeg_args
 
     def find_ffmpeg(self):
         return None
@@ -127,6 +130,37 @@ def test_probe_reports_unreadable_output(tmp_path):
     assert "could not read" in caught.value.message.lower()
 
 
+def test_probe_reports_a_slow_site(tmp_path, monkeypatch):
+    engine = engine_for(tmp_path, "unused.py", "")
+
+    def too_slow(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="yt-dlp", timeout=1)
+
+    monkeypatch.setattr(download_mod.subprocess, "run", too_slow)
+    with pytest.raises(ToolError) as caught:
+        probe_video(engine, "https://x.invalid/v")
+    assert "too long" in caught.value.message
+
+
+def test_probe_reports_an_engine_that_will_not_start(tmp_path, monkeypatch):
+    engine = engine_for(tmp_path, "unused.py", "")
+
+    def cannot_start(*args, **kwargs):
+        raise OSError("Exec format error")
+
+    monkeypatch.setattr(download_mod.subprocess, "run", cannot_start)
+    with pytest.raises(ToolError) as caught:
+        probe_video(engine, "https://x.invalid/v")
+    assert "could not be started" in caught.value.message
+
+
+def test_probe_rejects_output_that_is_not_a_video(tmp_path):
+    engine = engine_for(tmp_path, "fake_list.py", "import json; print(json.dumps([1, 2]))\n")
+    with pytest.raises(ToolError) as caught:
+        probe_video(engine, "https://x.invalid/v")
+    assert "single video" in caught.value.message
+
+
 # ---------------------------------------------------------------------------
 # building the command
 # ---------------------------------------------------------------------------
@@ -147,6 +181,13 @@ def test_build_args_targets_the_downloads_folder(tmp_path):
     assert args[args.index("--merge-output-format") + 1] == "mp4"
     assert "--newline" in args
     assert args[-1] == "https://x.invalid/v"
+
+
+def test_build_args_points_yt_dlp_at_our_own_ffmpeg(tmp_path):
+    engine = FakeEngine(["/fake/yt-dlp"], ffmpeg_args=["--ffmpeg-location", "/home/me/.local/share/viddl/bin"])
+    job = DownloadJob(engine, "u", video_option(), tmp_path)
+    args = job.build_args()
+    assert args[args.index("--ffmpeg-location") + 1].endswith("bin")
 
 
 def test_build_args_adds_mp3_conversion(tmp_path):
@@ -263,6 +304,129 @@ def test_find_output_falls_back_to_the_newest_file(tmp_path):
     assert job._find_output(before) == fresh
 
 
+def test_an_already_downloaded_file_is_reused(tmp_path):
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    existing = out / "Old Video [abc].mp4"
+    existing.write_bytes(b"here already")
+
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    job._handle_line(f"[download] {existing} has already been downloaded")
+
+    assert job.progress.percent == 100.0
+    assert "Already downloaded" in job.progress.status
+    assert job._find_output({}) == existing
+
+
+def test_an_extracted_audio_path_is_remembered(tmp_path):
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    song = out / "A Song [abc].mp3"
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    job._handle_line(f"[ExtractAudio] Destination: {song}")
+    assert job.progress.phase == "convert"
+    assert "MP3" in job.progress.status
+
+
+def test_finishing_steps_are_reported(tmp_path):
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), tmp_path)
+    job._handle_line("[FixupM3u8] Fixing MPEG-TS in MP4 container")
+    assert "Finishing" in job.progress.status
+
+
+def test_a_recorded_path_wins_over_the_newest_file(tmp_path):
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    wanted = out / "Wanted [abc].mp4"
+    wanted.write_bytes(b"real")
+    time.sleep(0.01)
+    (out / "Decoy [xyz].mp4").write_bytes(b"other" * 100)
+
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    job._handle_line(f'[Merger] Merging formats into "{wanted}"')
+    assert job._find_output(job._snapshot()) == wanted
+
+
+def test_the_merged_file_wins_over_the_streams_it_was_made_from(tmp_path):
+    """yt-dlp sometimes leaves the separate streams behind (--keep-video).
+
+    Reporting one of those as the finished download would hand the user a
+    path to a half-file, so the merged result has to win.
+    """
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    video_only = out / "A Video [abc].f137.mp4"
+    audio_only = out / "A Video [abc].f140.m4a"
+    merged = out / "A Video [abc].mp4"
+    for path in (video_only, audio_only, merged):
+        path.write_bytes(b"x" * 100)
+
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    job._handle_line(f"[download] Destination: {video_only}")
+    job._handle_line(f"[download] Destination: {audio_only}")
+    job._handle_line(f'[Merger] Merging formats into "{merged}"')
+
+    assert job._find_output(job._snapshot()) == merged
+
+
+def test_a_leftover_stream_is_a_last_resort_not_an_error(tmp_path):
+    """If the merge never produced its file, the stream on disk still beats
+    telling the user nothing was saved."""
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    video_only = out / "A Video [abc].f137.mp4"
+    video_only.write_bytes(b"x" * 100)
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    job._handle_line(f"[download] Destination: {video_only}")
+    assert job._find_output(job._snapshot()) == video_only
+
+
+def test_the_newest_file_scan_skips_leftover_streams(tmp_path):
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    before = job._snapshot()
+    time.sleep(0.01)
+    (out / "A Video [abc].f137.mp4").write_bytes(b"stream")
+    (out / "A Video [abc].mp4").write_bytes(b"merged")
+    assert job._find_output(before) == out / "A Video [abc].mp4"
+
+
+def test_cancelling_clears_the_partial_files(tmp_path):
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    half = out / "Half [abc].mp4"
+    part = out / "Half [abc].mp4.part"
+    part.write_bytes(b"half")
+
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    job._paths.append(half)
+    job._cleanup_partial()
+    assert not part.exists()
+
+
+def test_a_runner_that_cannot_start_is_explained(tmp_path, monkeypatch):
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), tmp_path)
+
+    def cannot_start(*args, **kwargs):
+        raise OSError("No such file")
+
+    monkeypatch.setattr(download_mod.subprocess, "Popen", cannot_start)
+    with pytest.raises(ToolError) as caught:
+        job.run()
+    assert "could not be started" in caught.value.message
+
+
+def test_a_finished_download_with_no_file_is_reported(tmp_path, monkeypatch):
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    engine = engine_for(tmp_path, "fake_nothing.py", "import sys; sys.exit(0)\n")
+    job = DownloadJob(engine, "u", video_option(), out)
+    with pytest.raises(ToolError) as caught:
+        job.run()
+    assert "could not be found" in caught.value.message
+
+
 def test_find_output_ignores_partial_files(tmp_path):
     out = tmp_path / "Downloads"
     out.mkdir()
@@ -270,3 +434,12 @@ def test_find_output_ignores_partial_files(tmp_path):
     before = job._snapshot()
     (out / "half.mp4.part").write_bytes(b"junk")
     assert job._find_output(before) is None
+
+
+def test_a_partial_file_is_never_remembered_as_the_result(tmp_path):
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    job._handle_line(f'[Merger] Merging formats into "{out / "Half [abc].mp4.part"}"')
+    job._handle_line(f"[download] Destination: {out / 'Half [abc].mp4.part'}")
+    assert job._paths == []

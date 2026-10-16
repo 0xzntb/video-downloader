@@ -35,10 +35,18 @@ _DESTINATION_RE = re.compile(r"Destination:\s*(.+?)\s*$")
 _MERGE_RE = re.compile(r'Merging formats into "(.+)"')
 _ALREADY_RE = re.compile(r"^\[download\]\s+(.+?)\s+has already been downloaded")
 _BAD_SUFFIXES = (".part", ".ytdl", ".temp", ".tmp")
+# yt-dlp names the separate streams it merges "Title [id].f137.mp4".
+_FRAGMENT_RE = re.compile(r"\.f\d+$|\.temp$", re.IGNORECASE)
 
 
 class DownloadCancelled(Exception):
     """The user asked to stop."""
+
+
+def _is_intermediate(path: Path) -> bool:
+    """True for a stream that only exists to be merged into the real file."""
+    stem = path.name.rsplit(".", 1)[0]
+    return bool(_FRAGMENT_RE.search(stem)) or path.name.endswith(_BAD_SUFFIXES)
 
 
 @dataclass
@@ -294,6 +302,11 @@ class DownloadJob:
                 self._remember_path(match.group(1))
             self._emit(status="Downloading…")
         elif line.startswith("[Merger]"):
+            # The merged file is what the user ends up with, so this is the
+            # path we want to report, ahead of the separate streams.
+            match = _MERGE_RE.search(line)
+            if match:
+                self._remember_path(match.group(1))
             self._emit(status="Merging video and audio…", percent=None, phase="merge")
         elif line.startswith("[ExtractAudio]"):
             self._emit(status="Converting to MP3…", percent=None, phase="convert")
@@ -305,9 +318,6 @@ class DownloadJob:
         elif line.startswith("[hlsnative]") or line.startswith("[download] Fragment"):
             self._emit(status="Downloading…")
         else:
-            match = _MERGE_RE.search(line)
-            if match:
-                self._remember_path(match.group(1))
             already = _ALREADY_RE.match(line)
             if already:
                 self._remember_path(already.group(1))
@@ -356,14 +366,22 @@ class DownloadJob:
             self.on_progress(replace(self.progress))
 
     def _find_output(self, before: Dict[Path, float]) -> Optional[Path]:
-        for path in reversed(self._paths):
-            if path.exists() and path.is_file():
+        # Prefer a real result over the streams that were merged to make it:
+        # an intermediate file left behind (or kept via --keep-video) must not
+        # be reported as "the file you just downloaded".
+        existing = [path for path in self._paths if path.exists() and path.is_file()]
+        for path in reversed(existing):
+            if not _is_intermediate(path):
                 return path
+        if existing:
+            return existing[-1]
 
         newest: Optional[Tuple[float, Path]] = None
         try:
             for entry in self.out_dir.iterdir():
                 if not entry.is_file() or entry.name.endswith(_BAD_SUFFIXES):
+                    continue
+                if _is_intermediate(entry):
                     continue
                 try:
                     mtime = entry.stat().st_mtime

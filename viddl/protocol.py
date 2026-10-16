@@ -324,7 +324,9 @@ def _register_macos() -> RegistrationResult:
 def _unregister_macos() -> RegistrationResult:
     bundle = _application_dir() / _APP_BUNDLE
     if bundle.exists():
-        _run_quietly(["/bin/rm", "-rf", str(bundle)])
+        # rmtree rather than shelling out, so a missing /bin/rm cannot leave
+        # the bundle behind.
+        shutil.rmtree(bundle, ignore_errors=True)
     _run_quietly([_MACOS_LSREGISTER, "-kill", "-r", "-d", "user"])
     return RegistrationResult(True, "Removed the Viddl URL handler.")
 

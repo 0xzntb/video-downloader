@@ -9,6 +9,8 @@ that gets shown at the end.
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -16,7 +18,8 @@ import pytest
 
 from viddl.download import DownloadCancelled, Progress
 from viddl.engine import Tool, ToolError
-from viddl.formats import parse_info
+from viddl.formats import MediaInfo, parse_info
+from viddl.protocol import build_scheme_url
 from viddl.tui.app import (
     DownloadScreen,
     HomeScreen,
@@ -24,6 +27,7 @@ from viddl.tui.app import (
     ResultScreen,
     Services,
     ViddlApp,
+    _open_folder,
 )
 from viddl.tui.widgets import ChoiceList, ChoiceRow
 
@@ -123,6 +127,67 @@ class BlockingJob(FakeJob):
         self.release.set()
 
 
+class ChattyJob(FakeJob):
+    """Reports real progress and then waits, so the screen can be inspected."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.release = threading.Event()
+
+    def run(self):
+        if self.on_progress:
+            self.on_progress(
+                Progress(
+                    status="Downloading…",
+                    percent=42.0,
+                    speed="1.5 MB/s",
+                    eta="0:07",
+                    downloaded=1024,
+                    total=4096,
+                    phase="download",
+                )
+            )
+        self.release.wait(timeout=10)
+        raise DownloadCancelled()
+
+    def cancel(self):
+        self.cancelled = True
+        self.release.set()
+
+
+class BrokenFfmpegEngine(FakeEngine):
+    """ffmpeg is missing and fetching it fails."""
+
+    def __init__(self):
+        super().__init__(ffmpeg=False)
+
+    def ensure_ffmpeg(self, on_status=None, on_progress=None, allow_download=True):
+        raise ToolError("Could not reach the internet.", "Check your connection.")
+
+
+class SlowFfmpegEngine(FakeEngine):
+    """Fetching ffmpeg takes a while: it waits until the test lets it finish.
+
+    Blocking rather than sleeping keeps the on-screen progress steady, so the
+    test can look at it without racing the worker.
+    """
+
+    def __init__(self, done: int = 50, total=None):
+        super().__init__(ffmpeg=False)
+        self.done = done
+        self.total = total
+        self.release = threading.Event()
+
+    def ensure_ffmpeg(self, on_status=None, on_progress=None, allow_download=True):
+        if on_status:
+            on_status("Installing ffmpeg…")
+        if on_progress:
+            on_progress(self.done, self.total)
+        self.release.wait(timeout=10)
+        self.ffmpeg = True
+        return Tool("ffmpeg", ["/fake/ffmpeg"], "viddl", version="7.0")
+
+
 def make_services(tmp_path: Path, engine=None, info=None, job_class=FakeJob) -> Services:
     info = info if info is not None else parse_info(INFO_JSON)
     return Services(
@@ -143,6 +208,39 @@ async def settle(pilot, rounds: int = 6) -> None:
 def shown(screen, selector: str) -> str:
     """The plain text a Static widget is currently displaying."""
     return str(screen.query_one(selector).render())
+
+
+class captured_notifications:
+    """Collect the toasts the app would have shown instead of showing them."""
+
+    def __init__(self, app: ViddlApp):
+        self.app = app
+        self.entries: list = []
+
+    def __enter__(self):
+        def record(message, *, title="", severity="information", timeout=None, markup=True):
+            self.entries.append((str(message), severity))
+
+        self.app.notify = record
+        return self
+
+    def __exit__(self, *exc):
+        del self.app.notify
+        return False
+
+    @property
+    def messages(self) -> list:
+        return [message for message, _ in self.entries]
+
+
+async def wait_for_job(app, pilot, rounds: int = 50):
+    """Wait for a download worker to register its job."""
+    for _ in range(rounds):
+        await pilot.pause()
+        await asyncio.sleep(0.01)
+        if app.state.job is not None:
+            return app.state.job
+    raise AssertionError("the download never started")
 
 
 @pytest.mark.asyncio
@@ -368,3 +466,418 @@ async def test_rows_show_the_size_and_render_as_text(tmp_path):
         assert "MP4" in first.row_note
         assert first.has_class("active") is True
         assert rows[1].has_class("active") is False
+
+
+# ---------------------------------------------------------------------------
+# the link box
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clicking_download_uses_the_link_in_the_box(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#url-input").value = URL
+        await pilot.click("#go")
+        await settle(pilot)
+        assert isinstance(app.screen, OptionsScreen)
+        assert app.state.url == URL
+
+
+@pytest.mark.asyncio
+async def test_an_empty_link_box_asks_for_a_link(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        with captured_notifications(app) as noted:
+            await pilot.click("#go")
+            await pilot.pause()
+        assert isinstance(app.screen, HomeScreen)
+        assert any("Paste a link" in message for message in noted.messages)
+        assert app.screen.query_one("#url-input").has_focus
+
+
+@pytest.mark.asyncio
+async def test_a_sentence_is_not_mistaken_for_a_link(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#url-input").value = "this is just a sentence"
+        with captured_notifications(app) as noted:
+            await pilot.press("enter")
+            await pilot.pause()
+        assert isinstance(app.screen, HomeScreen)
+        assert any("looks like text" in message for message in noted.messages)
+
+
+@pytest.mark.asyncio
+async def test_a_hand_off_link_pasted_by_hand_still_works(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#url-input").value = build_scheme_url(URL)
+        await pilot.press("enter")
+        await settle(pilot)
+        assert isinstance(app.screen, OptionsScreen)
+        assert app.state.url == URL
+
+
+# ---------------------------------------------------------------------------
+# the quality menu
+# ---------------------------------------------------------------------------
+
+
+def empty_options() -> MediaInfo:
+    return MediaInfo(url=URL, title="Nothing here", options=[])
+
+
+@pytest.mark.asyncio
+async def test_the_note_says_where_the_file_will_land(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        note = shown(app.screen, "#options-note")
+        assert "Saves to" in note
+        assert str(tmp_path / "Downloads") in note
+
+
+@pytest.mark.asyncio
+async def test_the_mp3_rows_explain_themselves(tmp_path):
+    app = ViddlApp(initial_url=URL, prefer_audio=True, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        note = shown(app.screen, "#options-note")
+        assert "Audio only" in note
+        assert "MP3" in note
+
+
+@pytest.mark.asyncio
+async def test_a_quality_that_needs_ffmpeg_says_why(tmp_path):
+    engine = FakeEngine(ffmpeg=False)
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path, engine=engine))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        note = shown(app.screen, "#options-note")
+        assert "needs ffmpeg" in note
+        assert not app.screen.query_one("#get-ffmpeg").has_class("hidden")
+
+
+@pytest.mark.asyncio
+async def test_a_playlist_says_it_will_take_the_first_video(tmp_path):
+    playlist = {
+        "entries": [
+            {**INFO_JSON, "playlist_index": 1},
+            {**INFO_JSON, "title": "Second video"},
+        ]
+    }
+    services = make_services(tmp_path, info=parse_info(playlist))
+    app = ViddlApp(initial_url=URL, services=services)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        assert "Only the first of 2 videos" in shown(app.screen, "#options-note")
+
+
+@pytest.mark.asyncio
+async def test_a_link_with_nothing_to_download_says_so(tmp_path):
+    services = make_services(tmp_path, info=empty_options())
+    app = ViddlApp(initial_url=URL, services=services)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        assert "No downloadable qualities" in shown(app.screen, "#options-status")
+        assert app.screen.query_one("#download").disabled is True
+
+        with captured_notifications(app) as noted:
+            await pilot.press("d")
+            await pilot.pause()
+        assert any("Choose a quality first" in message for message in noted.messages)
+        assert isinstance(app.screen, OptionsScreen)
+
+
+@pytest.mark.asyncio
+async def test_d_starts_the_highlighted_quality(tmp_path):
+    services = make_services(tmp_path)
+    app = ViddlApp(initial_url=URL, services=services)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("d")
+        await settle(pilot)
+        assert app.state.option is not None
+        assert app.state.option.key == "v1080"
+
+
+@pytest.mark.asyncio
+async def test_b_goes_back_to_the_link_box(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        assert isinstance(app.screen, OptionsScreen)
+        await pilot.press("b")
+        await settle(pilot)
+        assert isinstance(app.screen, HomeScreen)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "done, total, expected",
+    [(50, 100, "50%"), (2048, None, "2.0 KB")],
+    ids=["percent", "no-total-from-the-server"],
+)
+async def test_setting_up_ffmpeg_shows_how_far_along_it_is(tmp_path, done, total, expected):
+    engine = SlowFfmpegEngine(done, total)
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path, engine=engine))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.click("#get-ffmpeg")
+        for _ in range(40):
+            await pilot.pause()
+            await asyncio.sleep(0.01)
+            if "Downloading ffmpeg" in shown(app.screen, "#options-note"):
+                break
+
+        note = shown(app.screen, "#options-note")
+        assert "Downloading ffmpeg" in note
+        assert expected in note
+
+        engine.release.set()
+        await settle(pilot, rounds=40)
+        # Once it is there, the offer goes away and the note goes back to
+        # telling the user where the file will be saved.
+        assert app.screen.query_one("#get-ffmpeg").has_class("hidden")
+        assert "Saves to" in shown(app.screen, "#options-note")
+        assert app.state.ffmpeg_available is True
+
+
+@pytest.mark.asyncio
+async def test_setting_up_ffmpeg_that_fails_is_explained(tmp_path):
+    engine = BrokenFfmpegEngine()
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path, engine=engine))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.click("#get-ffmpeg")
+        await settle(pilot)
+        note = shown(app.screen, "#options-note")
+        assert "Could not reach the internet." in note
+        assert "Check your connection." in note
+        # The offer has to come back so the user can try again.
+        assert not app.screen.query_one("#get-ffmpeg").has_class("hidden")
+
+
+# ---------------------------------------------------------------------------
+# the progress screen
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_merging_quality_fetches_ffmpeg_by_itself(tmp_path):
+    engine = FakeEngine(ffmpeg=False)
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path, engine=engine))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        assert app.state.ffmpeg_available is False
+
+        await pilot.press("enter")  # the 1080p row, which has to be merged
+        await settle(pilot)
+
+        assert engine.ffmpeg is True
+        assert app.state.ffmpeg_available is True
+        assert isinstance(app.screen, ResultScreen)
+
+
+@pytest.mark.asyncio
+async def test_the_progress_screen_reports_size_speed_and_time_left(tmp_path):
+    services = make_services(tmp_path, job_class=ChattyJob)
+    app = ViddlApp(initial_url=URL, services=services)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        job = await wait_for_job(app, pilot)
+        await pilot.pause()
+
+        heading = shown(app.screen, "#download-heading")
+        assert "1080p" in heading
+        assert "A Very Real Video" in heading
+        detail = shown(app.screen, "#download-detail")
+        assert " of " in detail
+        assert "1.5 MB/s" in detail
+        assert "0:07 left" in detail
+        assert "Downloading" in shown(app.screen, "#download-status")
+        assert app.screen.query_one("#download-bar").progress == 42.0
+
+        await pilot.click("#cancel")
+        await settle(pilot)
+        assert job.cancelled is True
+        assert isinstance(app.screen, OptionsScreen)
+
+
+@pytest.mark.asyncio
+async def test_cancelling_when_nothing_is_running_just_goes_back(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        app.state.option = None  # as if the download screen were reopened
+        app.push_screen(DownloadScreen())
+        await settle(pilot)
+        assert isinstance(app.screen, DownloadScreen)
+        assert app.state.job is None
+
+        await pilot.press("escape")
+        await settle(pilot)
+        assert isinstance(app.screen, OptionsScreen)
+
+
+@pytest.mark.asyncio
+async def test_quitting_during_a_download_stops_it(tmp_path):
+    services = make_services(tmp_path, job_class=BlockingJob)
+    app = ViddlApp(initial_url=URL, services=services)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        job = await wait_for_job(app, pilot)
+
+        app.action_quit_app()
+        await pilot.pause()
+        assert job.cancelled is True
+
+
+# ---------------------------------------------------------------------------
+# the result screen
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_result_screen_names_the_quality_and_the_size(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+        assert isinstance(app.screen, ResultScreen)
+        sub = shown(app.screen, "#result-sub")
+        assert "1080p" in sub
+        assert "KB" in sub
+
+
+@pytest.mark.asyncio
+async def test_the_full_path_can_be_copied_to_the_clipboard(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+
+        copied: list = []
+        app.copy_to_clipboard = lambda text: copied.append(text)
+        with captured_notifications(app) as noted:
+            await pilot.press("c")
+            await settle(pilot, rounds=20)
+        assert copied == [str(app.state.saved_path)]
+        assert any("copied" in message.lower() for message in noted.messages)
+
+
+@pytest.mark.asyncio
+async def test_the_copy_button_copies_the_same_path(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+
+        copied: list = []
+        app.copy_to_clipboard = lambda text: copied.append(text)
+        await pilot.click("#copy")
+        await settle(pilot, rounds=20)
+        assert copied == [str(app.state.saved_path)]
+
+
+@pytest.mark.asyncio
+async def test_pressing_o_opens_the_folder_in_the_file_manager(tmp_path, monkeypatch):
+    launched: list = []
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: launched.append(command))
+
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+        await pilot.press("o")
+        await settle(pilot)
+
+    assert launched
+    assert str(app.state.saved_path.parent) in launched[0]
+
+
+@pytest.mark.asyncio
+async def test_the_error_screen_shows_the_advice_and_starts_over(tmp_path):
+    services = make_services(tmp_path, job_class=FailingJob)
+    app = ViddlApp(initial_url=URL, services=services)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+        assert "deleted" in shown(app.screen, "#result-message")
+
+        # There is no file to open or copy, so those shortcuts must do nothing.
+        await pilot.press("o", "c")
+        await settle(pilot)
+        assert isinstance(app.screen, ResultScreen)
+
+        await pilot.press("escape")
+        await settle(pilot)
+        assert isinstance(app.screen, HomeScreen)
+        assert len(app.screen_stack) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_quit_button_on_the_error_screen_leaves(tmp_path):
+    services = make_services(tmp_path, job_class=FailingJob)
+    app = ViddlApp(initial_url=URL, services=services)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+        await pilot.click("#quit")
+        await pilot.pause()
+        assert app.is_running is False
+
+
+# ---------------------------------------------------------------------------
+# opening the folder
+# ---------------------------------------------------------------------------
+
+
+def test_open_folder_picks_the_command_the_desktop_understands(monkeypatch, tmp_path):
+    launched: list = []
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: launched.append(command))
+    inside = tmp_path / "Downloads" / "A Video [abc].mp4"
+
+    for platform in ("linux", "darwin", "win32"):
+        monkeypatch.setattr(sys, "platform", platform)
+        assert _open_folder(inside) is None
+
+    assert launched == [
+        ["xdg-open", str(inside.parent)],
+        ["open", str(inside.parent)],
+        ["explorer", str(inside.parent)],
+    ]
+
+
+def test_open_folder_opens_a_folder_itself(monkeypatch, tmp_path):
+    launched: list = []
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: launched.append(command))
+    monkeypatch.setattr(sys, "platform", "linux")
+    folder = tmp_path / "Downloads"
+    folder.mkdir()
+
+    assert _open_folder(folder) is None
+    assert launched == [["xdg-open", str(folder)]]
+
+
+def test_open_folder_explains_when_it_cannot(monkeypatch, tmp_path):
+    def refuse(command, **kwargs):
+        raise OSError("no display available")
+
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+    problem = _open_folder(tmp_path)
+    assert problem is not None
+    assert "Could not open the folder" in problem

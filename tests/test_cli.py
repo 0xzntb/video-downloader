@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -11,9 +12,12 @@ import pytest
 
 from viddl import appdata
 from viddl.cli import main
-from viddl.protocol import extension_source_dir
+from viddl.engine import ToolError
+from viddl.formats import MediaInfo, MediaOption
+from viddl.protocol import RegistrationResult, build_scheme_url, extension_source_dir
 
 REPO_EXTENSION = extension_source_dir()
+URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
 
 def test_doctor_reports_paths_and_tools(capsys):
@@ -75,3 +79,178 @@ def test_register_protocol_reports_honestly(capsys):
     assert desktop.is_file()
     assert code in (0, 1)
     assert (captured.out or captured.err).strip()
+
+
+# ---------------------------------------------------------------------------
+# viddl:// registration
+# ---------------------------------------------------------------------------
+
+
+def test_unregister_protocol_reports_the_result(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "viddl.cli.unregister",
+        lambda: RegistrationResult(
+            ok=True,
+            message="viddl:// links no longer open Viddl.",
+            steps=["Removed the desktop entry."],
+        ),
+    )
+    assert main(["--unregister-protocol"]) == 0
+    out = capsys.readouterr().out
+    assert "no longer open Viddl" in out
+    assert "Removed the desktop entry." in out
+
+
+def test_a_registration_that_fails_explains_itself(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "viddl.cli.register",
+        lambda: RegistrationResult(
+            ok=False,
+            message="Could not write the launcher.",
+            steps=["Permission denied."],
+        ),
+    )
+    assert main(["--register-protocol"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Could not write the launcher." in captured.err
+    assert "Permission denied." in captured.err
+
+
+# ---------------------------------------------------------------------------
+# --list-qualities
+# ---------------------------------------------------------------------------
+
+
+def test_list_qualities_prints_the_menu(monkeypatch, capsys):
+    info = MediaInfo(
+        url=URL,
+        title="A Very Real Video",
+        uploader="Some Channel",
+        options=[
+            MediaOption(key="1080", label="1080p", size_bytes=20_000_000),
+            MediaOption(key="360", label="360p", size_bytes=9_000_000),
+        ],
+    )
+    monkeypatch.setattr("viddl.download.probe_video", lambda engine, url: info)
+    assert main(["--list-qualities", URL]) == 0
+    out = capsys.readouterr().out
+    assert "A Very Real Video" in out
+    assert "Some Channel" in out
+    assert "1080p" in out
+    assert "360p" in out
+
+
+def test_list_qualities_omits_an_unknown_uploader(monkeypatch, capsys):
+    info = MediaInfo(url=URL, title="Untitled upload", uploader="")
+    monkeypatch.setattr("viddl.download.probe_video", lambda engine, url: info)
+    assert main(["--list-qualities", URL]) == 0
+    assert capsys.readouterr().out.startswith("Untitled upload")
+
+
+def test_list_qualities_rejects_a_sentence(capsys):
+    assert main(["--list-qualities", "not a link at all"]) == 1
+    assert "does not look like a link" in capsys.readouterr().err
+
+
+def test_list_qualities_explains_a_failed_probe(monkeypatch, capsys):
+    def boom(engine, url):
+        raise ToolError(
+            "The video engine could not be started.",
+            "Try running Viddl again.",
+        )
+
+    monkeypatch.setattr("viddl.download.probe_video", boom)
+    assert main(["--list-qualities", URL]) == 1
+    err = capsys.readouterr().err
+    assert "could not be started" in err
+    assert "Try running Viddl again." in err
+
+
+# ---------------------------------------------------------------------------
+# installing the extension
+# ---------------------------------------------------------------------------
+
+
+def test_extension_copy_failure_is_explained(monkeypatch, capsys):
+    def boom(destination=None):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr("viddl.cli.install_extension", boom)
+    assert main(["--install-browser-extension"]) == 1
+    err = capsys.readouterr().err
+    assert "Could not copy the extension" in err
+    assert "No space left on device" in err
+
+
+# ---------------------------------------------------------------------------
+# opening the app
+# ---------------------------------------------------------------------------
+
+
+def _capture_run(monkeypatch) -> dict:
+    """Replace the terminal app with a recorder and return where it writes."""
+    seen: dict = {}
+    monkeypatch.setattr(
+        "viddl.tui.app.run",
+        lambda *, url, audio: seen.update(url=url, audio=audio),
+    )
+    return seen
+
+
+def test_a_browser_hand_off_opens_the_app_on_the_audio_options(monkeypatch):
+    seen = _capture_run(monkeypatch)
+    assert main(["--uri", build_scheme_url(URL, audio=True)]) == 0
+    assert seen == {"url": URL, "audio": True}
+
+
+def test_a_scheme_link_can_arrive_as_a_plain_argument(monkeypatch):
+    seen = _capture_run(monkeypatch)
+    assert main([build_scheme_url(URL, audio=False)]) == 0
+    assert seen == {"url": URL, "audio": False}
+
+
+def test_a_plain_link_opens_the_app(monkeypatch):
+    seen = _capture_run(monkeypatch)
+    assert main(["--audio", URL]) == 0
+    assert seen == {"url": URL, "audio": True}
+
+
+def test_an_audio_hand_off_wins_over_nothing(monkeypatch):
+    seen = _capture_run(monkeypatch)
+    assert main(["--uri", build_scheme_url(URL, audio=False)]) == 0
+    assert seen == {"url": URL, "audio": False}
+
+
+def test_no_real_terminal_is_explained(monkeypatch, capsys):
+    def no_terminal(*, url, audio):
+        raise OSError("Inappropriate ioctl for device")
+
+    monkeypatch.setattr("viddl.tui.app.run", no_terminal)
+    assert main([URL]) == 1
+    err = capsys.readouterr().err
+    assert "needs a real terminal window" in err
+    assert "Inappropriate ioctl for device" in err
+
+
+# ---------------------------------------------------------------------------
+# the log file is a nicety, never a requirement
+# ---------------------------------------------------------------------------
+
+
+def test_a_log_file_that_cannot_be_written_is_not_fatal(monkeypatch, capsys):
+    logger = logging.getLogger("viddl")
+    saved = list(logger.handlers)
+    for handler in saved:
+        logger.removeHandler(handler)
+
+    def exploding_log_path():
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(appdata, "log_path", exploding_log_path)
+    try:
+        assert main(["--doctor"]) == 0
+        assert "Viddl" in capsys.readouterr().out
+    finally:
+        for handler in saved:
+            logger.addHandler(handler)
