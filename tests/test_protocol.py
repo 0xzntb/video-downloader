@@ -67,6 +67,32 @@ def test_rejects_anything_that_is_not_a_hand_off(raw):
     assert parse_scheme(raw) is None
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # A page chooses every one of these, so none of them may come back as
+        # something the downloader would read as an option.
+        "viddl://download?url=--exec%3Dcalc.exe",
+        "viddl://download?url=--config-locations%3D.%2Fevil.conf",
+        "viddl://download?url=--paths%3D.%2Fout&audio=1",
+        "viddl://download?url=javascript%3Aalert(1)",
+        "viddl://download?url=file%3A%2F%2F%2Fetc%2Fpasswd",
+        "viddl://--paths=./out",
+        "viddl:--download-archive=./a.txt",
+        "viddl://download/--exec=calc.exe",
+    ],
+)
+def test_a_hand_off_carrying_an_option_is_refused(raw):
+    assert parse_scheme(raw) is None
+    assert parse_scheme_url(raw) is None
+
+
+def test_a_hand_off_still_upgrades_a_bare_site():
+    assert parse_scheme("viddl://www.vimeo.com/12345") == SchemeRequest(
+        url="https://www.vimeo.com/12345", audio=False
+    )
+
+
 def test_build_scheme_url_round_trips():
     target = build_scheme_url("https://x.com/user/status/1", audio=True)
     assert target.startswith("viddl://download?url=")

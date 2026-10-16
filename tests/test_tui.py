@@ -512,6 +512,61 @@ async def test_a_sentence_is_not_mistaken_for_a_link(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_an_option_shaped_link_is_refused_before_any_probe(tmp_path):
+    """Typing a flag at the app must not turn into a flag for yt-dlp."""
+    probed = []
+    services = make_services(tmp_path)
+    services.probe = lambda engine, url: probed.append(url) or parse_info(INFO_JSON)
+    app = ViddlApp(services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#url-input").value = "--config-locations=./evil.conf"
+        with captured_notifications(app) as noted:
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert isinstance(app.screen, HomeScreen)
+        assert probed == []
+        assert any("does not look like a video link" in message for message in noted.messages)
+
+
+@pytest.mark.asyncio
+async def test_a_hand_off_carrying_an_option_is_refused(tmp_path):
+    probed = []
+    services = make_services(tmp_path)
+    services.probe = lambda engine, url: probed.append(url) or parse_info(INFO_JSON)
+    app = ViddlApp(services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#url-input").value = "viddl://download?url=--exec%3Dcalc.exe"
+        with captured_notifications(app) as noted:
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert isinstance(app.screen, HomeScreen)
+        assert probed == []
+        assert any("does not look like a video link" in message for message in noted.messages)
+
+
+@pytest.mark.asyncio
+async def test_an_option_shaped_starting_link_never_reaches_the_probe(tmp_path):
+    """A link arriving on the command line is still a link from outside."""
+    probed = []
+    services = make_services(tmp_path)
+    services.probe = lambda engine, url: probed.append(url) or parse_info(INFO_JSON)
+    app = ViddlApp(initial_url="--exec=calc.exe", services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        assert app.state.url == ""
+        assert isinstance(app.screen, HomeScreen)
+        assert probed == []
+
+
+@pytest.mark.asyncio
 async def test_a_hand_off_link_pasted_by_hand_still_works(tmp_path):
     app = ViddlApp(services=make_services(tmp_path))
     async with app.run_test(size=(100, 32)) as pilot:

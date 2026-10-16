@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from viddl.util import human_duration, human_size, is_probably_url, shorten
+import pytest
+
+from viddl.util import (
+    human_duration,
+    human_size,
+    is_probably_url,
+    safe_video_link,
+    shorten,
+)
 
 
 def test_human_size():
@@ -35,3 +43,55 @@ def test_is_probably_url_accepts_links_and_rejects_sentences():
     assert not is_probably_url("")
     assert not is_probably_url("hello there")
     assert not is_probably_url("/usr/local/bin")
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        # Plain links come back unchanged (and trimmed).
+        ("https://www.youtube.com/watch?v=abc", "https://www.youtube.com/watch?v=abc"),
+        ("http://example.com/v", "http://example.com/v"),
+        ("  https://example.com/v  ", "https://example.com/v"),
+        ('"https://example.com/v"', "https://example.com/v"),
+        ("https://user:pw@example.com/v", "https://user:pw@example.com/v"),
+        # A bare site is upgraded rather than refused: browsers sometimes hand
+        # the link over without its scheme.
+        ("www.example.com/watch?v=x", "https://www.example.com/watch?v=x"),
+        ("example.com:8080/v", "https://example.com:8080/v"),
+        # Anything option-shaped must never get through (see the note below).
+        ("--exec=calc.exe", None),
+        ("--config-locations=./x.conf", None),
+        ("--paths=./out", None),
+        ("--download-archive=./a.txt", None),
+        ("-o/tmp/x.mp4", None),
+        # Other schemes, local paths and prose.
+        ("javascript:alert(1)", None),
+        ("file:///etc/passwd", None),
+        ("data:text/html,x", None),
+        ("ftp://example.com/v", None),
+        ("/usr/local/bin", None),
+        ("~/videos", None),
+        ("./relative", None),
+        ("hello there", None),
+        # Control characters must not survive into a command line either.
+        ("https://example.com/v\x00evil", None),
+        ("https://example.com/v\x7f", None),
+        ("https://", None),
+        ("", None),
+        ("   ", None),
+        ("https://example.com/" + "a" * 3000, None),
+    ],
+)
+def test_safe_video_link_returns_only_plain_links(raw, expected):
+    assert safe_video_link(raw) == expected
+
+
+def test_is_probably_url_refuses_option_shaped_input():
+    """The looseness that let a flag through as a "link" is gone.
+
+    Everything here used to be accepted, and the string then travelled all the
+    way into the downloader's argument list where it was read as an option.
+    """
+    for payload in ("--exec=calc.exe", "--config-locations=./x.conf", "--paths=./out"):
+        assert not is_probably_url(payload)
+        assert safe_video_link(payload) is None

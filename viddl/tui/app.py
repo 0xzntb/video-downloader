@@ -33,7 +33,7 @@ from .. import appdata
 from ..download import DownloadCancelled, DownloadJob, Progress, probe_video
 from ..engine import Engine, ToolError
 from ..formats import MediaInfo, MediaOption
-from ..util import human_size, is_probably_url, shorten
+from ..util import human_size, safe_video_link, shorten
 from .widgets import ChoiceList
 
 _ARP = "·"
@@ -260,7 +260,9 @@ class ViddlApp(App):
     ) -> None:
         super().__init__()
         self.services = services or Services(engine=Engine())
-        self.state = State(url=initial_url.strip(), prefer_audio=prefer_audio)
+        # A link arriving from the command line or a browser hand-off is still
+        # a link from outside: it is checked here as well as at the CLI.
+        self.state = State(url=safe_video_link(initial_url) or "", prefer_audio=prefer_audio)
 
     # -- lifecycle ----------------------------------------------------------
     def on_mount(self) -> None:
@@ -418,19 +420,23 @@ class HomeScreen(Screen):
             self.notify("Paste a link first.", severity="warning")
             field.focus()
             return
-        if not is_probably_url(url):
-            if url.lower().startswith(("viddl://", "viddl:")):
-                url = _url_from_scheme(url)
-            elif " " in url:
-                self.notify(
-                    "That looks like text, not a link. Copy the address from your browser.",
-                    severity="warning",
-                    timeout=6,
-                )
-                return
-        if not url:
+        if url.lower().startswith(("viddl://", "viddl:")):
+            url = _url_from_scheme(url)
+        # The last gate before a link reaches the downloader: only a plain
+        # http(s) link gets through, so nothing option-shaped can ever be
+        # handed over as if it were a flag.
+        link = safe_video_link(url)
+        if link is None:
+            self.notify(
+                "That looks like text, not a link. Copy the address from your browser."
+                if " " in url
+                else "That does not look like a video link. Copy the address from your browser.",
+                severity="warning",
+                timeout=6,
+            )
+            field.focus()
             return
-        self.app.state.url = url
+        self.app.state.url = link
         self.app.push_screen(OptionsScreen())
 
     def on_input_submitted(self, event: Input.Submitted) -> None:

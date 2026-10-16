@@ -98,6 +98,7 @@ def probe_video(engine: Engine, url: str, timeout: int = 150) -> MediaInfo:
     """Ask yt-dlp what is behind a link. Raises ``ToolError`` on failure."""
     tool = engine.ensure_ytdlp()
     args = tool.command(
+        "--ignore-config",
         "--dump-single-json",
         "--no-playlist",
         "--no-warnings",
@@ -105,6 +106,8 @@ def probe_video(engine: Engine, url: str, timeout: int = 150) -> MediaInfo:
         "--socket-timeout",
         "20",
         "--no-color",
+        # "--" ends the options: the link can never be read as one.
+        "--",
         url,
     )
     try:
@@ -170,6 +173,9 @@ class DownloadJob:
     def build_args(self) -> List[str]:
         tool = self.engine.ensure_ytdlp()
         args = tool.command(
+            # Start from a known state, and never let a local yt-dlp config file
+            # add options (or commands) to the run behind the user's back.
+            "--ignore-config",
             "--newline",
             "--no-playlist",
             "--no-color",
@@ -200,6 +206,10 @@ class DownloadJob:
             self.option.format_selector,
         ]
         args += list(self.option.extra_args)
+        # "--" ends the options, so the link is always read as a link even if
+        # it starts with a dash. Without this, a page handing over
+        # "--config-locations=./x.conf" would have it treated as a flag.
+        args.append("--")
         args.append(self.url)
         return args
 

@@ -31,7 +31,7 @@ from .protocol import (
     register,
     unregister,
 )
-from .util import is_probably_url
+from .util import safe_video_link
 
 _DESCRIPTION = "Download videos and MP3s by pasting a link."
 
@@ -170,8 +170,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     if args.list_qualities:
-        url = args.list_qualities.strip()
-        if not is_probably_url(url):
+        url = safe_video_link(args.list_qualities)
+        if url is None:
             return _fail("That does not look like a link.")
         from .download import probe_video
 
@@ -203,12 +203,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         audio = audio or request.audio
     else:
         url = raw.strip()
-
-    if url and not is_probably_url(url):
-        return _fail(
-            "That does not look like a video link.",
-            "Example: viddl https://www.youtube.com/watch?v=…",
-        )
+        if url:
+            # Only a plain http(s) link goes through: anything option-shaped
+            # would be read as a flag by the downloader we hand it to.
+            link = safe_video_link(url)
+            if link is None:
+                return _fail(
+                    "That does not look like a video link.",
+                    "Example: viddl https://www.youtube.com/watch?v=…",
+                )
+            url = link
 
     from .tui.app import run
 

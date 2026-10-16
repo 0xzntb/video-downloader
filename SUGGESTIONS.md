@@ -4,9 +4,12 @@ A prioritised list of ways to make Viddl better, grouped by the axis it improves
 Every claim below was checked against the code in this repository, not recalled —
 the searchable evidence is in [Appendix A](#appendix-a--evidence).
 
-**Baseline at the time of writing:** commit `30941ff`, 288 tests passing, 93%
+**Baseline at the time of writing:** commit `30941ff`, 222 tests collected, 93%
 statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
+
+Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
+Progress so far: **1 of 60** (S1, in section 1).
 
 **Legend**
 
@@ -17,6 +20,7 @@ runtime dependency (`textual>=0.80`).
 | **P2** | Worth doing; improves quality of life. |
 | **P3** | Nice to have. |
 | **S / M / L** | Rough effort: hours / a day or two / a week-ish. |
+| ✅ **Done** | Implemented and verified; the evidence sits with the item. |
 
 ---
 
@@ -24,8 +28,8 @@ runtime dependency (`textual>=0.80`).
 
 | # | Item | Why it matters |
 | --- | --- | --- |
-| 1 | **S1** — stop option-shaped "links" reaching yt-dlp | Proven argument injection; a web page can trigger it |
-| 2 | **E1** — add CI | Nothing is checked on push today; 288 tests only run if someone runs them |
+| 1 | ✅ **S1** — stop option-shaped "links" reaching yt-dlp | Proven argument injection; a web page could trigger it — **done** |
+| 2 | **E1** — add CI | Nothing is checked on push today; the tests only run if someone runs them |
 | 3 | **E2** — add a `LICENSE` file | README and `pyproject.toml` both claim MIT; no licence text ships |
 | 4 | **R1** — resume interrupted downloads | A cancelled or dropped download starts from zero |
 | 5 | **R4** — `viddl --update` | Stale yt-dlp is *the* top cause of "this link stopped working" |
@@ -39,7 +43,22 @@ runtime dependency (`textual>=0.80`).
 
 ## 1. Safety
 
-### S1 — Option-shaped "links" reach yt-dlp's command line · **P0** · S
+### S1 — Option-shaped "links" reach yt-dlp's command line · **P0** · S · ✅ **Done**
+
+> **Fixed.** The link is now separated from the options with `--` in both
+> `DownloadJob.build_args()` and `probe_video()` — which had the same hole and was
+> missed in the first pass — and one shared `util.safe_video_link()` refuses
+> anything that is not a plain `http(s)` link at every entry point: the CLI, the
+> `viddl://` parser (whose query branch previously validated nothing at all), the
+> app's link box, and the link the app is started with. Both yt-dlp invocations
+> also pass `--ignore-config` now. 48 tests added (222 → 270).
+>
+> Verified against real yt-dlp 2026.08.19 rather than assumed: without the
+> separator the config named by the "link" was loaded and its
+> `--exec echo RCE-MARKER-98765` **executed**; with it, the same string is
+> rejected as `not a valid URL`; `--ignore-config` alone did **not** prevent it,
+> which is why the separator is the fix and the flag is only a belt; and a real
+> download through `DownloadJob` still completed end to end.
 
 `DownloadJob.build_args()` appends the user's URL as the last argv element with
 no `--` separator:
@@ -538,7 +557,7 @@ doc change for adoption.
 
 ### E1 — There is no CI · **P1** · S
 
-No `.github/` at all. The 288 tests, the 93% coverage and the `pyflakes` pass
+No `.github/` at all. The 222 tests, the 93% coverage and the `pyflakes` pass
 only happen when a human runs them. For a project whose README says "a link that
 works one week can stop working the next", an unexamined suite is the wrong risk.
 
@@ -689,12 +708,12 @@ project's "nothing leaves your machine" promise.
 
 ## 7. Suggested order
 
-1. **S1** (argument injection) + regression tests — do this before anything else.
+1. ✅ **S1** (argument injection) + regression tests — **done**.
 2. **E2** (LICENSE) and **E1** (CI) — cheap, and they protect everything after.
 3. **S3**/**S4** (dir and log permissions) and **E3/D1** (make the log real).
 4. **R1**/**R2** (resume, and actually stop children) — the biggest day-to-day pain.
 5. **R4**/**F3** (`viddl --update` + staleness hint) — the fix for the most common complaint.
-6. **S2** + **R3** (verify downloads, `--ignore-config`) — finish the security pass.
+6. **S2** + **R3** (verify downloads; expose the config escape hatch) — finish the security pass. `--ignore-config` itself landed with **S1**.
 7. **F1** (cookies) — turns a documented dead end into a feature.
 8. **E7** (one real end-to-end test) + **E10** (coverage floor).
 9. **U1**/**U2**/**U3** (theme, title, done screen) — visible quality.
@@ -758,7 +777,8 @@ new tests must not break.
 → nothing; `ls requirements*.txt uv.lock poetry.lock` → nothing; `.gitignore` has
 no `.coverage` entry.
 
-**Current suite** — `pytest -q --cov=viddl` → 288 passed, 93% statements;
+**Suite at the baseline** — `pytest --collect-only` → 222 tests collected, all
+passing; 93% of statements;
 `python -m pyflakes viddl tests` → clean. Per-file: `cli.py` 100%, `util.py` 97%,
 `appdata.py` 95%, `tui/app.py` 95%, `engine.py` 94%, `download.py` 93%,
 `formats.py` 91%, `tui/widgets.py` 89%, `protocol.py` 87%, `errors.py` 86%,
@@ -768,6 +788,17 @@ no `.coverage` entry.
 `scripting` and a single `*://*.youtube.com/*` content script; no host
 permissions, no remote code, no `browser_specific_settings` (so Chromium-only).
 
+**S1 re-checked against a real tool** — yt-dlp 2026.08.19 in a throwaway
+environment, with a local HTTP server standing in for a site, 8/8 checks:
+
+| Command line | Result |
+| --- | --- |
+| `yt-dlp --config-locations=./evil.conf <url>` | the file was loaded and its `--exec echo RCE-MARKER-98765` ran |
+| `yt-dlp -- --config-locations=./evil.conf` | treated as a link: *is not a valid URL* |
+| `yt-dlp --ignore-config --config-locations=./evil.conf <url>` | still loaded — the flag alone never fixes this |
+| the app's own `DownloadJob` with the hostile link | refused, nothing executed |
+| the app's own `DownloadJob` with a real link | downloaded `clip [clip].mp4`, 4128 bytes, phase `done` |
+
 ## Appendix B — Verified vs. assumed
 
 **Verified by running code or reading it here:** every code reference and every
@@ -776,13 +807,15 @@ the absence of CI, lockfile and licence.
 
 **Not verified, and marked as such in the text:** Windows and macOS *runtime*
 behaviour (the registration paths are simulated in tests); real-site extractor
-behaviour (no network access to third-party sites during this survey); the exact
-severity of **S1** in a shipping browser (the argument injection is proven
-locally; whether Chrome demands a user gesture before launching the handler was
-not tested in a browser).
+behaviour (no network access to third-party sites during this survey); and
+whether Chrome demands a user gesture before launching a `viddl://` handler — a
+browser question this environment cannot answer. The *severity* of **S1** is no
+longer in doubt: it was reproduced against a real yt-dlp, which executed the
+payload in the injected config file.
 
-**Assumed:** that yt-dlp's documented `--ignore-config` and `--config-locations`
-semantics hold for the version Viddl installs (per the
-[yt-dlp README](https://github.com/yt-dlp/yt-dlp/tree/master#configuration) and the
-[Arch man page](https://man.archlinux.org/man/extra/yt-dlp/yt-dlp.1.en)); that
-`--pass` style flags used above exist in current yt-dlp releases.
+**Checked rather than assumed now:** that `--ignore-config` leaves an explicit
+`--config-locations` alone, and that `--` really does end the options for yt-dlp
+— both confirmed by running yt-dlp 2026.08.19. The
+[yt-dlp README](https://github.com/yt-dlp/yt-dlp/tree/master#configuration) and
+the [Arch man page](https://man.archlinux.org/man/extra/yt-dlp/yt-dlp.1.en) match
+what the tool actually does.

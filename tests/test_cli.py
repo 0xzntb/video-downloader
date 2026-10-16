@@ -222,6 +222,50 @@ def test_an_audio_hand_off_wins_over_nothing(monkeypatch):
     assert seen == {"url": URL, "audio": False}
 
 
+def test_a_bare_site_is_upgraded_before_it_is_used(monkeypatch):
+    seen = _capture_run(monkeypatch)
+    assert main(["www.example.com/watch?v=x"]) == 0
+    assert seen == {"url": "https://www.example.com/watch?v=x", "audio": False}
+
+
+# ---------------------------------------------------------------------------
+# nothing option-shaped gets through
+# ---------------------------------------------------------------------------
+
+
+def _refuse_to_launch(monkeypatch) -> None:
+    """Fail the test if the app is started with a link that should not pass."""
+
+    def explode(*args, **kwargs):
+        raise AssertionError("the link should never have reached the app")
+
+    monkeypatch.setattr("viddl.tui.app.run", explode)
+
+
+def test_an_option_shaped_hand_off_is_refused(monkeypatch, capsys):
+    _refuse_to_launch(monkeypatch)
+    assert main(["--uri", build_scheme_url("--config-locations=./evil.conf")]) == 1
+    assert "could not be understood" in capsys.readouterr().err
+
+
+def test_an_option_shaped_argument_is_refused(monkeypatch, capsys):
+    _refuse_to_launch(monkeypatch)
+    assert main(["--uri=--exec=calc.exe"]) == 1
+    assert "does not look like a video link" in capsys.readouterr().err
+
+
+def test_an_option_shaped_list_qualities_target_is_refused(monkeypatch, capsys):
+    _refuse_to_launch(monkeypatch)
+    assert main(["--list-qualities=--exec=calc.exe"]) == 1
+    assert "does not look like a link" in capsys.readouterr().err
+
+
+def test_a_scheme_shaped_argument_is_refused(monkeypatch, capsys):
+    _refuse_to_launch(monkeypatch)
+    assert main(["--uri=file:///etc/passwd"]) == 1
+    assert "does not look like a video link" in capsys.readouterr().err
+
+
 def test_no_real_terminal_is_explained(monkeypatch, capsys):
     def no_terminal(*, url, audio):
         raise OSError("Inappropriate ioctl for device")

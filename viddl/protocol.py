@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, unquote
 
 from . import URL_SCHEME, __version__
 from . import appdata
+from .util import safe_video_link
 
 _DESKTOP_FILE = "viddl-handler.desktop"
 _APP_BUNDLE = "Viddl URL Handler.app"
@@ -97,8 +98,14 @@ def parse_scheme(raw: str) -> Optional[SchemeRequest]:
             value.lower() in ("1", "true", "yes", "audio", "mp3")
             for value in query.get("audio", [])
         )
-        # parse_qs has already percent-decoded the value for us.
-        return SchemeRequest(url=query["url"][0], audio=audio)
+        # parse_qs has already percent-decoded the value for us, but that value
+        # is whatever the page that opened the link chose to send. It has to
+        # pass the same link check as anything typed by hand before it goes
+        # anywhere near a command line.
+        url = safe_video_link(query["url"][0])
+        if url is None:
+            return None
+        return SchemeRequest(url=url, audio=audio)
 
     audio = False
     for marker in ("&audio=1", "?audio=1"):
@@ -107,13 +114,12 @@ def parse_scheme(raw: str) -> Optional[SchemeRequest]:
             remainder = remainder[: -len(marker)]
             break
 
-    url = unquote(remainder)
-    if url.startswith(("http://", "https://")):
-        return SchemeRequest(url=url, audio=audio)
-    # A bare site without a scheme, e.g. "www.example.com/watch?v=x".
-    if url and " " not in url and "." in url.split("/")[0]:
-        return SchemeRequest(url=f"https://{url}", audio=audio)
-    return None
+    # A link, or a bare site without its scheme ("www.example.com/watch?v=x"):
+    # safe_video_link understands both and refuses everything else.
+    url = safe_video_link(unquote(remainder))
+    if url is None:
+        return None
+    return SchemeRequest(url=url, audio=audio)
 
 
 def parse_scheme_url(raw: str) -> Optional[str]:

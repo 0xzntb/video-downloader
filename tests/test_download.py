@@ -123,6 +123,25 @@ def test_probe_explains_a_private_video(tmp_path):
     assert "private" in caught.value.message.lower()
 
 
+def test_probe_hands_the_link_over_as_data(monkeypatch):
+    """Probing builds its own command line, so it needs the same guard."""
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        return subprocess.CompletedProcess(
+            args, 0, stdout='{"title": "Fake Video"}', stderr=""
+        )
+
+    monkeypatch.setattr(download_mod.subprocess, "run", fake_run)
+    info = probe_video(FakeEngine(["/fake/yt-dlp"]), "--exec=calc.exe")
+
+    args = captured["args"]
+    assert args[-2:] == ["--", "--exec=calc.exe"]
+    assert "--ignore-config" in args
+    assert info.title == "Fake Video"
+
+
 def test_probe_reports_unreadable_output(tmp_path):
     engine = engine_for(tmp_path, "fake_junk.py", "print('not json')\n")
     with pytest.raises(ToolError) as caught:
@@ -181,6 +200,41 @@ def test_build_args_targets_the_downloads_folder(tmp_path):
     assert args[args.index("--merge-output-format") + 1] == "mp4"
     assert "--newline" in args
     assert args[-1] == "https://x.invalid/v"
+
+
+def test_build_args_ends_the_options_before_the_link(tmp_path):
+    """The link is separated from the options, so it can never be read as one."""
+    job = DownloadJob(FakeEngine(["/fake/yt-dlp"]), "https://x.invalid/v", video_option(), tmp_path)
+    args = job.build_args()
+    assert args[-2:] == ["--", "https://x.invalid/v"]
+    assert "--ignore-config" in args
+
+
+def test_an_option_shaped_link_cannot_become_an_option(tmp_path):
+    """A page can hand over anything; none of it may turn into a flag.
+
+    Without the ``--`` separator this string was passed straight through as an
+    argument, and yt-dlp's own parser read it as a real option
+    (``--config-locations``, which loads a config file that may itself contain
+    an ``--exec``).
+    """
+    hostile = "--config-locations=./evil.conf"
+    job = DownloadJob(FakeEngine(["/fake/yt-dlp"]), hostile, video_option(), tmp_path)
+    args = job.build_args()
+
+    separator = args.index("--")
+    assert "--config-locations" not in args[:separator]
+    # The hostile string appears once, as data, after the separator.
+    assert args[separator + 1 :] == [hostile]
+
+
+def test_the_separator_is_immediately_before_the_link(tmp_path):
+    """Only the link follows the end-of-options marker — nothing else."""
+    job = DownloadJob(FakeEngine(["/fake/yt-dlp"]), "https://x.invalid/v", video_option(), tmp_path)
+    args = job.build_args()
+    separator = args.index("--")
+    assert separator == len(args) - 2
+    assert args[separator + 1 :] == ["https://x.invalid/v"]
 
 
 def test_build_args_points_yt_dlp_at_our_own_ffmpeg(tmp_path):
