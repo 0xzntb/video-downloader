@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Viddl</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <span class="mark">⤓</span>
+      <div>
+        <h1>Viddl</h1>
+        <p>Send this page to the terminal app.</p>
+      </div>
+    </header>
+
+    <button id="video" class="primary">Choose a quality</button>
+    <button id="audio">Audio only (MP3)</button>
+
+    <p id="status">
+      Viddl opens on your computer. The first time, your browser asks whether to
+      allow <code>viddl://</code> links — tick “always allow”.
+    </p>
+
+    <footer>
+      <a href="#" id="help">How do I set this up?</a>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

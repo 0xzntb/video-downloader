@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "viddl"
+version = "1.0.0"
+description = "A friendly terminal app that downloads videos and MP3s by pasting a link."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = ["textual>=0.80"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+viddl = "viddl.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["viddl*"]
+
+[tool.setuptools.package-data]
+viddl = [
+    "browser_extension/*.json",
+    "browser_extension/*.js",
+    "browser_extension/*.html",
+    "browser_extension/*.css",
+    "browser_extension/icons/*.png",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_mode = "auto"
