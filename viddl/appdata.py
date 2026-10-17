@@ -185,6 +185,19 @@ def _owned_option(token: str) -> str:
     return ""
 
 
+def _split(value: str) -> List[str]:
+    """Split the value the way the platform's shell would, for the common cases.
+
+    POSIX quoting everywhere would eat the backslashes of a Windows path —
+    ``--cookies C:\\Users\\me\\cookies.txt`` would arrive as
+    ``C:Usersmecookies.txt`` — so there the quotes are kept by ``shlex`` and
+    stripped here instead. Either way nothing is expanded or run.
+    """
+    if _is_windows():
+        return [token.strip('"').strip("'") for token in shlex.split(value, posix=False)]
+    return shlex.split(value)
+
+
 def _arguments(value: str) -> Tuple[List[str], str]:
     """The options ``VIDDL_YTDLP_ARGS`` asks for, and why they cannot be used.
 
@@ -198,7 +211,7 @@ def _arguments(value: str) -> Tuple[List[str], str]:
     if any(character in value for character in "\x00\n\r"):
         return [], "contains a control character"
     try:
-        tokens = shlex.split(value)
+        tokens = _split(value)
     except ValueError:
         return [], "unbalanced quotes"
     if not tokens:

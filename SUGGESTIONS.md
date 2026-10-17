@@ -412,6 +412,10 @@ test that a fake long-running child is actually gone after cancel.
 > `--path /tmp`, `--sim` and `--ski` all parse — so a check on the full spellings
 > alone could be walked around by typing less. The matching now covers
 > abbreviations, and `--format-sort` (a different, real option) still passes.
+> The same review found a Windows one: POSIX quoting everywhere would eat the
+> backslashes of `--cookies C:\Users\me\cookies.txt`, so Windows keeps the
+> quotes and strips them instead. That branch is exercised by a test with the
+> platform faked, not on a real Windows machine.
 >
 > Measured with real yt-dlp 2026.08.19 and the same `~/.config/yt-dlp/config`
 > throughout: **plain yt-dlp** with that file ran its `--exec` line and wrote the
@@ -420,8 +424,8 @@ test that a fake long-running child is actually gone after cancel.
 > `VIDDL_YTDLP_ARGS=--user-agent Viddl-R3-UA` was seen by a local HTTP server on
 > the download **and** on the probe; a refused `-o` left the file in Viddl's own
 > folder and never created the directory it asked for; `--doctor` prints
-> `(in use)` or `(ignored — sets --format, which Viddl decides)`. 31 tests added
-> (372 → 403).
+> `(in use)` or `(ignored — sets --format, which Viddl decides)`. 32 tests added
+> (372 → 404).
 >
 > Not defended against, and now stated in `SECURITY.md`: this variable is
 > *options*, so anyone who can set your environment can ask yt-dlp to do almost

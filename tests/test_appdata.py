@@ -405,6 +405,26 @@ def test_a_second_link_is_refused_but_a_word_that_is_a_value_is_not(
     assert "contains a link" in appdata.ytdlp_arguments_problem()
 
 
+def test_a_windows_path_keeps_its_backslashes(no_environment, monkeypatch):
+    """Backslashes separate a path there; POSIX quoting would eat them.
+
+    ``sys.platform`` is faked because the real one cannot be both, and the
+    point is that ``C:\\Users\\me\\cookies.txt`` arrives intact rather than as
+    ``C:Usersmecookies.txt``.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv(
+        "VIDDL_YTDLP_ARGS", '--cookies "C:\\Users\\me\\cookies.txt" --limit-rate 2M'
+    )
+
+    assert appdata.ytdlp_arguments() == [
+        "--cookies",
+        r"C:\Users\me\cookies.txt",
+        "--limit-rate",
+        "2M",
+    ]
+
+
 def test_nothing_in_the_value_is_handed_to_a_shell(no_environment, monkeypatch):
     """It is a list of arguments, not a command line: no expansion, no splitting."""
     monkeypatch.setenv("VIDDL_YTDLP_ARGS", "--limit-rate=$(rm -rf /)")
