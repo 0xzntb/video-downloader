@@ -9,7 +9,7 @@ statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **6 of 60** — S1–S5 in section 1 and D3 in section 6.
+Progress so far: **8 of 60** — S1–S6 in section 1, and D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
 down keeps a secret, and a web page can no longer start it *doing* anything —
@@ -262,16 +262,42 @@ with that link pre-filled. That is a good default — nothing downloads without 
 deliberate click on a quality. The risk is nuisance/abuse rather than data loss:
 a hostile page can spawn terminal windows. Before **S1** it could do worse.
 
-### S6 — Environment overrides are undocumented and unvalidated · **P2** · S
+### S6 — Environment overrides are undocumented and unvalidated · **P2** · S · ✅ **Done**
 
-`VIDDL_HOME`, `VIDDL_DOWNLOAD_DIR`, `VIDDL_YTDLP` and `VIDDL_FFMPEG` are all read
-from the environment. `VIDDL_YTDLP` in particular points the app at an arbitrary
-executable. That is useful and intended, but it is a config-injection vector in
-shared/CI environments and it is invisible to users.
+> **Fixed**, and the measurements turned up a worse case than the item assumed.
+> All four variables now go through one gate (`appdata.folder_override` /
+> `program_override`): a value that looks like an option is refused rather than
+> handed on to a tool that might read it as a flag; a folder that is really a
+> file is refused instead of failing later; and a **bare program name means the
+> `PATH`, never the working directory**. That last rule is the real find: with
+> the old code, `VIDDL_YTDLP=yt-dlp` from inside a directory containing a
+> `yt-dlp` **ran that file** — and `--doctor` reported it as *"downloaded by
+> Viddl"* — while the same setting next to a file that was *not* executable found
+> nothing at all, because the existence check looked in the working directory and
+> the execution looked on the `PATH`. Tools found this way now carry their own
+> `environment` origin, so the doctor says *"the copy you pointed Viddl at"*.
+> The four are documented in the README (**D2**), and 19 tests were added
+> (332 → 351).
+>
+> Verified with the real CLI rather than by reading the code, before and after:
+> with `VIDDL_YTDLP=yt-dlp` in a directory holding a planted `./yt-dlp`, the old
+> code ran the planted file and called it Viddl's own; the new code finds nothing
+> and says *"ignored — not a program Viddl can run"*. An explicit path
+> (`VIDDL_YTDLP=./yt-dlp`) is still honoured, as it should be — a value with a
+> directory in it is a path by definition — but it is now resolved to an absolute
+> path and labelled honestly, so the doctor shows which file it is. An
+> option-shaped `VIDDL_HOME` is refused and the platform default is used.
+>
+> Not a code-execution finding: `--exec=…` reaching yt-dlp as the *value* of
+> `-P` does not run it. Real yt-dlp 2026.08.19 was checked, as with **S1**: an
+> unknown `--opt=value` token is taken as a path, and a *known* flag is rejected
+> as a missing argument. The problem was the confusing failure and the silent
+> mislabelling, not a payload.
 
-**Do:** document all four (see **D2**), and have `--doctor` print which override
-is in effect and where the tool came from (`origin` is already tracked on `Tool`
-— surface it).
+`VIDDL_HOME`, `VIDDL_DOWNLOAD_DIR`, `VIDDL_YTDLP` and `VIDDL_FFMPEG` were all
+read from the environment with no checking at all. `VIDDL_YTDLP` in particular
+pointed the app at an arbitrary executable: useful and intended, but a
+config-injection vector in shared/CI environments, and invisible to users.
 
 ### S7 — Extension hygiene (already good, keep it that way) · **P2** · S
 
@@ -813,7 +839,7 @@ project's "nothing leaves your machine" promise.
 | # | Item | Detail |
 | --- | --- | --- |
 | **D1** | **The log promise is not met** | README: "The log holds the last run's details if something failed." Reality: the file is created empty, and one `LOGGER.exception` call exists in total. Either log failures (**E3**) or soften the claim. |
-| **D2** | **Undocumented environment variables** | `VIDDL_HOME`, `VIDDL_DOWNLOAD_DIR`, `VIDDL_YTDLP`, `VIDDL_FFMPEG` are all live but unmentioned. Add a table with what each overrides and why you would use it. |
+| **D2** | ✅ **Undocumented environment variables** | Done with **S6**: the README has a table of all four — what each overrides, why you would use it, and how a value is checked — and `--doctor` prints which are in effect. |
 | **D3** | ✅ **Document the `viddl://` security model** | Done with **S5**: `SECURITY.md` states the guarantee (any page may open the app; nothing downloads without a click) and what it does *not* cover, and the README links to it. |
 | **D4** | **Troubleshooting / FAQ** | Stale extractor ("run `viddl --update`"), login-required sites (**F1**), corporate proxies, Windows console rendering (**R10**), where the log lives. Each is a support question waiting to happen. |
 | **D5** | **`--version --verbose` and a man page** | `viddl.1` for Unix packaging; the verbose version block from **E12** embedded as a code block in the README. |
@@ -960,6 +986,18 @@ UI stubbed out (it needs a real terminal, which this environment does not have):
 | Second hand-off, immediately after | `url=""`, `audio=False`, exit 0 — no link, and the app still opens |
 | A typed link, then `--audio <link>`, right after both | both acted on — the cooldown never applies to these |
 
+**S6 measured before and after**, with the real CLI and real files — the rows
+marked *before* are the old code, run again from this repository:
+
+| Setting | Before | After |
+| --- | --- | --- |
+| `VIDDL_YTDLP=yt-dlp`, with `./yt-dlp` planted in the working directory | **ran the planted file** (`PLANTED-9.9.9`) and reported it as "downloaded by Viddl" | finds nothing; doctor says `ignored — not a program Viddl can run` |
+| `VIDDL_YTDLP=yt-dlp`, same directory, but the file is not executable | silently "not installed", though the file it checked exists | same answer, now with a reason |
+| `VIDDL_YTDLP=./yt-dlp` (an explicit path) | ran it, labelled "downloaded by Viddl" | still runs it — a path is a path — but as `/tmp/plant/yt-dlp`, "the copy you pointed Viddl at" |
+| `VIDDL_HOME=--exec=echo RCE-MARKER-13579` | accepted verbatim as the app folder | refused; the platform default is used and the refusal printed |
+| `viddl --doctor` with all four set | printed none of them | prints each, with `in use` or the reason it was ignored |
+| `yt-dlp --ignore-config -P --exec=echo MARKER <url>` (real yt-dlp 2026.08.19) | — | the token is taken as a *value*, not a flag: no execution |
+
 ## Appendix B — Verified vs. assumed
 
 **Verified by running code or reading it here:** every code reference and every
@@ -982,6 +1020,13 @@ failing. Locking a folder down also cannot be verified on Windows at all here.
 For **S4** the same caveat applies to the log's mode on Windows, where access is
 governed by ACLs, and redaction was checked against the shapes listed in
 Appendix A — a credential sent in some other shape is not covered by it.
+
+**S6's fix is visibility plus a boundary that cannot be crossed by accident**, not
+sandboxing: the check makes an override visible and stops a *name* from silently
+meaning a file in the working directory, but anyone who can set your environment
+can still point Viddl at a program of their choosing. `SECURITY.md` says so under
+"not defended against". Windows' `PATH`/`PATHEXT` lookup for a bare name was not
+exercised here, only its POSIX behaviour.
 
 **S5 is honest about what it does not do**, which is why it is marked done
 anyway: the cooldown limits the links a page can have acted on, not the windows

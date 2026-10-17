@@ -7,7 +7,15 @@ Everything lives in one folder per user, so there is nothing to configure:
 * Windows ``%LOCALAPPDATA%\\viddl``
 
 ``VIDDL_HOME`` overrides that folder and ``VIDDL_DOWNLOAD_DIR`` overrides the
-output folder. Both exist mainly so tests never touch a real home directory.
+output folder; ``VIDDL_YTDLP`` and ``VIDDL_FFMPEG`` point at the two programs
+Viddl otherwise finds or fetches for itself.
+
+All four are read through :func:`folder_override` and :func:`program_override`,
+which check what they are given before it is used. An environment variable is
+not a command line: nobody sees it in the app, and in a shared checkout or a CI
+job it can be set by something other than the person using Viddl. So a value is
+treated as a request — one that can be refused, with the refusal visible in
+``viddl --doctor`` — rather than as an instruction.
 """
 
 from __future__ import annotations
@@ -16,10 +24,19 @@ import os
 import shutil
 import stat
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from . import APP_NAME
+
+# The four variables Viddl reads, named once so the documentation, the doctor
+# output and the tests cannot drift from the code that reads them.
+ENV_HOME = "VIDDL_HOME"
+ENV_DOWNLOAD_DIR = "VIDDL_DOWNLOAD_DIR"
+ENV_YTDLP = "VIDDL_YTDLP"
+ENV_FFMPEG = "VIDDL_FFMPEG"
+ENVIRONMENT_VARIABLES = (ENV_HOME, ENV_DOWNLOAD_DIR, ENV_YTDLP, ENV_FFMPEG)
 
 # Viddl's own folders hold two downloaded programs, so they are for the user
 # who installed them and nobody else on the machine.
@@ -38,11 +55,122 @@ def _is_macos() -> bool:
     return sys.platform == "darwin"
 
 
+@dataclass(frozen=True)
+class Override:
+    """What one environment variable asked for, and what became of it."""
+
+    name: str
+    value: str
+    problem: str = ""
+
+    @property
+    def used(self) -> bool:
+        return not self.problem
+
+
+def _asked(name: str) -> str:
+    return (os.environ.get(name) or "").strip()
+
+
+def _refuse(value: str) -> str:
+    """Why this value cannot be used, or ``""`` when it can.
+
+    The reasons are the same for every variable. A value that looks like an
+    option could be read as one by a program Viddl hands it to — the lesson from
+    the ``viddl://`` hand-off, applied to the environment — and a value carrying
+    a control character would not survive being used as a path or written down.
+    """
+    if not value:
+        return "empty"
+    if value.startswith("-"):
+        return "looks like an option, not a path"
+    if any(character in value for character in "\x00\n\r"):
+        return "contains a control character"
+    return ""
+
+
+def folder_override(name: str) -> Optional[Path]:
+    """A folder from the environment, checked, or ``None`` to use the default.
+
+    A relative path is read the way the person who set it would read it — from
+    the working directory — and then resolved, so what the app actually uses is
+    visible in ``--doctor`` instead of depending on where the app was started.
+    A value naming something that exists and is not a folder is refused: it
+    would fail later, and a confusing failure is worse than an ignored setting.
+    """
+    value = _asked(name)
+    if not value or _refuse(value):
+        return None
+    path = Path(value).expanduser()
+    try:
+        if path.exists() and not path.is_dir():
+            return None
+        return path.resolve()
+    except OSError:
+        return None
+
+
+def program_override(name: str) -> Optional[Path]:
+    """A program from the environment, checked, or ``None``.
+
+    A plain name means the ``PATH`` and never the working directory. That is the
+    point of checking at all: an override is often set by something other than
+    the person at the keyboard, and if ``yt-dlp`` silently meant ``./yt-dlp``
+    then whoever could write to that directory could choose the program Viddl
+    runs. A value with a directory in it is used as a path, expanded and made
+    absolute, and has to be a real executable file.
+    """
+    value = _asked(name)
+    if not value or _refuse(value):
+        return None
+    if not any(separator in value for separator in (os.sep, "/", "\\")):
+        return which(value)
+    path = Path(value).expanduser()
+    try:
+        path = path.resolve()
+    except OSError:
+        return None
+    if not path.is_file() or not os.access(path, os.X_OK):
+        return None
+    return path
+
+
+def overrides() -> List[Override]:
+    """Every environment variable that is set, and what became of it.
+
+    Only the ones that are set appear: an empty list is the common case, and
+    saying nothing is the honest way to say that nothing was overridden.
+    """
+    found: List[Override] = []
+    for name in ENVIRONMENT_VARIABLES:
+        if name not in os.environ:
+            continue
+        value = _asked(name)
+        problem = _refuse(value)
+        if not problem:
+            if name in (ENV_YTDLP, ENV_FFMPEG):
+                problem = "" if program_override(name) else "not a program Viddl can run"
+            else:
+                problem = "" if folder_override(name) else "not a folder"
+        found.append(Override(name, value, problem))
+    return found
+
+
+def environment_report() -> List[str]:
+    """``viddl --doctor`` lines for the overrides in effect, or nothing."""
+    lines: List[str] = []
+    for index, entry in enumerate(overrides()):
+        label = "Environment:" if index == 0 else ""
+        verdict = "in use" if entry.used else f"ignored — {entry.problem}"
+        lines.append(f"{label:<14}{entry.name}={entry.value} ({verdict})")
+    return lines
+
+
 def data_dir() -> Path:
     """The one folder Viddl owns."""
-    override = os.environ.get("VIDDL_HOME")
-    if override:
-        return Path(override).expanduser()
+    override = folder_override(ENV_HOME)
+    if override is not None:
+        return override
 
     if _is_windows():
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
@@ -160,9 +288,9 @@ def _xdg_download_dir() -> Optional[Path]:
 
 def downloads_dir() -> Path:
     """The user's Downloads folder, created if needed."""
-    override = os.environ.get("VIDDL_DOWNLOAD_DIR")
-    if override:
-        path = Path(override).expanduser()
+    override = folder_override(ENV_DOWNLOAD_DIR)
+    if override is not None:
+        path = override
     elif _is_windows():
         home = os.environ.get("USERPROFILE") or str(Path.home())
         path = Path(home) / "Downloads"

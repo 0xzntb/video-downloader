@@ -30,6 +30,18 @@ def test_doctor_reports_paths_and_tools(capsys):
     assert str(appdata.downloads_dir()) in output
 
 
+def test_doctor_says_which_overrides_are_in_effect(capsys, monkeypatch):
+    """An environment variable is invisible in the app, so the doctor says it."""
+    monkeypatch.setenv("VIDDL_YTDLP", "--exec=calc.exe")
+
+    assert main(["--doctor"]) == 0
+    output = capsys.readouterr().out
+
+    assert "Environment:" in output
+    assert f"VIDDL_HOME={os.environ['VIDDL_HOME']} (in use)" in output
+    assert "VIDDL_YTDLP=--exec=calc.exe (ignored" in output
+
+
 def test_version_flag(capsys):
     with pytest.raises(SystemExit) as caught:
         main(["--version"])

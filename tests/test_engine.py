@@ -403,7 +403,37 @@ def test_find_ffmpeg_honours_the_environment_override(tmp_path, monkeypatch):
     tool = Engine(home=tmp_path / "app").find_ffmpeg()
     assert tool is not None
     assert tool.version == "6.6-custom"
-    assert tool.path == elsewhere
+    assert tool.path == elsewhere.resolve()
+
+
+def test_a_tool_from_the_environment_is_not_reported_as_viddls_own(
+    tmp_path, monkeypatch
+):
+    """``--doctor`` has to say where the program really came from (S6)."""
+    elsewhere = make_shim(tmp_path / "somewhere-else", "yt-dlp", "4.4-mine")
+    monkeypatch.setenv("VIDDL_YTDLP", str(elsewhere))
+    no_system_tools(monkeypatch)
+
+    engine = Engine(home=tmp_path / "app")
+    tool = engine.find_ytdlp()
+    assert tool.origin == "environment"
+    assert tool.version == "4.4-mine"
+
+    report = "\n".join(engine.report())
+    assert "the copy you pointed Viddl at" in report
+    assert "downloaded by Viddl" not in report
+
+
+def test_an_option_shaped_tool_override_is_refused(tmp_path, monkeypatch):
+    """The same lesson as the hand-off: an option is not a program."""
+    monkeypatch.setenv("VIDDL_YTDLP", "--exec=calc.exe")
+    no_system_tools(monkeypatch)
+
+    engine = Engine(home=tmp_path / "app")
+    assert engine.find_ytdlp() is None
+    report = "\n".join(engine.report())
+    assert "ignored — looks like an option, not a path" in report
+    assert "not installed" in report
 
 
 def test_a_broken_ffmpeg_is_not_trusted(tmp_path, monkeypatch):
@@ -597,6 +627,10 @@ def test_report_copes_with_a_tool_that_has_no_version(tmp_path, monkeypatch):
 
 def test_origin_text_is_plain_language():
     assert Tool("yt-dlp", [], "system").origin_text == "found on your computer"
+    # A copy someone else pointed us at is not ours to report as ours (S6).
+    assert Tool("yt-dlp", [], "environment").origin_text == (
+        "the copy you pointed Viddl at"
+    )
     assert Tool("yt-dlp", [], "viddl").origin_text == "downloaded by Viddl"
     assert Tool("yt-dlp", [], "python").origin_text == "installed as a Python package"
     assert Tool("yt-dlp", [], "mystery").origin_text == "mystery"

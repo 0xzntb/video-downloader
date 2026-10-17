@@ -57,7 +57,7 @@ class Tool:
 
     name: str
     prefix: List[str]  # full command prefix, e.g. ["/path/ffmpeg"] or [python, "-m", "yt_dlp"]
-    origin: str  # "system" | "viddl" | "python"
+    origin: str  # "system" | "viddl" | "python" | "environment"
     version: str = ""
     path: Optional[Path] = None
     extra: Dict[str, str] = field(default_factory=dict)
@@ -71,6 +71,7 @@ class Tool:
             "system": "found on your computer",
             "viddl": "downloaded by Viddl",
             "python": "installed as a Python package",
+            "environment": "the copy you pointed Viddl at",
         }.get(self.origin, self.origin)
 
 
@@ -427,11 +428,13 @@ class Engine:
 
     def find_ytdlp(self) -> Optional[Tool]:
         """Look for yt-dlp without downloading anything."""
-        override = os.environ.get("VIDDL_YTDLP")
+        override = appdata.program_override(appdata.ENV_YTDLP)
         candidates: List[tuple] = []
 
-        if override:
-            candidates.append(("viddl", [override]))
+        if override is not None:
+            # Its own origin: a copy someone else chose, which is not the same
+            # thing as the copy Viddl downloaded, and must not be reported as it.
+            candidates.append(("environment", [str(override)]))
         candidates.append(("viddl", [str(self.ytdlp_path)]))
         # A pip-installed yt_dlp module works just as well and needs no download.
         try:
@@ -528,10 +531,10 @@ class Engine:
 
     def find_ffmpeg(self) -> Optional[Tool]:
         """Look for ffmpeg on the system or in Viddl's own folder."""
-        override = os.environ.get("VIDDL_FFMPEG")
+        override = appdata.program_override(appdata.ENV_FFMPEG)
         candidates: List[tuple] = []
-        if override:
-            candidates.append(("viddl", Path(override)))
+        if override is not None:
+            candidates.append(("environment", override))
         candidates.append(("viddl", self.ffmpeg_path))
         found = appdata.which("ffmpeg")
         if found:
@@ -701,6 +704,7 @@ class Engine:
                 lines.append(
                     f"{label + ':':<14}{version} ({tool.origin_text}){self._checksum_note(tool)}"
                 )
+        lines.extend(appdata.environment_report())
         return lines
 
     def _checksum_note(self, tool: Tool) -> str:

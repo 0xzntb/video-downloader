@@ -24,6 +24,14 @@ def mode_of(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
 
 
+def write_executable(path: Path, body: str = "#!/bin/sh\necho 1.0.0\n") -> Path:
+    """A file a test can point an override at."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
 @pytest.fixture
 def no_overrides(monkeypatch):
     """Drop the test shortcuts so the platform logic runs for real."""
@@ -173,6 +181,135 @@ def test_a_filesystem_without_permissions_does_not_stop_viddl(tmp_path, monkeypa
     monkeypatch.setattr(os, "chmod", refuse)
     appdata.ensure_dirs()  # must not raise
     assert (tmp_path / "app" / "bin").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# the environment overrides (S6)
+#
+# An environment variable is not a command line: nobody sees it in the app, and
+# in a shared checkout or a CI job it can be set by something other than the
+# person using Viddl. So each one is a request that can be refused.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_environment():
+    """Clear all four, so the platform defaults are what gets tested."""
+    saved = {name: os.environ.pop(name, None) for name in appdata.ENVIRONMENT_VARIABLES}
+    yield
+    for name, value in saved.items():
+        if value is not None:
+            os.environ[name] = value
+
+
+def test_the_variables_are_the_ones_the_readme_lists(no_environment):
+    assert appdata.ENVIRONMENT_VARIABLES == (
+        "VIDDL_HOME",
+        "VIDDL_DOWNLOAD_DIR",
+        "VIDDL_YTDLP",
+        "VIDDL_FFMPEG",
+    )
+
+
+def test_a_folder_override_is_used_and_made_absolute(no_environment, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VIDDL_HOME", "mine")
+    assert appdata.data_dir() == tmp_path / "mine"
+
+
+def test_a_download_folder_override_is_used(no_environment, tmp_path, monkeypatch):
+    monkeypatch.setenv("VIDDL_DOWNLOAD_DIR", str(tmp_path / "Videos"))
+    assert appdata.downloads_dir() == tmp_path / "Videos"
+
+
+@pytest.mark.parametrize(
+    "value, reason",
+    [
+        ("--exec=echo RCE-MARKER", "looks like an option, not a path"),
+        ("-o/tmp/elsewhere", "looks like an option, not a path"),
+        ("", "empty"),
+        ("   ", "empty"),
+        ("two\nlines", "contains a control character"),
+    ],
+)
+def test_a_folder_override_that_is_not_a_path_is_refused(
+    no_environment, tmp_path, monkeypatch, value, reason
+):
+    monkeypatch.setenv("VIDDL_HOME", value)
+    assert appdata.data_dir() == Path.home() / ".local" / "share" / "viddl"
+    assert appdata.overrides() == [appdata.Override("VIDDL_HOME", value.strip(), reason)]
+
+
+def test_a_folder_override_naming_a_file_is_refused(no_environment, tmp_path, monkeypatch):
+    """It would fail later, and a confusing failure is worse than being ignored."""
+    blocker = tmp_path / "not-a-folder"
+    blocker.write_text("text", encoding="utf-8")
+    monkeypatch.setenv("VIDDL_HOME", str(blocker))
+
+    assert appdata.data_dir() != blocker
+    assert [entry.problem for entry in appdata.overrides()] == ["not a folder"]
+
+
+def test_a_program_override_may_be_a_path(no_environment, tmp_path, monkeypatch):
+    program = write_executable(tmp_path / "elsewhere" / "yt-dlp", "#!/bin/sh\n")
+    monkeypatch.setenv("VIDDL_YTDLP", str(program))
+    assert appdata.program_override("VIDDL_YTDLP") == program
+
+
+def test_a_bare_program_name_comes_from_the_path(no_environment, tmp_path, monkeypatch):
+    """``yt-dlp`` means the PATH, not whatever is in the working directory."""
+    planted = write_executable(tmp_path / "yt-dlp", "#!/bin/sh\necho PLANTED\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VIDDL_YTDLP", "yt-dlp")
+
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert planted.exists(), "the test needs the planted file to be there"
+    assert appdata.program_override("VIDDL_YTDLP") is None
+
+    genuine = write_executable(tmp_path / "real" / "yt-dlp", "#!/bin/sh\n")
+    monkeypatch.setenv("PATH", str(tmp_path / "real"))
+    assert appdata.program_override("VIDDL_YTDLP") == genuine
+
+
+@needs_posix_permissions
+def test_a_program_override_that_cannot_be_run_is_refused(
+    no_environment, tmp_path, monkeypatch
+):
+    program = tmp_path / "yt-dlp"
+    program.write_text("#!/bin/sh\n", encoding="utf-8")
+    program.chmod(0o644)
+    monkeypatch.setenv("VIDDL_YTDLP", str(program))
+    assert appdata.program_override("VIDDL_YTDLP") is None
+
+
+def test_a_program_override_naming_a_folder_is_refused(no_environment, tmp_path, monkeypatch):
+    folder = tmp_path / "a-folder"
+    folder.mkdir()
+    monkeypatch.setenv("VIDDL_FFMPEG", str(folder))
+    assert appdata.program_override("VIDDL_FFMPEG") is None
+
+
+def test_nothing_is_reported_when_nothing_is_set(no_environment):
+    assert appdata.overrides() == []
+    assert appdata.environment_report() == []
+
+
+def test_the_report_says_what_became_of_each_variable(no_environment, tmp_path, monkeypatch):
+    monkeypatch.setenv("VIDDL_HOME", str(tmp_path / "app"))
+    monkeypatch.setenv("VIDDL_YTDLP", "--exec=calc")
+
+    report = appdata.environment_report()
+
+    assert report[0].startswith("Environment:")
+    assert "VIDDL_HOME=" in report[0] and "(in use)" in report[0]
+    assert "VIDDL_YTDLP=--exec=calc (ignored — looks like an option, not a path)" in report[1]
+
+
+def test_an_override_of_an_unknown_program_says_so(no_environment, monkeypatch):
+    monkeypatch.setenv("VIDDL_FFMPEG", "ffmpeg-on-my-path")  # nothing of that name
+    assert [entry.problem for entry in appdata.overrides()] == [
+        "not a program Viddl can run"
+    ]
 
 
 # ---------------------------------------------------------------------------

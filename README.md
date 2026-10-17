@@ -183,6 +183,28 @@ and a link from a page can never reach the command line as an option. The whole
 model — including what a page *can* do, and what this deliberately does not
 defend against — is in [SECURITY.md](SECURITY.md).
 
+## Environment variables
+
+Four variables change where Viddl looks. None are needed for normal use; they
+exist for tests, shared machines and unusual setups. `viddl --doctor` prints the
+ones that are set and what became of each, so none of them is a secret.
+
+| Variable | What it does | Why you would use it |
+| --- | --- | --- |
+| `VIDDL_HOME` | The folder Viddl owns: the helpers it downloads, the log, the extension it copies out. | Keep everything on another disk, or start from a clean state. |
+| `VIDDL_DOWNLOAD_DIR` | Where finished videos and MP3s go (default: your Downloads folder). | Save to a media drive, or straight into a project folder. |
+| `VIDDL_YTDLP` | The yt-dlp to run, instead of the one Viddl finds or downloads. | Use a build of your own, or the one your package manager installed. |
+| `VIDDL_FFMPEG` | The ffmpeg to use, instead of the one Viddl finds or downloads. | Same, for ffmpeg. |
+
+Each value is checked before it is used, and one that cannot be honoured is
+ignored rather than half-applied. A value that looks like an option
+(`--exec=…`) is refused, so it can never reach a command line as a flag; a
+folder that is really a file is refused, rather than failing later in a way
+nobody can explain; and a bare program name means your `PATH` — never the
+working directory, which is not something Viddl gets to choose when a browser
+starts it. `viddl --doctor` says which of the four are in use, which were
+ignored, and why.
+
 ## Development
 
 ```sh
