@@ -216,6 +216,43 @@ def test_a_plain_link_opens_the_app(monkeypatch):
     assert seen == {"url": URL, "audio": True}
 
 
+# ---------------------------------------------------------------------------
+# a page may ask more than once (S5)
+# ---------------------------------------------------------------------------
+
+
+def test_a_burst_of_hand_offs_opens_the_app_once_with_a_link(monkeypatch):
+    """The second hand-off in a burst is not acted on; the app still opens."""
+    seen = _capture_run(monkeypatch)
+    hand_off = build_scheme_url(URL, audio=False)
+
+    assert main(["--uri", hand_off]) == 0
+    assert seen == {"url": URL, "audio": False}
+
+    assert main(["--uri", hand_off]) == 0
+    assert seen == {"url": "", "audio": False}
+
+
+def test_a_link_typed_by_hand_is_never_rate_limited(monkeypatch):
+    """Only a page can arrive uninvited; a typed link is deliberate."""
+    seen = _capture_run(monkeypatch)
+    assert main(["--uri", build_scheme_url(URL)]) == 0
+    assert seen == {"url": URL, "audio": False}
+
+    assert main([URL]) == 0
+    assert seen == {"url": URL, "audio": False}
+
+
+def test_the_audio_flag_survives_a_throttled_hand_off(monkeypatch):
+    """The flag came from the person typing, not from the page."""
+    seen = _capture_run(monkeypatch)
+    assert main(["--uri", build_scheme_url(URL, audio=True)]) == 0
+    assert seen == {"url": URL, "audio": True}
+
+    assert main(["--audio", "--uri", build_scheme_url(URL, audio=True)]) == 0
+    assert seen == {"url": "", "audio": True}
+
+
 def test_an_audio_hand_off_wins_over_nothing(monkeypatch):
     seen = _capture_run(monkeypatch)
     assert main(["--uri", build_scheme_url(URL, audio=False)]) == 0

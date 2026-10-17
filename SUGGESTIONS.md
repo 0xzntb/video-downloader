@@ -9,10 +9,12 @@ statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **4 of 60** (S1–S4, all in section 1).
-The four are the security pass on section 1's front half: nothing the app
-downloads is run unchecked, and nothing it writes down is readable by anyone
-else.
+Progress so far: **6 of 60** — S1–S5 in section 1 and D3 in section 6.
+That is the security pass on section 1: nothing the app downloads is run
+unchecked, nothing it writes down is readable by anyone else, nothing it writes
+down keeps a secret, and a web page can no longer start it *doing* anything —
+only showing something. The threat model those four rest on is now written out
+in `SECURITY.md`, which is what **D3** asked for.
 
 **Legend**
 
@@ -223,19 +225,42 @@ Video URLs can carry tokens, signed query strings or account identifiers, and
 before this landed a future "log the command line" change (see **D1**) would have
 written those to disk forever, as `viddl.log` was never rotated or truncated.
 
-### S5 — Any web page can cold-open the app · **P2** · M
+### S5 — Any web page can cold-open the app · **P2** · M · ✅ **Done**
+
+> **Addressed.** The invariant is now written down where the links arrive —
+> `ViddlApp`'s docstring states it, and two tests hold it
+> (`test_a_hand_off_never_starts_a_download`, and the audio variant): a hand-off
+> pre-fills a link and probes it, and nothing is downloaded until a person picks
+> a quality. A hand-off arriving within three seconds of the last is taken to be
+> the same ask, so the app opens with an empty box rather than acting on a second
+> link; a link typed on the command line is never limited that way, since that
+> intent can only come from the person typing. The threat model is written out in
+> `SECURITY.md`, linked from the README. 11 tests added (321 → 332).
+>
+> The rate limit is deliberately narrow, and the plan it came from implied more
+> than it delivers: it limits how many links a page can have *acted on*, not how
+> many windows appear. Closing the window is the desktop environment's decision,
+> and **single-instance behaviour was not implemented** — see below.
+>
+> Verified through the real CLI, not only in tests: three hand-offs about a second
+> apart leave the recorded stamp at the first one's value (they are collapsed),
+> while one after the cooldown updates it; and with only the terminal UI stubbed
+> (it cannot run in this sandbox), the real `cli.main` hands the app the link on
+> the first hand-off, an empty link on the second, and the link again for both
+> typed forms.
+
+**Deliberately not done: single-instance behaviour.** The cheap version is a lock
+file holding a process id, and after a crash or a reused pid it can silently
+swallow a click — a worse failure than an extra window. The reliable version
+needs platform window APIs or a local listening socket, and a socket trades a
+nuisance for real attack surface. `SECURITY.md` records the decision and the
+reasoning rather than leaving it as an omission. It also collides with **R6**,
+which is the same problem from the other side (two instances, one output file).
 
 The whole design is that a page hands over a `viddl://` link, and the app opens
 with that link pre-filled. That is a good default — nothing downloads without a
 deliberate click on a quality. The risk is nuisance/abuse rather than data loss:
-a hostile page can spawn terminal windows, and combined with **S1** it currently
-does worse.
-
-**Do:** keep "never auto-download from a hand-off" as an invariant and write it
-down as one (a comment and a test). Consider a soft rate limit (ignore further
-hand-offs while one is within N seconds), single-instance behaviour (focus the
-existing window instead of opening a second one), and document the threat model
-in `SECURITY.md`.
+a hostile page can spawn terminal windows. Before **S1** it could do worse.
 
 ### S6 — Environment overrides are undocumented and unvalidated · **P2** · S
 
@@ -256,8 +281,8 @@ permissions, no remote code. This is a real strength — worth stating in the
 README as a selling point.
 
 **Do:** add `minimum_chrome_version`, keep the "no background page reads" promise
-in a comment, and add a Firefox build (see **F15**). Also add a `SECURITY.md`
-contact so a reporter has somewhere to go.
+in a comment, and add a Firefox build (see **F15**). (`SECURITY.md` now exists,
+with a place to report — the remaining half of this item is the manifest.)
 
 ---
 
@@ -658,9 +683,11 @@ users.
 ### E2 — Project hygiene files · **P1** · S
 
 Missing: `LICENSE` (README and `pyproject.toml` both declare MIT — no licence
-text ships), `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`,
-issue/PR templates, `CODE_OF_CONDUCT.md`. `.gitignore` also lacks the
-`.coverage` artifact and `coverage.xml`, so a coverage run dirties the tree.
+text ships), `CHANGELOG.md`, `CONTRIBUTING.md`, issue/PR templates,
+`CODE_OF_CONDUCT.md`. `.gitignore` also lacks the `.coverage` artifact and
+`coverage.xml`, so a coverage run dirties the tree.
+
+`SECURITY.md` is no longer on this list — **S5** wrote it.
 
 **Do:** add the licence first — it is a one-minute fix for an actual legal gap.
 
@@ -787,7 +814,7 @@ project's "nothing leaves your machine" promise.
 | --- | --- | --- |
 | **D1** | **The log promise is not met** | README: "The log holds the last run's details if something failed." Reality: the file is created empty, and one `LOGGER.exception` call exists in total. Either log failures (**E3**) or soften the claim. |
 | **D2** | **Undocumented environment variables** | `VIDDL_HOME`, `VIDDL_DOWNLOAD_DIR`, `VIDDL_YTDLP`, `VIDDL_FFMPEG` are all live but unmentioned. Add a table with what each overrides and why you would use it. |
-| **D3** | **Document the `viddl://` security model** | Any page can open the app; the app never downloads without a click. Write that down as a guarantee, alongside the fix for **S1**. |
+| **D3** | ✅ **Document the `viddl://` security model** | Done with **S5**: `SECURITY.md` states the guarantee (any page may open the app; nothing downloads without a click) and what it does *not* cover, and the README links to it. |
 | **D4** | **Troubleshooting / FAQ** | Stale extractor ("run `viddl --update`"), login-required sites (**F1**), corporate proxies, Windows console rendering (**R10**), where the log lives. Each is a support question waiting to happen. |
 | **D5** | **`--version --verbose` and a man page** | `viddl.1` for Unix packaging; the verbose version block from **E12** embedded as a code block in the README. |
 | **D6** | **Architecture notes** | A short `docs/` page on the `Services` seam, why the app is local-only, and the precedence rules for engine and config. It is the thing a new contributor needs most. |
@@ -798,9 +825,9 @@ project's "nothing leaves your machine" promise.
 
 1. ✅ **S1** (argument injection) + regression tests — **done**.
 2. **E2** (LICENSE) and **E1** (CI) — cheap, and they protect everything after.
-3. ✅ **S3** and **S4** (directory, log and its content) — **done**; **E3/D1**
-   (make the log real) remain, and are now cheaper because the log is a safe
-   place to put things.
+3. ✅ **S3**, **S4** and **S5** (directory, log, and what a page may start) —
+   **done**; **E3/D1** (make the log real) remain, and are now cheaper because
+   the log is a safe place to put things.
 4. **R1**/**R2** (resume, and actually stop children) — the biggest day-to-day pain.
 5. **R4**/**F3** (`viddl --update` + staleness hint) — the fix for the most common complaint.
 6. ✅ **S2** (verify downloads) — **done**; **R3** (expose the config escape hatch) still open. `--ignore-config` itself landed with **S1**.
@@ -922,6 +949,17 @@ fetched for real and hashed:
 | `LOGGER.exception` whose traceback holds `?sig=SIGNED456` | traceback written, `sig=<redacted>` |
 | Grepping the log for either secret | no match, exit 1 — neither value reached the file |
 
+**S5 checked through the real CLI** — the actual program, with only the terminal
+UI stubbed out (it needs a real terminal, which this environment does not have):
+
+| Step | Result |
+| --- | --- |
+| Three `viddl --uri …` runs about a second apart | the recorded stamp keeps the first run's value — the later two are collapsed |
+| A fourth run after a 3-second pause | stamp updated: the hand-off is acted on again |
+| Where the *app* was sent: first hand-off | `url=https://www.youtube.com/watch?v=abc`, `audio=True` |
+| Second hand-off, immediately after | `url=""`, `audio=False`, exit 0 — no link, and the app still opens |
+| A typed link, then `--audio <link>`, right after both | both acted on — the cooldown never applies to these |
+
 ## Appendix B — Verified vs. assumed
 
 **Verified by running code or reading it here:** every code reference and every
@@ -944,6 +982,15 @@ failing. Locking a folder down also cannot be verified on Windows at all here.
 For **S4** the same caveat applies to the log's mode on Windows, where access is
 governed by ACLs, and redaction was checked against the shapes listed in
 Appendix A — a credential sent in some other shape is not covered by it.
+
+**S5 is honest about what it does not do**, which is why it is marked done
+anyway: the cooldown limits the links a page can have acted on, not the windows
+it can cause, and single-instance behaviour was decided against rather than
+overlooked (the reasoning is in `SECURITY.md` and with the item). The claim that
+a link is never acted on without a chosen quality was checked by driving the real
+app through Textual's pilot; the app itself has still never been run in a real
+terminal here, and whether Chrome demands a user gesture before opening a
+`viddl://` handler remains a browser question this environment cannot answer.
 
 **Checked rather than assumed now:** that `--ignore-config` leaves an explicit
 `--config-locations` alone, and that `--` really does end the options for yt-dlp

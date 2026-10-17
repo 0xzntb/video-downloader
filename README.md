@@ -174,7 +174,14 @@ explain.
 Nothing is ever written outside `~/.local/share/viddl` (plus your Downloads
 folder), apart from the two small system bits that make the browser button work:
 a `.desktop` entry on Linux, an app bundle in `~/Applications` on macOS, or a
-registry key under `HKEY_CURRENT_USER` on Windows.
+registry key under `HKEY_CURRENT_USER` on Windows. Viddl's own folder and the
+log are readable only by you.
+
+Any page can ask the system to open Viddl with a link, so the link is only ever
+put in the box for you to look at: nothing downloads until you choose a quality,
+and a link from a page can never reach the command line as an option. The whole
+model — including what a page *can* do, and what this deliberately does not
+defend against — is in [SECURITY.md](SECURITY.md).
 
 ## Development
 

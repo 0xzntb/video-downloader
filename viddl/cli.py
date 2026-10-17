@@ -24,6 +24,7 @@ from . import APP_TITLE, __version__
 from . import appdata, logfile
 from .engine import Engine, ToolError
 from .formats import format_rows
+from . import protocol
 from .protocol import (
     extension_source_dir,
     install_extension,
@@ -183,14 +184,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     raw = args.uri or args.target or ""
     if raw.lower().startswith("viddl:"):
+        # The one path a web page can start, which is why it is the one path
+        # that is rate limited: a hand-off arriving hard on the heels of another
+        # is taken to be the same ask, and the app opens with no link rather
+        # than acting on a second one. It neither closes the window nor pretends
+        # to — only the desktop environment can refuse to open those — so what
+        # it limits is how many links a page can have acted on, not how many
+        # windows appear. A link typed on the command line is never limited this
+        # way: that intent can only come from the person typing it.
         request = parse_scheme(raw)
         if request is None:
             return _fail(
                 "That viddl:// link could not be understood.",
                 "Open the app with no arguments and paste the link instead.",
             )
-        url = request.url
-        audio = audio or request.audio
+        if protocol.handoff_too_soon():
+            url = ""
+        else:
+            protocol.remember_handoff()
+            url = request.url
+            audio = audio or request.audio
     else:
         url = raw.strip()
         if url:

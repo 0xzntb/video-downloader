@@ -105,7 +105,17 @@ def _open_folder(path: Path) -> Optional[str]:
 
 
 class ViddlApp(App):
-    """The application object; screens live on top of it."""
+    """The application object; screens live on top of it.
+
+    One guarantee holds the whole hand-off together, and it is worth stating in
+    the place the links arrive: **a link from a web page is only ever
+    pre-filled.** Any page may ask the operating system to open Viddl with a
+    link — that is what ``viddl://`` is for — so the link is treated as
+    something to show, never as something to act on. Nothing is downloaded, and
+    no quality is chosen, until the person at the keyboard picks one; the probe
+    on the way there only reads metadata. ``test_a_hand_off_never_starts_a_download``
+    holds this in place.
+    """
 
     TITLE = APP_TITLE
     SUB_TITLE = f"v{__version__}"

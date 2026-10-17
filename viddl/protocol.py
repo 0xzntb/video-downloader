@@ -3,6 +3,14 @@
 No server, no port, no account: the extension opens a ``viddl://`` URL and the
 operating system launches Viddl with that URL as an argument, exactly the way
 ``mailto:`` opens a mail program.
+
+The security model is written down in ``SECURITY.md``; the short version is that
+any page may ask the operating system to launch this app, so nothing about a
+hand-off may act on its own. A hand-off only ever *pre-fills* a link: the person
+at the keyboard still chooses a quality, and that choice is what starts a
+download. Everything that protects the command line lives in
+:func:`viddl.util.safe_video_link` and in the ``--`` separator the download job
+puts before the link.
 """
 
 from __future__ import annotations
@@ -13,6 +21,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -21,6 +30,15 @@ from urllib.parse import parse_qs, unquote
 from . import URL_SCHEME, __version__
 from . import appdata
 from .util import safe_video_link
+
+# How long a burst of hand-offs is collapsed into one. A page can ask for a
+# hand-off again and again, and one that arrives immediately after the last is
+# far more likely to be a page in a loop than a person who meant it twice. This
+# is a nuisance limit rather than a security control — every rule that actually
+# matters (only ``http(s)`` links, ``--`` before the link, nothing downloaded
+# without a chosen quality) is enforced regardless of how often a page asks.
+HANDOFF_COOLDOWN_SECONDS = 3
+_STAMP = "last-handoff"
 
 _DESKTOP_FILE = "viddl-handler.desktop"
 _APP_BUNDLE = "Viddl URL Handler.app"
@@ -126,6 +144,44 @@ def parse_scheme_url(raw: str) -> Optional[str]:
     """Just the video link from a ``viddl://`` URL."""
     request = parse_scheme(raw)
     return request.url if request else None
+
+
+# ---------------------------------------------------------------------------
+# how often a page may hand one over
+# ---------------------------------------------------------------------------
+
+
+def _stamp_path() -> Path:
+    return appdata.data_dir() / _STAMP
+
+
+def handoff_too_soon(
+    seconds: int = HANDOFF_COOLDOWN_SECONDS,
+    now: Optional[float] = None,
+) -> bool:
+    """Whether this hand-off followed the last one too closely to act on.
+
+    A clock that jumped backwards, a stamp that cannot be read, or no stamp at
+    all all answer "no": failing to keep track is not a reason to ignore the
+    link someone clicked. The stamp is a plain timestamp in the app's own
+    folder — no port, no socket, nothing a page can reach.
+    """
+    try:
+        last = float(_stamp_path().read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    moment = time.time() if now is None else now
+    return 0 <= moment - last < seconds
+
+
+def remember_handoff(now: Optional[float] = None) -> None:
+    """Note that a hand-off was acted on, so a burst of them is visible."""
+    try:
+        path = _stamp_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{time.time() if now is None else now:.3f}\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def build_scheme_url(video_url: str, audio: bool = False) -> str:

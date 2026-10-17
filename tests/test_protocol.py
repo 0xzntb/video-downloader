@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from viddl import URL_SCHEME
-from viddl import protocol
+from viddl import appdata, protocol
 from viddl.protocol import (
     SchemeRequest,
     build_scheme_url,
@@ -99,6 +99,54 @@ def test_build_scheme_url_round_trips():
     request = parse_scheme(target)
     assert request.url == "https://x.com/user/status/1"
     assert request.audio is True
+
+
+# ---------------------------------------------------------------------------
+# a page may ask more than once (S5)
+# ---------------------------------------------------------------------------
+
+
+def test_the_first_hand_off_is_never_refused():
+    """Nothing to compare against means nothing to throttle."""
+    assert protocol.handoff_too_soon(now=1_000_000.0) is False
+
+
+def test_a_burst_of_hand_offs_counts_as_one():
+    cooldown = protocol.HANDOFF_COOLDOWN_SECONDS
+    protocol.remember_handoff(now=1_000_000.0)
+    assert protocol.handoff_too_soon(now=1_000_000.0)
+    assert protocol.handoff_too_soon(now=1_000_000.0 + cooldown - 0.1)
+    # Once the cooldown has passed, the next one is a fresh ask again.
+    assert not protocol.handoff_too_soon(now=1_000_000.0 + cooldown)
+
+
+def test_the_stamp_lives_in_the_app_folder():
+    protocol.remember_handoff(now=1_000_000.0)
+    stamp = protocol._stamp_path()
+    assert stamp.parent == appdata.data_dir()
+    assert stamp.read_text(encoding="utf-8").strip() == "1000000.000"
+
+
+def test_a_stamp_that_cannot_be_read_is_not_a_refusal():
+    """Failing to keep track is not a reason to drop someone's click."""
+    protocol._stamp_path().parent.mkdir(parents=True, exist_ok=True)
+    for rubbish in ("not a number\n", "\n", ""):
+        protocol._stamp_path().write_text(rubbish, encoding="utf-8")
+        assert protocol.handoff_too_soon(now=1_000_000.0) is False
+
+
+def test_a_clock_that_went_backwards_is_not_a_refusal():
+    protocol.remember_handoff(now=1_000_000.0)
+    assert protocol.handoff_too_soon(now=999_000.0) is False
+
+
+def test_remembering_a_hand_off_never_raises(monkeypatch):
+    def nowhere():
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(appdata, "data_dir", nowhere)
+    protocol.remember_handoff()  # must not raise
+    assert protocol.handoff_too_soon() is False
 
 
 def test_launch_command_points_at_something_real():

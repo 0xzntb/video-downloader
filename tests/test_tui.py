@@ -281,6 +281,56 @@ async def test_launching_with_a_url_skips_the_home_screen(tmp_path):
         assert isinstance(app.screen, OptionsScreen)
 
 
+class RecordingJob(FakeJob):
+    """Notes every download that is started, so a test can prove none was."""
+
+    started: list = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        RecordingJob.started.append(self)
+
+
+@pytest.mark.asyncio
+async def test_a_hand_off_never_starts_a_download(tmp_path):
+    """The guarantee a page cannot break: a link is shown, never acted on.
+
+    Any page may open Viddl with a ``viddl://`` link, so the app must not
+    download, or choose a quality, without the person at the keyboard saying so.
+    """
+    RecordingJob.started.clear()
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path, job_class=RecordingJob))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot, rounds=12)
+
+        assert isinstance(app.screen, OptionsScreen)
+        assert RecordingJob.started == [], "a hand-off started a download on its own"
+        assert app.state.option is None
+        assert app.state.job is None
+
+        # The choice is what starts it, and only the choice.
+        await pilot.press("enter")
+        await settle(pilot)
+        assert len(RecordingJob.started) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_audio_hand_off_never_starts_a_download_either(tmp_path):
+    RecordingJob.started.clear()
+    app = ViddlApp(
+        initial_url=URL,
+        prefer_audio=True,
+        services=make_services(tmp_path, job_class=RecordingJob),
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot, rounds=12)
+
+        assert isinstance(app.screen, OptionsScreen)
+        assert RecordingJob.started == []
+
+
 @pytest.mark.asyncio
 async def test_clicking_a_quality_row_selects_it(tmp_path):
     services = make_services(tmp_path)
