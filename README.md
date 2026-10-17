@@ -163,10 +163,10 @@ explain.
 
 | Piece | What it does |
 | --- | --- |
-| `viddl/tui/` | The terminal interface (Textual). Four screens: home, qualities, progress, done. |
+| `viddl/tui/` | The terminal interface (Textual). Five screens: home, qualities, progress, stopped, done. |
 | `viddl/engine.py` | Finds yt-dlp and ffmpeg, or downloads its own copy into `~/.local/share/viddl/bin`. |
 | `viddl/formats.py` | Turns site metadata into the quality menu, with size estimates. |
-| `viddl/download.py` | Runs yt-dlp, reads its progress, and works out which file was written. |
+| `viddl/download.py` | Runs yt-dlp, reads its progress, and works out which file was written. Stopping it stops the whole tree yt-dlp started — the ffmpeg merge included — and keeps what was fetched so it can be resumed. |
 | `viddl/errors.py` | Maps raw tool output onto plain-language explanations. |
 | `viddl/protocol.py` | The `viddl://` hand-off and its per-OS registration. |
 | `viddl/browser_extension/` | The Chromium (Manifest V3) extension. |

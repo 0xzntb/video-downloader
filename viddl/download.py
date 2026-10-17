@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -11,7 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .engine import Engine, ToolError
+from .engine import Engine, ToolError, is_windows
 from .errors import explain
 from .formats import MediaInfo, MediaOption, parse_info
 
@@ -45,6 +47,10 @@ class DownloadCancelled(Exception):
 
 #: What yt-dlp leaves beside a file it is still working on, and resumes from.
 _PARTIAL_SUFFIXES = (".part", ".ytdl")
+
+#: How long a stopped download gets to put its things down before it is killed.
+#: yt-dlp answers a polite stop quickly; a wedged one never does.
+_STOP_GRACE_SECONDS = 5.0
 
 
 def _is_intermediate(path: Path) -> bool:
@@ -172,6 +178,7 @@ class DownloadJob:
         self.keep_partial = keep_partial
 
         self._process: Optional[subprocess.Popen] = None
+        self._escalation: Optional[threading.Timer] = None
         self._cancelled = threading.Event()
         self._lines: List[str] = []
         self._paths: List[Path] = []
@@ -229,12 +236,64 @@ class DownloadJob:
         return args
 
     # -- lifecycle ----------------------------------------------------------
-    def cancel(self) -> None:
+    def cancel(self, force: bool = False) -> None:
+        """Stop the download — the whole of it, not just the process Viddl holds.
+
+        yt-dlp starts ffmpeg to merge the two streams it downloaded, so the
+        process Viddl started is only the top of a tree. Signalling it alone
+        leaves the merge running: it keeps writing to the very file the app is
+        about to offer back as resumable, and it keeps the pipe Viddl is
+        reading open, so the screen can sit on "Stopping…" for ever. The job is
+        therefore started in its own session and the whole group is signalled.
+
+        The stop is polite first (so yt-dlp can finish the line it is on), and
+        killed ``_STOP_GRACE_SECONDS`` later if it is still there. ``force``
+        skips the politeness: quitting the app cannot wait for a watchdog that
+        will die with the app.
+        """
         self._cancelled.set()
         process = self._process
+        if process is None or process.poll() is not None:
+            return
+        if force:
+            self._signal_tree(process, force=True)
+            return
+        self._signal_tree(process, force=False)
+        timer = threading.Timer(_STOP_GRACE_SECONDS, self._escalate)
+        timer.daemon = True
+        self._escalation = timer
+        timer.start()
+
+    def _escalate(self) -> None:
+        """The polite stop was ignored: kill the tree outright."""
+        process = self._process
         if process is not None and process.poll() is None:
+            self._signal_tree(process, force=True)
+
+    def _signal_tree(self, process: subprocess.Popen, force: bool) -> None:
+        """Ask every process the download started to stop.
+
+        On POSIX the child is a session of its own (``start_new_session``), so
+        its group holds yt-dlp and anything yt-dlp started.
+        """
+        if is_windows():
+            # Windows has no process groups to signal; ``taskkill /T`` walks
+            # the tree, which is the same guarantee by another route.
+            command = ["taskkill", "/PID", str(process.pid), "/T"]
+            if force:
+                command.insert(1, "/F")
             try:
-                process.terminate()
+                subprocess.run(command, capture_output=True, timeout=15)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            return
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL if force else signal.SIGTERM)
+        except OSError:
+            # No group of its own (started by someone else, or already gone):
+            # fall back to the process itself.
+            try:
+                process.kill() if force else process.terminate()
             except OSError:
                 pass
 
@@ -243,9 +302,23 @@ class DownloadJob:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         before = self._snapshot()
         args = self.build_args()
+        if self._cancelled.is_set():
+            # Stopped while the command was being built: never start it. The
+            # alternative is a process nobody is left to stop.
+            raise DownloadCancelled()
         if self.on_log:
             self.on_log("$ " + " ".join(args))
 
+        options: Dict[str, object] = {}
+        if is_windows():
+            # A group of its own, so taskkill can find the whole tree.
+            options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            # Its own session: cancel can signal yt-dlp and the ffmpeg it
+            # started together. One side effect is that a Ctrl+C in the
+            # terminal no longer reaches yt-dlp directly — the app's own stop
+            # button does, through the same group signal.
+            options["start_new_session"] = True
         try:
             self._process = subprocess.Popen(
                 args,
@@ -255,6 +328,7 @@ class DownloadJob:
                 text=True,
                 bufsize=1,
                 errors="replace",
+                **options,
             )
         except OSError as exc:
             raise ToolError(
@@ -268,7 +342,13 @@ class DownloadJob:
             self._handle_line(line.rstrip("\n"))
             if self._cancelled.is_set():
                 break
-        self._process.wait()
+        try:
+            self._process.wait(timeout=_STOP_GRACE_SECONDS * 3)
+        except subprocess.TimeoutExpired:  # pragma: no cover - a wedged process
+            self._signal_tree(self._process, force=True)
+            self._process.wait()
+        finally:
+            self._stop_watchdog()
         code = self._process.returncode
 
         if self._cancelled.is_set():
@@ -293,6 +373,12 @@ class DownloadJob:
         return finished
 
     # -- internals ----------------------------------------------------------
+    def _stop_watchdog(self) -> None:
+        timer = self._escalation
+        if timer is not None:
+            timer.cancel()
+            self._escalation = None
+
     def _snapshot(self) -> Dict[Path, float]:
         snapshot: Dict[Path, float] = {}
         try:

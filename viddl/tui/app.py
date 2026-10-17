@@ -357,7 +357,11 @@ class ViddlApp(App):
     def action_quit_app(self) -> None:
         job = self.state.job
         if job is not None:
-            job.cancel()
+            # Quitting is not a pause: nothing can be left behind to keep
+            # writing, so the tree is stopped outright. A graceful stop needs
+            # a grace period, and the watchdog that would provide it dies with
+            # the app.
+            job.cancel(force=True)
         self.exit()
 
     # -- flow ---------------------------------------------------------------
@@ -752,13 +756,27 @@ class DownloadScreen(Screen):
         self.query_one("#download-detail", Static).update("  ·  ".join(detail_bits))
 
     # -- endings ------------------------------------------------------------
+    def _has_a_screen(self) -> bool:
+        """False once the app is on its way out — there is nothing to show on.
+
+        Stopping the process tree closes its output at once, so the ending can
+        arrive while the app is shutting down (the user pressed quit, which is
+        what closed it). Bringing up a screen then would raise, and the result
+        nobody is waiting for is not worth an error.
+        """
+        return self.app.is_running and bool(self.app.screen_stack)
+
     def finish_ok(self, path: Path) -> None:
         self.app.state.saved_path = path
         self.app.state.job = None
+        if not self._has_a_screen():
+            return
         self.app.push_screen(ResultScreen(saved_path=path))
 
     def finish_error(self, error: ToolError) -> None:
         self.app.state.job = None
+        if not self._has_a_screen():
+            return
         self.app.push_screen(ResultScreen(error=error))
 
     def finish_cancelled(self) -> None:
@@ -766,6 +784,8 @@ class DownloadScreen(Screen):
         # with it rather than throw away work the user waited for.
         job = self.app.state.job
         self.app.state.job = None
+        if not self._has_a_screen():
+            return
         self.app.switch_screen(StoppedScreen(job=job, option=self.app.state.option))
 
     def action_cancel(self) -> None:

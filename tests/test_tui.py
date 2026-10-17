@@ -103,8 +103,9 @@ class FakeJob:
             self.on_progress(Progress(status="Done", percent=100.0, phase="done"))
         return target
 
-    def cancel(self):
+    def cancel(self, force: bool = False):
         self.cancelled = True
+        self.force_cancelled = force
 
 
 class FailingJob(FakeJob):
@@ -123,8 +124,9 @@ class BlockingJob(FakeJob):
         self.release.wait(timeout=10)
         raise DownloadCancelled()
 
-    def cancel(self):
+    def cancel(self, force: bool = False):
         self.cancelled = True
+        self.force_cancelled = force
         self.release.set()
 
 
@@ -178,8 +180,9 @@ class ChattyJob(FakeJob):
         self.release.wait(timeout=10)
         raise DownloadCancelled()
 
-    def cancel(self):
+    def cancel(self, force: bool = False):
         self.cancelled = True
+        self.force_cancelled = force
         self.release.set()
 
 
@@ -985,6 +988,24 @@ async def test_quitting_during_a_download_stops_it(tmp_path):
         app.action_quit_app()
         await pilot.pause()
         assert job.cancelled is True
+        # Quitting cannot wait for a grace period: nothing may outlive the app.
+        assert job.force_cancelled is True
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_button_leaves_the_tree_a_chance_to_stop(tmp_path):
+    """The stop button is a stop, not a kill: yt-dlp gets its grace period."""
+    services = make_services(tmp_path, job_class=BlockingJob)
+    app = ViddlApp(initial_url=URL, services=services)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        job = await wait_for_job(app, pilot)
+
+        await pilot.press("escape")
+        await settle(pilot, rounds=12)
+        assert job.cancelled is True
+        assert job.force_cancelled is False
 
 
 # ---------------------------------------------------------------------------

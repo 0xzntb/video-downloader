@@ -9,7 +9,7 @@ statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **9 of 60** — S1–S6 in section 1, R1 in section 2, D2–D3 in
+Progress so far: **10 of 60** — S1–S6 in section 1, R1–R2 in section 2, D2–D3 in
 section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -37,7 +37,7 @@ in `SECURITY.md`, which is what **D3** asked for.
 | 1 | ✅ **S1** — stop option-shaped "links" reaching yt-dlp | Proven argument injection; a web page could trigger it — **done** |
 | 2 | **E1** — add CI | Nothing is checked on push today; the tests only run if someone runs them |
 | 3 | **E2** — add a `LICENSE` file | README and `pyproject.toml` both claim MIT; no licence text ships |
-| 4 | ✅ **R1** — resume interrupted downloads | A cancelled or dropped download started from zero — **done** |
+| 4 | ✅ **R1** + **R2** — resume interrupted downloads, and really stop them | A cancelled or dropped download started from zero, and a stop left ffmpeg writing — **both done** |
 | 5 | **R4** — `viddl --update` | Stale yt-dlp is *the* top cause of "this link stopped working" |
 | 6 | **F1** — cookies from the browser | Unlocks Instagram, Threads, TikTok, sometimes Vimeo (README says unsupported) |
 | 7 | ✅ **S2** + **S3** — verify and lock down downloaded helpers | Executables were fetched and `chmod +x`'d with no hash check, into a folder anyone could read — **both done** |
@@ -348,12 +348,42 @@ there was no `-c/--continue`. Worse, cancelling deleted the work:
 user paused at 90% was lost, and a dropped connection mid-download was re-fetched
 from byte zero.
 
-### R2 — Cancelling does not stop the children · **P1** · S
+### R2 — Cancelling does not stop the children · **P1** · S · ✅ **Done**
 
-`cancel()` calls `process.terminate()` on the yt-dlp process only. ffmpeg is a
-child of yt-dlp, so a merge in flight can outlive the UI's cancel and keep
-writing. `terminate()` is also `SIGTERM`: yt-dlp handles it, but a wedged process
-is never escalated.
+> **Fixed.** The download now starts in a session of its own
+> (`start_new_session=True`; `CREATE_NEW_PROCESS_GROUP` on Windows), so stopping
+> signals the **group** — yt-dlp *and* the ffmpeg it started — rather than one
+> process. The stop stays polite (`SIGTERM`; `taskkill /T` without `/F`), and a
+> watchdog escalates to `SIGKILL` (and `/F`) five seconds later if the tree is
+> still there; the `wait()` that follows has a bounded timeout too. **Quitting**
+> the app skips the politeness (`cancel(force=True)`): a grace period needs a
+> watchdog, and that watchdog would die with the app, so nothing may outlive a
+> quit. A stop that lands *before* the process starts is now honoured too — it
+> used to be recorded and forgotten, and the download ran anyway.
+>
+> The stray process was only half the damage: ffmpeg inherits yt-dlp's stdout, so
+> the pipe Viddl reads stays open after yt-dlp itself is gone and the screen sits
+> on *"Stopping…"* for ever. Killing the group closes the pipe, which is why the
+> stop now ends the screen even when the engine never answers.
+>
+> Measured with real yt-dlp 2026.08.19 and a real child process, old behaviour
+> against new on the same scripted run: **old** — child still running after the
+> cancel, reading thread still blocked after 25 s, yt-dlp printing `Killed`;
+> **new** — stopped in 0.01 s, child gone. A cancel *mid-download* with the real
+> tool (27%, 2,267,431 bytes) stopped in 0.01 s and kept the `.part` at exactly
+> the bytes it had, so R1 and R2 hold together. The three process-group tests were
+> also run against a mutated build that signals only the parent — all three fail,
+> so they test the fix rather than the weather. 9 tests added (363 → 372).
+>
+> Not exercised, and not claimed: a real **ffmpeg merge** caught in flight (there
+> is no ffmpeg in this environment; the child standing in for it is a real process
+> started by real yt-dlp, not a simulation), and the Windows `taskkill` path,
+> whose command line is asserted but never run on Windows.
+
+`cancel()` called `process.terminate()` on the yt-dlp process only. ffmpeg is a
+child of yt-dlp, so a merge in flight could outlive the UI's cancel and keep
+writing to the very `.part` file **R1** now promises to keep. `terminate()` is
+also `SIGTERM`: yt-dlp handles it, but a wedged process was never escalated.
 
 **Do:** start the process with `start_new_session=True` (POSIX) and kill the
 process group; escalate `terminate()` → `kill()` after a few seconds; `wait()`
@@ -361,6 +391,10 @@ with a timeout. On Windows use `CREATE_NEW_PROCESS_GROUP` / `taskkill /T`. Add a
 test that a fake long-running child is actually gone after cancel.
 
 ### R3 — yt-dlp's user config leaks into every download · **P1** · S
+
+> **Half done, by S1:** both yt-dlp invocations now pass `--ignore-config`, so a
+> config file cannot quietly change a run. What is still missing is the other
+> half of the "Do" — a documented way to pass options *deliberately*.
 
 No `--ignore-config`, so a user's `~/.config/yt-dlp/config` (or a portable
 `yt-dlp.conf` next to the binary) silently changes Viddl's behaviour — output

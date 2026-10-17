@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -620,3 +622,251 @@ def test_a_partial_file_is_never_remembered_as_the_result(tmp_path):
     job._handle_line(f'[Merger] Merging formats into "{out / "Half [abc].mp4.part"}"')
     job._handle_line(f"[download] Destination: {out / 'Half [abc].mp4.part'}")
     assert job._paths == []
+
+
+# ---------------------------------------------------------------------------
+# stopping the children too (R2)
+# ---------------------------------------------------------------------------
+
+# A stand-in for yt-dlp at the moment it runs ffmpeg to merge: it starts a
+# child that would keep writing, says where the file is, and then waits — like
+# a merge that is going to take a while.
+TREE_SCRIPT = """\
+import pathlib, subprocess, sys, time
+args = sys.argv[1:]
+out = pathlib.Path(args[args.index("-P") + 1])
+out.mkdir(parents=True, exist_ok=True)
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+# Written whole, so a reader never sees half a number.
+(out / "child.pid.tmp").write_text(str(child.pid))
+(out / "child.pid.tmp").replace(out / "child.pid")
+print("[download] Destination: " + str(out / "A Video [abc].mp4"), flush=True)
+time.sleep(120)
+"""
+
+# The same shape, but deaf to the polite stop — a wedged process.
+STUBBORN_SCRIPT = """\
+import os, pathlib, signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+args = sys.argv[1:]
+out = pathlib.Path(args[args.index("-P") + 1])
+out.mkdir(parents=True, exist_ok=True)
+(out / "started.pid.tmp").write_text(str(os.getpid()))
+(out / "started.pid.tmp").replace(out / "started.pid")
+print("[download] Destination: " + str(out / "A Video [abc].mp4"), flush=True)
+time.sleep(120)
+"""
+
+needs_process_groups = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="signals a process group and reads /proc to check that it is gone",
+)
+
+
+def still_running(pid: int) -> bool:
+    """True while that process is alive; a zombie counts as gone."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # pragma: no cover - nothing here is not ours
+        return True
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[1].split(" ")[0]
+    except (OSError, IndexError):
+        return True
+    return state != "Z"
+
+
+def wait_until_gone(pid: int, seconds: float = 5.0) -> bool:
+    """True once that process has gone; a signal is a request, not a fact."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if not still_running(pid):
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def wait_for_pid(path: Path, job, outcome: dict, seconds: float = 20.0) -> int:
+    """The pid the fake yt-dlp wrote, or an assertion that says what happened."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            text = path.read_text().strip()
+        except OSError:
+            text = ""
+        if text.isdigit():
+            return int(text)
+        time.sleep(0.05)
+    raise AssertionError(
+        f"{path.name} never appeared; lines={job._lines[-8:]!r} outcome={outcome}"
+    )
+
+
+def run_in_background(job) -> tuple:
+    """Start a job on a thread and hand back the thread and the outcome."""
+    outcome = {}
+
+    def run():
+        try:
+            job.run()
+        except DownloadCancelled:
+            outcome["cancelled"] = True
+        except Exception as exc:  # pragma: no cover - reported by the asserts
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    return worker, outcome
+
+
+@needs_process_groups
+def test_stopping_a_download_stops_the_process_it_started(tmp_path):
+    """yt-dlp's child is the merge, and it is what cancel used to leave behind.
+
+    Signalling yt-dlp alone is not enough: ffmpeg keeps writing to the very
+    ``.part`` file the app now promises to keep for resuming — and it keeps the
+    pipe open, so the screen never learns the download stopped.
+    """
+    out = tmp_path / "Downloads"
+    job = DownloadJob(
+        engine_for(tmp_path, "fake_tree.py", TREE_SCRIPT),
+        "https://x.invalid/v",
+        video_option(),
+        out,
+    )
+    worker, outcome = run_in_background(job)
+    child_pid = wait_for_pid(out / "child.pid", job, outcome)
+    try:
+        assert still_running(child_pid), "the fake merge should have been running"
+        job.cancel()
+        worker.join(timeout=30)
+
+        assert not worker.is_alive(), "cancel left the reading loop stuck"
+        assert outcome.get("cancelled") is True
+        assert wait_until_gone(child_pid), "cancel left the merge running"
+    finally:
+        if still_running(child_pid):  # pragma: no cover - only on a failure
+            try:
+                os.kill(child_pid, 9)
+            except OSError:  # pragma: no cover - it died in the meantime
+                pass
+
+
+@needs_process_groups
+def test_a_process_that_ignores_the_polite_stop_is_killed(tmp_path, monkeypatch):
+    """A wedged yt-dlp must not leave "Stopping…" on screen for ever."""
+    monkeypatch.setattr(download_mod, "_STOP_GRACE_SECONDS", 0.4)
+    out = tmp_path / "Downloads"
+    job = DownloadJob(
+        engine_for(tmp_path, "fake_stubborn.py", STUBBORN_SCRIPT),
+        "https://x.invalid/v",
+        video_option(),
+        out,
+    )
+    worker, outcome = run_in_background(job)
+    pid = wait_for_pid(out / "started.pid", job, outcome)
+    started_at = time.time()
+    job.cancel()
+    worker.join(timeout=30)
+
+    assert not worker.is_alive()
+    assert outcome.get("cancelled") is True
+    assert wait_until_gone(pid), "the escalation never arrived"
+    assert time.time() - started_at < 10, "the polite stop was waited on for ever"
+
+
+@needs_process_groups
+def test_quitting_stops_the_tree_without_a_grace_period(tmp_path, monkeypatch):
+    """Quitting cannot rely on a watchdog that dies with the app."""
+    monkeypatch.setattr(download_mod, "_STOP_GRACE_SECONDS", 60.0)
+    out = tmp_path / "Downloads"
+    job = DownloadJob(
+        engine_for(tmp_path, "fake_stubborn2.py", STUBBORN_SCRIPT),
+        "https://x.invalid/v",
+        video_option(),
+        out,
+    )
+    worker, outcome = run_in_background(job)
+    pid = wait_for_pid(out / "started.pid", job, outcome)
+    job.cancel(force=True)
+    worker.join(timeout=20)
+
+    assert not worker.is_alive()
+    assert outcome.get("cancelled") is True
+    assert wait_until_gone(pid)
+
+
+def test_the_download_gets_a_session_of_its_own(tmp_path, monkeypatch):
+    """The whole tree can only be signalled if the child leads its own group."""
+    seen = {}
+
+    def fake_popen(args, **kwargs):
+        seen.update(kwargs)
+        raise OSError("stop here")
+
+    monkeypatch.setattr(download_mod.subprocess, "Popen", fake_popen)
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), tmp_path)
+    with pytest.raises(ToolError):
+        job.run()
+
+    if sys.platform.startswith("win"):
+        assert seen.get("creationflags") == subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        assert seen.get("start_new_session") is True
+
+
+def test_windows_stops_the_tree_with_taskkill(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(download_mod, "is_windows", lambda: True)
+    monkeypatch.setattr(download_mod.subprocess, "run", lambda command, **kw: calls.append(command))
+    process = types.SimpleNamespace(pid=4242)
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), tmp_path)
+
+    job._signal_tree(process, force=False)
+    job._signal_tree(process, force=True)
+
+    assert calls[0] == ["taskkill", "/PID", "4242", "/T"]
+    assert calls[1] == ["taskkill", "/F", "/PID", "4242", "/T"]
+
+
+def test_a_missing_taskkill_is_not_fatal(tmp_path, monkeypatch):
+    def no_taskkill(*args, **kwargs):
+        raise OSError("taskkill is not on this PATH")
+
+    monkeypatch.setattr(download_mod, "is_windows", lambda: True)
+    monkeypatch.setattr(download_mod.subprocess, "run", no_taskkill)
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), tmp_path)
+    job._signal_tree(types.SimpleNamespace(pid=4242), force=True)
+
+
+def test_a_process_without_a_group_of_its_own_is_still_stopped(tmp_path, monkeypatch):
+    stopped = []
+
+    def no_group(*args):
+        raise OSError("no such process group")
+
+    monkeypatch.setattr(download_mod.os, "killpg", no_group)
+    process = types.SimpleNamespace(
+        pid=1, terminate=lambda: stopped.append("term"), kill=lambda: stopped.append("kill")
+    )
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), tmp_path)
+
+    job._signal_tree(process, force=False)
+    job._signal_tree(process, force=True)
+
+    assert stopped == ["term", "kill"]
+
+
+def test_a_stop_before_the_engine_starts_leaves_nothing_running(tmp_path, monkeypatch):
+    """Cancel used to land in the gap before ``Popen`` and be forgotten."""
+    def must_not_start(*args, **kwargs):  # pragma: no cover - the point
+        raise AssertionError("a cancelled job started its process anyway")
+
+    monkeypatch.setattr(download_mod.subprocess, "Popen", must_not_start)
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), tmp_path)
+    job.cancel()
+
+    with pytest.raises(DownloadCancelled):
+        job.run()
