@@ -189,7 +189,15 @@ shared machines.
 
 ### S4 — Log content and permissions · **P1** · S
 
-The log is created with the default mode and there is no redaction. Video URLs
+Since **S3** the folder holding the log is `0700`, so another account can no
+longer reach it; the file itself is still whatever the umask gave — measured at
+`0644` in a real run — and nothing is redacted or rotated. What is left is the
+narrower problem: the log travels wherever the folder does (backups, a copied
+home directory, a cloud-synced data folder), any process running as *this* user
+can read it, and it grows without bound once **E3/D1** start writing failures
+into it. **Do** below is unchanged; only the reason to do it has shrunk.
+
+Video URLs
 can carry tokens, signed query strings or account identifiers; a future
 "log the command line" change (see **D1**) would write those to disk forever, as
 `viddl.log` is never rotated or truncated.
@@ -328,6 +336,11 @@ much later with a message about downloads rather than about permissions.
 
 **Do:** remember the failure (`appdata.ensure_dirs()` returning the error, or a
 module-level `last_error`) and surface it in `--doctor` and on the home screen.
+
+Worth distinguishing from the silent failure above: `_secure_dir()` also
+swallows a *`chmod`* that fails (**S3**), and that one is intentional — a
+filesystem without permissions (a FAT stick, an exotic mount) is not a reason to
+refuse to run. Only being unable to create the folder is worth reporting.
 
 ### R8 — The ffmpeg download is large and unresumable · **P2** · M
 
