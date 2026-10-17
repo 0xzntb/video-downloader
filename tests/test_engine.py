@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 import hashlib
 import io
 import os
@@ -456,6 +457,154 @@ def test_ffmpeg_without_a_version_line_is_still_usable(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# updating the engine, and which copy wins (R4)
+#
+# Viddl used to fetch yt-dlp once and keep whatever it got, in a fixed order with
+# its own copy first — so the copy it fetched could shadow a newer one the user
+# installed afterwards, and nothing could replace it.
+# ---------------------------------------------------------------------------
+
+
+def test_the_newer_copy_wins_even_when_it_is_not_viddls(tmp_path, monkeypatch):
+    home = tmp_path / "app"
+    make_shim(home / "bin", "yt-dlp", "2020.01.01")
+    shim_dir = tmp_path / "bin"
+    make_shim(shim_dir, "yt-dlp", "2099.01.01")
+    monkeypatch.setenv("PATH", str(shim_dir) + os.pathsep + os.environ.get("PATH", ""))
+
+    tool = Engine(home=home).find_ytdlp()
+
+    assert tool is not None
+    assert tool.origin == "system"
+    assert tool.version == "2099.01.01"
+
+
+def test_an_older_copy_does_not_displace_a_newer_one(tmp_path, monkeypatch):
+    home = tmp_path / "app"
+    make_shim(home / "bin", "yt-dlp", "2099.01.01")
+    shim_dir = tmp_path / "bin"
+    make_shim(shim_dir, "yt-dlp", "2020.01.01")
+    monkeypatch.setenv("PATH", str(shim_dir) + os.pathsep + os.environ.get("PATH", ""))
+
+    tool = Engine(home=home).find_ytdlp()
+
+    assert tool is not None
+    assert tool.origin == "viddl"
+    assert tool.version == "2099.01.01"
+
+
+def test_an_undated_copy_never_displaces_a_release(tmp_path, monkeypatch):
+    """Nothing here can tell whether ``nightly`` is newer, so it is not assumed."""
+    home = tmp_path / "app"
+    make_shim(home / "bin", "yt-dlp", "2099.01.01")
+    shim_dir = tmp_path / "bin"
+    make_shim(shim_dir, "yt-dlp", "nightly")
+    monkeypatch.setenv("PATH", str(shim_dir) + os.pathsep + os.environ.get("PATH", ""))
+
+    tool = Engine(home=home).find_ytdlp()
+
+    assert tool is not None
+    assert tool.origin == "viddl"
+
+
+def test_a_copy_the_environment_names_wins_even_when_it_is_older(tmp_path, monkeypatch):
+    """Pointing at one is an instruction, not a default."""
+    home = tmp_path / "app"
+    make_shim(home / "bin", "yt-dlp", "2099.01.01")
+    mine = make_shim(tmp_path / "mine", "yt-dlp", "2000.01.01")
+    monkeypatch.setenv("VIDDL_YTDLP", str(mine))
+    no_system_tools(monkeypatch)
+
+    tool = Engine(home=home).find_ytdlp()
+
+    assert tool is not None
+    assert tool.origin == "environment"
+    assert tool.version == "2000.01.01"
+
+
+def test_update_fetches_the_release_again(tmp_path, monkeypatch):
+    versions = iter(["2099.05.05", "2099.06.06"])
+
+    def body(url, dest, on_progress):
+        write_executable(Path(dest), f"#!/bin/sh\necho {next(versions)}\n")
+        return Path(dest)
+
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
+    patch_checksums(monkeypatch)
+    no_system_tools(monkeypatch)
+    engine = Engine(home=tmp_path / "app")
+
+    engine.install_ytdlp()
+    before, after = engine.update_ytdlp()
+
+    assert before is not None and before.version == "2099.05.05"
+    assert after.version == "2099.06.06"
+    assert after.origin == "viddl"
+    # The recorded hash follows the bytes that are there now, or the doctor would
+    # report every update as a tampered copy.
+    assert recorded_checksum(engine.ytdlp_path) == sha256_of(engine.ytdlp_path)
+
+
+def test_update_reports_the_copy_it_replaces_not_the_one_in_use(tmp_path, monkeypatch):
+    """The old copy was 2023; saying "already the newest" about it would be a lie."""
+    home = tmp_path / "app"
+    make_shim(home / "bin", "yt-dlp", "2023.01.06")
+    shim_dir = tmp_path / "bin"
+    make_shim(shim_dir, "yt-dlp", "2099.01.01")
+    monkeypatch.setenv("PATH", str(shim_dir) + os.pathsep + os.environ.get("PATH", ""))
+
+    def body(url, dest, on_progress):
+        write_executable(Path(dest), "#!/bin/sh\necho 2099.06.06\n")
+        return Path(dest)
+
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
+    patch_checksums(monkeypatch)
+    engine = Engine(home=home)
+    assert engine.find_ytdlp().origin == "system"  # the newer copy runs today
+
+    before, after = engine.update_ytdlp()
+
+    assert before is not None and before.version == "2023.01.06"
+    assert after.version == "2099.06.06"
+
+
+def test_update_on_a_fresh_install_has_nothing_before_it(tmp_path, monkeypatch):
+    def body(url, dest, on_progress):
+        write_executable(Path(dest), "#!/bin/sh\necho 2099.05.05\n")
+        return Path(dest)
+
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
+    patch_checksums(monkeypatch)
+    no_system_tools(monkeypatch)
+
+    before, after = Engine(home=tmp_path / "app").update_ytdlp()
+
+    assert before is None
+    assert after.version == "2099.05.05"
+
+
+def test_update_ffmpeg_fetches_again(tmp_path, monkeypatch):
+    calls: list = []
+
+    def body(url, dest, on_progress):
+        calls.append(url)
+        write_executable(Path(dest), "#!/bin/sh\necho 'ffmpeg version 7.0-fake'\n")
+        return Path(dest)
+
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
+    no_system_tools(monkeypatch)
+    engine = Engine(home=tmp_path / "app")
+    _patched_sources(monkeypatch, engine, [mirror("https://mirror/ffmpeg")])
+
+    engine.install_ffmpeg()
+    before, after = engine.update_ffmpeg()
+
+    assert len(calls) == 2
+    assert before is not None and before.version == "7.0-fake"
+    assert after.version == "7.0-fake"
+
+
 def test_ensure_ffmpeg_uses_the_copy_that_is_already_there(tmp_path, monkeypatch):
     home = tmp_path / "app"
     make_ffmpeg_shim(home / "bin", "8.8-viddl")
@@ -623,6 +772,62 @@ def test_report_copes_with_a_tool_that_has_no_version(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # small helpers
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# how old the engine is (R4)
+# ---------------------------------------------------------------------------
+
+
+def test_a_release_version_names_its_date():
+    assert engine_mod.version_date("2026.08.19") == date(2026, 8, 19)
+    assert engine_mod.version_date("2026.8.19.1") == date(2026, 8, 19)
+    assert engine_mod.version_date("2026.02.30") is None  # no such day
+
+
+@pytest.mark.parametrize("version", ["nightly", "dev", "", "master"])
+
+def test_a_build_without_a_date_has_no_age(version):
+    """Viddl says nothing rather than guessing at an undated build."""
+    assert engine_mod.engine_age_days(version, date(2026, 10, 17)) is None
+    assert engine_mod.staleness_note(version, date(2026, 10, 17)) == ""
+
+
+def test_a_release_is_dated_from_its_version():
+    assert engine_mod.engine_age_days("2026.08.19", date(2026, 10, 17)) == 59
+    assert engine_mod.engine_age_days("2026.10.01", date(2026, 10, 17)) == 16
+
+
+def test_a_version_dated_in_the_future_is_not_called_fresh():
+    assert engine_mod.engine_age_days("2030.01.01", date(2026, 10, 17)) is None
+
+
+def test_the_note_appears_only_once_the_engine_is_old():
+    assert engine_mod.staleness_note("2026.10.01", date(2026, 10, 17)) == ""
+    note = engine_mod.staleness_note("2026.08.19", date(2026, 10, 17))
+    assert "59 days old" in note
+    assert "viddl --update" in note
+
+
+def test_the_doctor_says_when_the_engine_is_old(tmp_path, monkeypatch):
+    home = tmp_path / "app"
+    make_shim(home / "bin", "yt-dlp", "2020.01.01")
+    no_system_tools(monkeypatch)
+
+    report = "\n".join(Engine(home=home).report())
+
+    assert "days old — run `viddl --update`" in report
+
+
+def test_the_doctor_keeps_quiet_while_the_engine_is_current(tmp_path, monkeypatch):
+    home = tmp_path / "app"
+    make_shim(home / "bin", "yt-dlp", "2099.01.01")
+    no_system_tools(monkeypatch)
+
+    report = "\n".join(Engine(home=home).report())
+
+    assert "days old" not in report
+    assert "2020" not in report
 
 
 def test_origin_text_is_plain_language():

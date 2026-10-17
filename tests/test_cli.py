@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from viddl import appdata
+from viddl import appdata, cli
 from viddl.cli import main
-from viddl.engine import ToolError
+from viddl.engine import Tool, ToolError
 from viddl.formats import MediaInfo, MediaOption
 from viddl.protocol import RegistrationResult, build_scheme_url, extension_source_dir
 
@@ -52,6 +52,125 @@ def test_doctor_shows_the_extra_yt_dlp_options(capsys, monkeypatch):
     monkeypatch.setenv("VIDDL_YTDLP_ARGS", "-f best")
     assert main(["--doctor"]) == 0
     assert "(ignored — sets --format, which Viddl decides)" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# viddl --update (R4)
+#
+# The engine is the part that goes stale, so the command exists and says what
+# changed — a version before and a version after, not "done".
+# ---------------------------------------------------------------------------
+
+
+def tool(version: str, origin: str = "viddl") -> Tool:
+    return Tool("yt-dlp", [f"/fake/{version}"], origin, version=version, path=None)
+
+
+class UpdateEngine:
+    """An engine whose download is a version you hand it."""
+
+    def __init__(self, before=None, after=None, in_use=None, ffmpeg=None, fail=False):
+        self.before = before
+        self.after = after or tool("2099.06.06")
+        self.in_use = in_use if in_use is not None else self.after
+        self.ffmpeg = ffmpeg
+        self.fail = fail
+        self.updated = 0
+
+    def update_ytdlp(self, on_status=None, on_progress=None):
+        self.updated += 1
+        if self.fail:
+            raise ToolError("Could not reach the list of checksums.", "Nothing was installed.")
+        if on_status:
+            on_status("Downloading the video engine (about 3 MB)…")
+        if on_progress:
+            on_progress(50, 100)
+        return self.before, self.after
+
+    def update_ffmpeg(self, on_status=None, on_progress=None):
+        return None, Tool("ffmpeg", ["/fake/ffmpeg"], "viddl", version="7.1", path=None)
+
+    def find_ytdlp(self):
+        return self.in_use
+
+
+def run_update(capsys, monkeypatch, engine, args=("--update",)):
+    monkeypatch.setattr(cli, "Engine", lambda *a, **k: engine)
+    code = main(list(args))
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def test_update_says_what_the_version_was_and_is(capsys, monkeypatch):
+    code, out, err = run_update(capsys, monkeypatch, UpdateEngine(before=tool("2099.05.05")))
+
+    assert code == 0
+    assert "yt-dlp 2099.05.05 → 2099.06.06" in out
+    assert "Downloading the video engine" in err
+
+
+def test_update_on_a_first_install_says_so(capsys, monkeypatch):
+    code, out, _ = run_update(capsys, monkeypatch, UpdateEngine(before=None))
+
+    assert code == 0
+    assert "Installed yt-dlp 2099.06.06" in out
+
+
+def test_update_says_when_there_was_nothing_new(capsys, monkeypatch):
+    same = tool("2099.06.06")
+    code, out, _ = run_update(capsys, monkeypatch, UpdateEngine(before=same, after=same))
+
+    assert code == 0
+    assert "already the newest release" in out
+
+
+def test_update_says_when_another_copy_will_still_be_used(capsys, monkeypatch):
+    """Updating Viddl's copy is pointless if a newer one elsewhere still wins."""
+    engine = UpdateEngine(before=tool("2099.05.05"), in_use=tool("2099.09.09", "system"))
+    code, out, _ = run_update(capsys, monkeypatch, engine)
+
+    assert code == 0
+    assert "found on your computer (2099.09.09)" in out
+    assert "VIDDL_YTDLP" in out
+
+
+def test_update_says_when_the_copy_you_pointed_at_still_wins(capsys, monkeypatch):
+    """A copy named by the environment wins whatever its age, so it is named."""
+    engine = UpdateEngine(before=tool("2099.05.05"), in_use=tool("2020.01.01", "environment"))
+    code, out, _ = run_update(capsys, monkeypatch, engine)
+
+    assert code == 0
+    assert "you pointed it at (2020.01.01, VIDDL_YTDLP)" in out
+    assert "Unset that" in out
+
+
+def test_update_can_take_ffmpeg_with_it(capsys, monkeypatch):
+    engine = UpdateEngine(before=tool("2099.05.05"))
+    code, out, _ = run_update(capsys, monkeypatch, engine, args=("--update", "--update-ffmpeg"))
+
+    assert code == 0
+    assert "yt-dlp 2099.05.05 → 2099.06.06" in out
+    assert "Installed ffmpeg 7.1" in out
+
+
+def test_ffmpeg_can_be_updated_on_its_own(capsys, monkeypatch):
+    """One flag, one thing fetched: "my merge fails" is not "my links broke"."""
+    engine = UpdateEngine()
+    code, out, _ = run_update(capsys, monkeypatch, engine, args=("--update-ffmpeg",))
+
+    assert code == 0
+    assert engine.updated == 0
+    assert "ffmpeg" in out
+    assert "yt-dlp" not in out
+
+
+def test_a_failed_update_is_explained_and_returns_nonzero(capsys, monkeypatch):
+    code, out, err = run_update(capsys, monkeypatch, UpdateEngine(fail=True))
+
+    assert code == 1
+    assert "Could not reach the list of checksums." in err
+    assert "Nothing was installed." in err
+    assert out == ""
 
 
 def test_version_flag(capsys):

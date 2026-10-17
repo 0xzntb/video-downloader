@@ -30,6 +30,7 @@ from textual.widgets import Button, Footer, Input, ProgressBar, Static
 
 from .. import APP_TITLE, __version__
 from .. import appdata
+from .. import engine as engine_mod
 from ..download import DownloadCancelled, DownloadJob, Progress, probe_video
 from ..engine import Engine, ToolError
 from ..formats import MediaInfo, MediaOption
@@ -324,7 +325,14 @@ class ViddlApp(App):
 
         state.engine_error = None
         # Kept short on purpose: the full build strings go in `viddl --doctor`.
-        state.engine_note = f"Ready to download  {_ARP}  engine {tool.version or 'ok'}"
+        age = engine_mod.engine_age_days(tool.version)
+        if age is not None and age >= engine_mod.STALE_DAYS:
+            # The likeliest cause of "this link stopped working" is a yt-dlp
+            # older than the site, so it is said here rather than only in the
+            # doctor — the person clicking a link is not running --doctor.
+            state.engine_note = f"Engine {age} days old — run `viddl --update`"
+        else:
+            state.engine_note = f"Ready to download  {_ARP}  engine {tool.version or 'ok'}"
         ffmpeg = engine.find_ffmpeg()
         state.ffmpeg_available = ffmpeg is not None
         if ffmpeg is not None:

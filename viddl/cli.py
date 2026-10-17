@@ -7,6 +7,8 @@ piece is also reachable from the command line:
 * ``viddl --audio <link>``    open it on the MP3 options
 * ``viddl --uri viddl://…``   what the browser extension calls
 * ``viddl --doctor``          show where everything lives and whether it works
+* ``viddl --update``          fetch the newest video engine (yt-dlp)
+* ``viddl --update-ffmpeg``   fetch the newest ffmpeg build
 * ``viddl --register-protocol``          wire up the ``viddl://`` hand-off
 * ``viddl --install-browser-extension``  copy the extension out for loading
 """
@@ -22,7 +24,7 @@ from typing import Optional, Sequence
 
 from . import APP_TITLE, __version__
 from . import appdata, logfile
-from .engine import Engine, ToolError
+from .engine import Engine, Tool, ToolError
 from .formats import format_rows
 from . import protocol
 from .protocol import (
@@ -86,6 +88,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="show where Viddl keeps things and whether the tools are ready",
     )
     parser.add_argument(
+        "--update",
+        action="store_true",
+        help="fetch the newest video engine (this is the fix for a site that stopped working)",
+    )
+    parser.add_argument(
+        "--update-ffmpeg",
+        action="store_true",
+        help="fetch the newest ffmpeg build",
+    )
+    parser.add_argument(
         "--register-protocol",
         action="store_true",
         help="make viddl:// links open the app (used by the browser extension)",
@@ -117,6 +129,78 @@ def _fail(message: str, hint: Optional[str] = None) -> int:
     return 1
 
 
+def _describe_update(name: str, before: Optional[Tool], after: Tool) -> str:
+    """What changed, in one line — or that nothing did."""
+    new_version = after.version or "ok"
+    if before is None:
+        return f"Installed {name} {new_version} ({after.origin_text})."
+    if before.version and before.version == after.version:
+        return f"{name} {new_version} — already the newest release."
+    return f"{name} {before.version or 'an older copy'} → {new_version} ({after.origin_text})."
+
+
+def _engine_in_use(engine: Engine) -> str:
+    """Which copy Viddl will actually run, when it is not the one just fetched.
+
+    Updating a copy nobody will run is worth saying out loud, and so is which
+    one wins — a newer one elsewhere, or one the environment named, older or not.
+    """
+    tool = engine.find_ytdlp()
+    if tool is None or tool.origin == "viddl":
+        return ""
+    if tool.origin == "environment":
+        return (
+            f"Viddl will still run the copy you pointed it at ({tool.version}, "
+            "VIDDL_YTDLP). Unset that to use the one just fetched."
+        )
+    return (
+        f"Viddl will run the copy {tool.origin_text} ({tool.version}), because it is "
+        "newer. Set VIDDL_YTDLP if you want a particular one."
+    )
+
+
+def _update(engine: Engine, want_engine: bool, want_ffmpeg: bool) -> int:
+    """Fetch the newest engine, saying what changed rather than that it is done.
+
+    Each flag does only what it says: ``--update-ffmpeg`` is the answer to "my
+    merge fails", not to "my links stopped working".
+    """
+    def status(message: str) -> None:
+        print(f"  {message}", file=sys.stderr)
+
+    seen = {"percent": -1}
+
+    def progress(done: int, total: Optional[int]) -> None:
+        if not total:
+            return
+        percent = done * 100 // total
+        if percent == seen["percent"]:
+            return  # one line per per cent, not per chunk
+        seen["percent"] = percent
+        print(f"\r  {percent}%", end="", file=sys.stderr, flush=True)
+
+    try:
+        # The running commentary goes to stderr and the outcome to stdout, so
+        # that `viddl --update > log` records the versions and not the chatter.
+        if want_engine:
+            print("Updating yt-dlp…", file=sys.stderr)
+            before, after = engine.update_ytdlp(on_status=status, on_progress=progress)
+            print(file=sys.stderr)
+            print(_describe_update("yt-dlp", before, after))
+            note = _engine_in_use(engine)
+            if note:
+                print(note)
+        if want_ffmpeg:
+            print("Updating ffmpeg…", file=sys.stderr)
+            old, new = engine.update_ffmpeg(on_status=status, on_progress=progress)
+            print(file=sys.stderr)
+            print(_describe_update("ffmpeg", old, new))
+    except ToolError as exc:
+        print(file=sys.stderr)
+        return _fail(exc.message, exc.hint)
+    return 0
+
+
 def _print_result(result) -> int:
     stream = sys.stdout if result.ok else sys.stderr
     print(result.message, file=stream)
@@ -137,6 +221,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for line in Engine().report():
             print(line)
         return 0
+
+    if args.update or args.update_ffmpeg:
+        return _update(
+            Engine(), want_engine=bool(args.update), want_ffmpeg=bool(args.update_ffmpeg)
+        )
 
     if args.register_protocol:
         return _print_result(register())

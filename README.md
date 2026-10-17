@@ -60,7 +60,9 @@ That is the whole setup. The installer puts a `viddl` command on your `PATH`,
 and the app looks after its own dependencies:
 
 * **yt-dlp** (about 3 MB) is fetched into `~/.local/share/viddl/bin` the first
-  time the app runs. If you already have it installed, Viddl uses yours instead.
+  time the app runs. If you already have one, Viddl uses yours instead — and if
+  several exist it uses the **newest** one, whichever folder it is in, so a copy
+  Viddl fetched months ago cannot shadow a newer one you installed since.
 * **ffmpeg** is only fetched when you actually need it (MP3, or a quality that
   has to be merged), and it asks before downloading anything large. If you
   already have ffmpeg, that is used.
@@ -77,6 +79,8 @@ Nothing is installed system-wide and no configuration files are created.
 | See what qualities a link has, without downloading | `viddl --list-qualities <link>` |
 | Save somewhere else for one run | `viddl --download-dir ~/Videos <link>` |
 | Check that everything is set up | `viddl --doctor` |
+| Fetch the newest video engine (the usual fix for a link that stopped working) | `viddl --update` |
+| Fetch the newest ffmpeg build | `viddl --update-ffmpeg` |
 
 In the app:
 
@@ -151,6 +155,17 @@ viddl --doctor          # versions, paths, and whether each tool works
 That prints the app folder, the log file, and where downloads go. The log holds
 the last run's details if something failed in a way the screen could not
 explain.
+
+The first thing to try when a link that used to work stops working is:
+
+```sh
+viddl --update           # newest yt-dlp; says which version it moved from and to
+viddl --update-ffmpeg    # newest ffmpeg build, if merging or MP3 is the trouble
+```
+
+When the engine is more than a month old, the app says so on its first screen
+and `viddl --doctor` repeats it. `VIDDL_YTDLP` points Viddl at a particular copy
+of yt-dlp when you want to manage that yourself.
 
 ## Removing it
 
@@ -256,7 +271,8 @@ Regenerate the extension icons with `python3 tools/make_icons.py`.
   supported yet, so those links need a different approach.
 * Everything runs through yt-dlp's own extractors, which is why the same list of
   sites works here as there — and why a link that works one week can stop
-  working the next until yt-dlp updates.
+  working the next until yt-dlp updates. That is what `viddl --update` is for;
+  the app mentions it once the engine it is running is over a month old.
 * Live streams work but are recorded from the current point.
 * Windows is supported by the code (registry handler, `ffmpeg.exe`,
   `%LOCALAPPDATA%`) but has been tested less than Linux and macOS. There is no

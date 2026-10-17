@@ -9,7 +9,7 @@ statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **11 of 60** — S1–S6 in section 1, R1–R3 in section 2, D2–D3 in
+Progress so far: **12 of 60** — S1–S6 in section 1, R1–R4 in section 2, D2–D3 in
 section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -38,7 +38,7 @@ in `SECURITY.md`, which is what **D3** asked for.
 | 2 | **E1** — add CI | Nothing is checked on push today; the tests only run if someone runs them |
 | 3 | **E2** — add a `LICENSE` file | README and `pyproject.toml` both claim MIT; no licence text ships |
 | 4 | ✅ **R1** + **R2** — resume interrupted downloads, and really stop them | A cancelled or dropped download started from zero, and a stop left ffmpeg writing — **both done** |
-| 5 | **R4** — `viddl --update` | Stale yt-dlp is *the* top cause of "this link stopped working" |
+| 5 | ✅ **R4** — `viddl --update` | Stale yt-dlp is *the* top cause of "this link stopped working" — **done** |
 | 6 | **F1** — cookies from the browser | Unlocks Instagram, Threads, TikTok, sometimes Vimeo (README says unsupported) |
 | 7 | ✅ **S2** + **S3** — verify and lock down downloaded helpers | Executables were fetched and `chmod +x`'d with no hash check, into a folder anyone could read — **both done** |
 | 8 | **D1** — make the log tell the truth | README promises last-run details; the log is almost always empty |
@@ -443,7 +443,51 @@ reproducible and anything unusual is explicit. See
 [yt-dlp README](https://github.com/yt-dlp/yt-dlp/tree/master#configuration) and
 the [Arch man page](https://man.archlinux.org/man/extra/yt-dlp/yt-dlp.1.en).
 
-### R4 — Nothing updates the engine · **P1** · M
+### R4 — Nothing updates the engine · **P1** · M · ✅ **Done**
+
+> **Fixed.** `viddl --update` fetches this release of yt-dlp again, checks it
+> against the published SHA-256 exactly as the first install does (an update is
+> an install from a known state, not a second code path that could skip the
+> checks), and prints **what it moved from and to** — "yt-dlp 2023.01.06 →
+> 2026.08.19 (downloaded by Viddl)", or "already the newest release".
+> `viddl --update-ffmpeg` does the same for ffmpeg, and only that: one flag, one
+> thing fetched.
+>
+> The precedence the item flags is gone. Every copy of yt-dlp that runs is now
+> asked its version and the **newest** is used, whatever folder it is in — so the
+> copy Viddl fetched once can no longer shadow a newer one installed since,
+> which is what made the README's "if you already have it installed, Viddl uses
+> yours" quietly untrue after the first run. `VIDDL_YTDLP` still wins outright,
+> older or not: pointing at a copy is an instruction, not a default. A copy
+> whose version names no date (a nightly, a git checkout) never displaces a
+> dated release, because nothing here can tell which of them is newer; the
+> README says so and `VIDDL_YTDLP` is the answer.
+>
+> Staleness is said out loud: over `STALE_DAYS` (30) the home screen shows
+> *"Engine 41 days old — run `viddl --update`"* in place of its ready line, and
+> `--doctor` adds the same note under the yt-dlp line. The screen matters more
+> than the doctor here: the person whose link just broke is not running
+> `--doctor`.
+>
+> Measured with the real thing, not simulated. A real yt-dlp 2023.01.06 in
+> Viddl's folder next to a real 2026.08.19 on `PATH`: `--doctor` chose the newer
+> one (it used to choose the old one), and `--update` then downloaded the genuine
+> GitHub release — 3,072,469 bytes, checksum verified — and reported
+> "2023.01.06 → 2026.08.19", at which point the doctor showed
+> `sha256 1fa6733c37ea… (matches what was installed)`. A second `--update` said
+> "already the newest release". `--update-ffmpeg` fetched and verified a real
+> 176 MB ffmpeg build in 18.5 s. 27 tests added (404 → 431).
+>
+> What the first working version got wrong, caught by that real run: it reported
+> the version of the copy **in use** rather than the one it replaces, so an old
+> bundled copy replaced by a three-years-newer release printed "already the
+> newest release". ``installed_ytdlp()``/``installed_ffmpeg()`` now answer "what
+> is in Viddl's folder", which is what an update changes.
+>
+> Not verified here: an update on Windows (the platform branches are exercised by
+> tests with the platform faked), and the nightly/pre-release path — this fetches
+> the latest **stable** release, which is the one that fixes a link that stopped
+> working.
 
 The README is candid: "a link that works one week can stop working the next
 until yt-dlp updates." Yet there is no way to update it. Whichever copy
@@ -456,7 +500,8 @@ which its own copy wins and can shadow a newer system one.)
 **Do:**
 
 - `viddl --update` to refresh the bundled yt-dlp (and `--update-engine` for
-  ffmpeg), with the new version printed.
+  ffmpeg), with the new version printed. *(Landed as `--update` and
+  `--update-ffmpeg`.)*
 - A staleness note in the UI/`--doctor` when the engine is older than N days
   ("This engine is 41 days old — run `viddl --update` if a site stopped working").
 - Reconsider precedence: prefer a newer of the two rather than always preferring

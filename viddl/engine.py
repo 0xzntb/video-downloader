@@ -21,8 +21,9 @@ import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from . import __version__
 from . import appdata
@@ -36,6 +37,12 @@ _YTDLP_BASE = "https://github.com/yt-dlp/yt-dlp/releases/latest/download"
 _TIMEOUT = 30
 _PROBE_TIMEOUT = 25
 _SHA_CHUNK = 1024 * 1024
+
+#: How old yt-dlp may get before Viddl mentions it. Releases come most weeks, and
+#: a site that stopped working is usually fixed by the next one — so a month is
+#: the point at which "try updating" is the better first guess than "the site
+#: changed".
+STALE_DAYS = 30
 
 _BTBN_BASE = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
 _BTBN_SUMS = f"{_BTBN_BASE}/checksums.sha256"
@@ -106,6 +113,59 @@ def is_windows() -> bool:
 
 def is_macos() -> bool:
     return sys.platform == "darwin"
+
+
+# ---------------------------------------------------------------------------
+# how old is the engine
+# ---------------------------------------------------------------------------
+
+
+def version_date(version: str) -> Optional[date]:
+    """The release date a yt-dlp version names, when it names one.
+
+    yt-dlp numbers releases by date — ``2026.08.19``, sometimes
+    ``2026.08.19.1`` — so the version is the age. A nightly, a git checkout or a
+    pip ``dev`` build names no date, and gets ``None``: Viddl then says nothing
+    about its age rather than guessing.
+    """
+    match = re.match(r"^(\d{4})\.(\d{1,2})\.(\d{1,2})(?:\.|$)", (version or "").strip())
+    if not match:
+        return None
+    try:
+        return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def engine_age_days(version: str, today: Optional[date] = None) -> Optional[int]:
+    """How many days ago this version was released, or ``None`` if unknown."""
+    released = version_date(version)
+    if released is None:
+        return None
+    days = ((today or date.today()) - released).days
+    # A version dated in the future means the clock is wrong, not that the
+    # engine is fresh; saying nothing is the honest answer to both.
+    return days if days >= 0 else None
+
+
+def staleness_note(version: str, today: Optional[date] = None) -> str:
+    """A sentence for ``--doctor`` when the engine is old enough to be a suspect."""
+    days = engine_age_days(version, today)
+    if days is None or days < STALE_DAYS:
+        return ""
+    return (
+        f"{days} days old — run `viddl --update` if a site stopped working"
+    )
+
+
+def version_key(version: str) -> tuple:
+    """Order versions the way yt-dlp numbers them: date first, then any suffix.
+
+    A version that carries no number at all (``nightly``, ``dev``) sorts below
+    every release, which is deliberate: an undated build never displaces a dated
+    one, because nothing here can tell which of them is newer.
+    """
+    return tuple(int(part) for part in re.findall(r"\d+", version or "")[:4])
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +487,16 @@ class Engine:
         return self.bin_dir / ("yt-dlp.exe" if is_windows() else "yt-dlp")
 
     def find_ytdlp(self) -> Optional[Tool]:
-        """Look for yt-dlp without downloading anything."""
+        """The newest yt-dlp that works, without downloading anything.
+
+        The order used to be fixed, with Viddl's own copy first — so the copy it
+        fetched once kept shadowing a newer one the user installed later, and the
+        README's promise ("if you already have it installed, Viddl uses yours")
+        stopped being true the day Viddl fetched its own. Every copy that runs is
+        now asked its version and the newest wins (R4), with one exception: a
+        copy named by ``VIDDL_YTDLP`` wins outright, because pointing at one is
+        an instruction rather than a default.
+        """
         override = appdata.program_override(appdata.ENV_YTDLP)
         candidates: List[tuple] = []
 
@@ -448,14 +517,23 @@ class Engine:
         if found:
             candidates.append(("system", [str(found)]))
 
+        working: List[Tool] = []
         for origin, prefix in candidates:
             if origin != "python" and not Path(prefix[0]).exists():
                 continue
             ok, output = _run_probe(prefix, "--version")
             if ok and output:
                 path = Path(prefix[0]) if origin != "python" else None
-                return Tool("yt-dlp", prefix, origin, version=output.splitlines()[0], path=path)
-        return None
+                working.append(
+                    Tool("yt-dlp", prefix, origin, version=output.splitlines()[0], path=path)
+                )
+                if origin == "environment":
+                    break
+        if not working:
+            return None
+        # ``max`` keeps the first of equals, and Viddl's own copy is first among
+        # the defaults: a tie goes to the copy it manages.
+        return max(working, key=lambda tool: version_key(tool.version))
 
     def install_ytdlp(
         self,
@@ -495,6 +573,46 @@ class Engine:
         tool = Tool("yt-dlp", prefix, origin, version=output.splitlines()[0], path=dest)
         self._ytdlp = tool
         return tool
+
+    def installed_ytdlp(self) -> Optional[Tool]:
+        """The copy in Viddl's own folder — the one an update replaces.
+
+        Not ``find_ytdlp()``: that answers "which copy would run", and when a
+        newer one elsewhere wins the answer is not the thing being replaced. An
+        update that reported it would say "already the newest release" about a
+        copy it had just moved forward by three years.
+        """
+        path = self.ytdlp_path
+        if not path.exists():
+            return None
+        ok, output = _run_probe([str(path)], "--version")
+        prefix = [str(path)]
+        if not ok:
+            # The same fallback the installer uses for a zipapp without a usable
+            # shebang on this machine.
+            ok, output = _run_probe([sys.executable, str(path)], "--version")
+            prefix = [sys.executable, str(path)]
+        if not ok or not output:
+            return None
+        return Tool("yt-dlp", prefix, "viddl", version=output.splitlines()[0], path=path)
+
+    def update_ytdlp(
+        self,
+        on_status: Optional[StatusCallback] = None,
+        on_progress: Optional[ProgressCallback] = None,
+    ) -> Tuple[Optional[Tool], Tool]:
+        """Fetch this release again, whatever is installed now.
+
+        Returns what was there before and what is there now, so the caller can
+        say what actually changed instead of "done". Downloads and checks are
+        ``install_ytdlp``'s job: an update is an install that starts from a
+        known state, not a second code path that could skip the checks.
+        """
+        before = self.installed_ytdlp()
+        with self._lock:
+            self._ytdlp = None
+            tool = self.install_ytdlp(on_status, on_progress)
+        return before, tool
 
     def ensure_ytdlp(
         self,
@@ -658,6 +776,32 @@ class Engine:
             raw="\n".join(errors),
         )
 
+    def installed_ffmpeg(self) -> Optional[Tool]:
+        """The copy in Viddl's own folder, whether or not it is the one in use."""
+        path = self.ffmpeg_path
+        if not path.exists():
+            return None
+        ok, output = _run_probe([str(path)], "-version")
+        if not ok:
+            return None
+        version = ""
+        match = re.search(r"ffmpeg version (\S+)", output)
+        if match:
+            version = match.group(1)
+        return Tool("ffmpeg", [str(path)], "viddl", version=version, path=path)
+
+    def update_ffmpeg(
+        self,
+        on_status: Optional[StatusCallback] = None,
+        on_progress: Optional[ProgressCallback] = None,
+    ) -> Tuple[Optional[Tool], Tool]:
+        """Fetch ffmpeg again — same mirrors, same checks, newer build."""
+        before = self.installed_ffmpeg()
+        with self._lock:
+            self._ffmpeg = None
+            tool = self.install_ffmpeg(on_status, on_progress)
+        return before, tool
+
     def ensure_ffmpeg(
         self,
         on_status: Optional[StatusCallback] = None,
@@ -704,6 +848,10 @@ class Engine:
                 lines.append(
                     f"{label + ':':<14}{version} ({tool.origin_text}){self._checksum_note(tool)}"
                 )
+                if label == "yt-dlp":
+                    note = staleness_note(tool.version)
+                    if note:
+                        lines.append(f"{'':<14}{note}")
         lines.extend(appdata.environment_report())
         return lines
 

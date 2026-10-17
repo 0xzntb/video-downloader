@@ -54,9 +54,10 @@ INFO_JSON = {
 class FakeEngine:
     """Stands in for the real engine so tests stay offline and instant."""
 
-    def __init__(self, ffmpeg: bool = True, fail: bool = False):
+    def __init__(self, ffmpeg: bool = True, fail: bool = False, version: str = "2099.01.01"):
         self.ffmpeg = ffmpeg
         self.fail = fail
+        self.version = version
         self.ytdlp_calls = 0
 
     def ensure_ytdlp(self, on_status=None, on_progress=None, allow_download=True):
@@ -65,7 +66,7 @@ class FakeEngine:
             raise ToolError("Could not reach the internet.", "Check your connection.")
         if on_status:
             on_status("Using the video engine found on your computer.")
-        return Tool("yt-dlp", ["/fake/yt-dlp"], "system", version="2099.01.01")
+        return Tool("yt-dlp", ["/fake/yt-dlp"], "system", version=self.version)
 
     def find_ffmpeg(self):
         if not self.ffmpeg:
@@ -477,6 +478,22 @@ async def test_the_home_screen_says_the_engine_is_ready(tmp_path):
         assert "2099.01.01" in line
         assert "ffmpeg ready" in line
         # It has to fit on one line of an 80-column terminal.
+        assert len(line) <= 76
+
+
+@pytest.mark.asyncio
+async def test_the_home_screen_says_when_the_engine_is_old(tmp_path):
+    """The likeliest reason a link stopped working is worth saying out loud.
+
+    The person clicking a link does not run ``--doctor``, so the hint has to be
+    on the screen they are looking at — and still fit on one line.
+    """
+    app = ViddlApp(services=make_services(tmp_path, engine=FakeEngine(version="2020.01.01")))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        line = shown(app.screen, "#engine-status")
+        assert "days old" in line
+        assert "viddl --update" in line
         assert len(line) <= 76
 
 
