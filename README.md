@@ -65,7 +65,9 @@ and the app looks after its own dependencies:
   Viddl fetched months ago cannot shadow a newer one you installed since.
 * **ffmpeg** is only fetched when you actually need it (MP3, or a quality that
   has to be merged), and it asks before downloading anything large. If you
-  already have ffmpeg, that is used.
+  already have ffmpeg, that is used — unless you have asked Viddl to fetch its
+  own, which is then the one it uses (and what `viddl --update-ffmpeg`
+  replaces).
 
 Nothing is installed system-wide and no configuration files are created.
 
