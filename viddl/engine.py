@@ -7,6 +7,7 @@ copy into its own folder, so nothing else on the machine is touched.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
 import re
@@ -35,6 +36,20 @@ _UA = f"Viddl/{__version__} (+https://github.com/freebuff/viddl)"
 _YTDLP_BASE = "https://github.com/yt-dlp/yt-dlp/releases/latest/download"
 _TIMEOUT = 30
 _PROBE_TIMEOUT = 25
+_SHA_CHUNK = 1024 * 1024
+
+_BTBN_BASE = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+_BTBN_SUMS = f"{_BTBN_BASE}/checksums.sha256"
+_EUGENEWARE_BASE = "https://github.com/eugeneware/ffmpeg-static/releases/latest/download"
+# eugeneware publishes no checksums file, so these are pinned to the exact
+# "ffmpeg 6.1.1 binaries" release its `latest` link points at — the strongest
+# form of the check, and the reason to re-check them when that link moves.
+# A pinned mismatch is refused outright rather than retried.
+_EUGENEWARE_PINS = {
+    "ffmpeg-darwin-arm64": "a90e3db6a3fd35f6074b013f948b1aa45b31c6375489d39e572bea3f18336584",
+    "ffmpeg-darwin-x64": "ebdddc936f61e14049a2d4b549a412b8a40deeff6540e58a9f2a2da9e6b18894",
+    "ffmpeg-linux-x64": "e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99",
+}
 
 
 @dataclass
@@ -76,6 +91,15 @@ class ToolError(RuntimeError):
         return self.message
 
 
+class ChecksumMismatch(ToolError):
+    """The bytes that arrived are not the bytes the source published a hash for.
+
+    A subclass of :class:`ToolError` so every existing handler still shows it the
+    same way, and separate so the caller can tell "this download was tampered
+    with or broken" apart from "the network hiccuped".
+    """
+
+
 def is_windows() -> bool:
     return sys.platform.startswith("win")
 
@@ -89,13 +113,122 @@ def is_macos() -> bool:
 # ---------------------------------------------------------------------------
 
 
+def sha256_of(path: Path) -> str:
+    """The SHA-256 of a file, read in chunks so a large binary is fine."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(_SHA_CHUNK), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _fetch_text(url: str, timeout: int = _TIMEOUT) -> str:
+    """Fetch a small text file — in practice, a list of checksums — over HTTPS."""
+    if not url.lower().startswith("https://"):
+        raise ToolError(
+            "Viddl only checks downloads over a secure connection.",
+            "Nothing was installed.",
+            raw=url,
+        )
+    request = urllib.request.Request(url, headers={"User-Agent": _UA})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        raise ToolError(
+            f"Could not fetch the list of checksums (error {exc.code}).",
+            "Viddl will not install a file it cannot check. Try again in a moment.",
+            raw=str(exc),
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise ToolError(
+            "Could not reach the list of checksums.",
+            "Check your connection and try again — Viddl will not install "
+            "a file it cannot check.",
+            raw=str(exc),
+        ) from exc
+
+
+def digest_from_sums(text: str, filename: str) -> Optional[str]:
+    """Pull one file's SHA-256 out of a published checksums list.
+
+    Both yt-dlp and the ffmpeg builds publish the usual ``<hex>  <name>`` lines,
+    sometimes with the ``*`` that marks a binary-mode entry.
+    """
+    wanted = Path(filename).name
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        digest, name = parts[0].lower(), parts[1].strip().lstrip("*")
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            continue
+        if Path(name).name == wanted:
+            return digest
+    return None
+
+
+def expected_sha256(source: Dict[str, object]) -> Optional[str]:
+    """The hash a source promises for what it serves, if it publishes one.
+
+    Either pinned in the source itself, or looked up in the checksums list that
+    the same release publishes. ``None`` means this download cannot be checked,
+    and the caller must refuse it rather than run unknown code.
+    """
+    pinned = source.get("sha256")
+    if pinned:
+        return str(pinned).lower()
+    sums_url = source.get("sums_url")
+    if not sums_url:
+        return None
+    name = str(source.get("sums_name") or str(source["url"]).rsplit("/", 1)[-1])
+    digest = digest_from_sums(_fetch_text(str(sums_url)), name)
+    if digest is None:
+        raise ToolError(
+            "The list of checksums did not mention the file being downloaded.",
+            "Viddl will not install a file it cannot check. Try again in a minute.",
+            raw=f"{sums_url}: no entry for {name}",
+        )
+    return digest
+
+
+def checksum_file(path: Path) -> Path:
+    """Where the hash of a copy Viddl installed is written down."""
+    return path.with_name(path.name + ".sha256")
+
+
+def recorded_checksum(path: Path) -> Optional[str]:
+    """The hash Viddl wrote down when it installed this copy, if there is one."""
+    try:
+        return checksum_file(path).read_text(encoding="utf-8").strip().lower() or None
+    except OSError:
+        return None
+
+
+def record_checksum(path: Path, digest: str) -> None:
+    """Remember what was installed, so a later replacement is visible."""
+    try:
+        checksum_file(path).write_text(digest.strip().lower() + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def download_to(
     url: str,
     dest: Path,
     on_progress: Optional[ProgressCallback] = None,
     timeout: int = _TIMEOUT,
+    expected_sha256: Optional[str] = None,
 ) -> Path:
-    """Stream ``url`` to ``dest`` atomically, reporting progress as it goes."""
+    """Stream ``url`` to ``dest`` atomically, reporting progress as it goes.
+
+    When ``expected_sha256`` is given the bytes only reach ``dest`` if they match
+    it. A download that fails its check is deleted where it stands and reported,
+    so an unverified program can never be picked up and run by mistake.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": _UA})
     tmp_path = dest.with_name(dest.name + ".part")
@@ -119,6 +252,17 @@ def download_to(
                 "The download came back empty.",
                 "Check your internet connection and try again.",
             )
+        if expected_sha256 is not None:
+            actual = sha256_of(tmp_path)
+            if actual != expected_sha256.lower():
+                tmp_path.unlink(missing_ok=True)
+                raise ChecksumMismatch(
+                    "The download did not match the checksum published for it.",
+                    "Viddl refused to use it. If this keeps happening, the mirror "
+                    "may have been rebuilt while downloading — try again later, or "
+                    "install the tool yourself.",
+                    raw=f"expected {expected_sha256.lower()}\n     got {actual}\n     from {url}",
+                )
         tmp_path.replace(dest)
     except ToolError:
         tmp_path.unlink(missing_ok=True)
@@ -138,6 +282,53 @@ def download_to(
             raw=str(exc),
         ) from exc
     return dest
+
+
+def _verified_download(
+    source: Dict[str, object],
+    dest: Path,
+    on_progress: Optional[ProgressCallback] = None,
+) -> Path:
+    """Download something Viddl will run, but only if its hash can be checked.
+
+    Three rules, in order: the download must be encrypted, its expected hash must
+    be published somewhere (pinned in the source, or in the checksums list the
+    same release ships), and the bytes that arrive must match it. A source that
+    fails any rule is refused — Viddl does not run a downloaded program it could
+    not check.
+    """
+    url = str(source["url"])
+    if not url.lower().startswith("https://"):
+        raise ToolError(
+            "Viddl only installs its helpers over a secure connection.",
+            "Nothing was installed.",
+            raw=url,
+        )
+
+    pinned = source.get("sha256")
+    if pinned:
+        # A pinned hash is exact: a mismatch means the wrong bytes, full stop.
+        return download_to(url, dest, on_progress, expected_sha256=str(pinned))
+
+    # With a checksums list there is one innocent way to fail: the release is
+    # rebuilt while the (large) file is downloading, so the list describes the
+    # new build and we hold the old one. Re-read the list once and try again.
+    attempts = 0
+    while True:
+        expected = expected_sha256(source)
+        if expected is None:
+            raise ToolError(
+                "That download publishes no checksum, so Viddl did not install it.",
+                "Viddl will not run a downloaded program it cannot check. "
+                "Installing it with your system's package manager works just as well.",
+                raw=url,
+            )
+        try:
+            return download_to(url, dest, on_progress, expected_sha256=expected)
+        except ChecksumMismatch:
+            attempts += 1
+            if attempts >= 2:
+                raise
 
 
 def _extract_member(archive: Path, pattern: str, dest: Path, mode: Optional[int] = 0o755) -> None:
@@ -251,11 +442,17 @@ class Engine:
         on_progress: Optional[ProgressCallback] = None,
     ) -> Tool:
         asset = "yt-dlp.exe" if is_windows() else "yt-dlp"
-        url = f"{_YTDLP_BASE}/{asset}"
+        source: Dict[str, object] = {
+            "url": f"{_YTDLP_BASE}/{asset}",
+            # yt-dlp publishes SHA2-256SUMS beside every release, so the hash is
+            # looked up rather than pinned: an updated engine keeps working.
+            "sums_url": f"{_YTDLP_BASE}/SHA2-256SUMS",
+            "sums_name": asset,
+        }
         dest = self.ytdlp_path
         if on_status:
             on_status("Downloading the video engine (about 3 MB)…")
-        download_to(url, dest, on_progress)
+        _verified_download(source, dest, on_progress)
         try:
             os.chmod(dest, dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         except OSError:
@@ -276,6 +473,7 @@ class Engine:
                 f"    {self.bin_dir}",
                 raw=output,
             )
+        record_checksum(dest, sha256_of(dest))
         tool = Tool("yt-dlp", prefix, origin, version=output.splitlines()[0], path=dest)
         self._ytdlp = tool
         return tool
@@ -337,51 +535,52 @@ class Engine:
         return None
 
     def ffmpeg_sources(self) -> List[dict]:
-        """Download locations for a static ffmpeg build, most preferred first."""
+        """Download locations for a static ffmpeg build, most preferred first.
+
+        Every entry carries the means to check what it serves: either the
+        checksums list published beside the download, or a hash pinned here. A
+        mirror that publishes neither is not listed at all — an extra address is
+        not worth installing a build that cannot be checked. (johnvansickle.com
+        was dropped for exactly that reason: it publishes only an MD5.)
+        """
         machine = platform.machine().lower()
         if is_windows():
             return [
                 {
-                    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
-                    "ffmpeg-master-latest-win64-gpl.zip",
+                    "url": f"{_BTBN_BASE}/ffmpeg-master-latest-win64-gpl.zip",
                     "archive": "zip",
                     "pattern": r"bin/ffmpeg\.exe$",
+                    "sums_url": _BTBN_SUMS,
                 }
             ]
         if is_macos():
             arch = "arm64" if machine in ("arm64", "aarch64") else "x64"
             return [
                 {
-                    "url": "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/"
-                    f"ffmpeg-darwin-{arch}",
+                    "url": f"{_EUGENEWARE_BASE}/ffmpeg-darwin-{arch}",
                     "archive": None,
                     "pattern": None,
+                    "sha256": _EUGENEWARE_PINS[f"ffmpeg-darwin-{arch}"],
                 },
                 {
-                    "url": "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/"
-                    "ffmpeg-darwin-x64",
+                    "url": f"{_EUGENEWARE_BASE}/ffmpeg-darwin-x64",
                     "archive": None,
                     "pattern": None,
+                    "sha256": _EUGENEWARE_PINS["ffmpeg-darwin-x64"],
                 },
             ]
         return [
             {
-                "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
-                "ffmpeg-master-latest-linux64-gpl.tar.xz",
+                "url": f"{_BTBN_BASE}/ffmpeg-master-latest-linux64-gpl.tar.xz",
                 "archive": "tar.xz",
                 "pattern": r"bin/ffmpeg$",
+                "sums_url": _BTBN_SUMS,
             },
             {
-                "url": "https://johnvansickle.com/ffmpeg/releases/"
-                "ffmpeg-release-amd64-static.tar.xz",
-                "archive": "tar.xz",
-                "pattern": r"/ffmpeg$",
-            },
-            {
-                "url": "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/"
-                "ffmpeg-linux-x64",
+                "url": f"{_EUGENEWARE_BASE}/ffmpeg-linux-x64",
                 "archive": None,
                 "pattern": None,
+                "sha256": _EUGENEWARE_PINS["ffmpeg-linux-x64"],
             },
         ]
 
@@ -403,11 +602,13 @@ class Engine:
             archive: Optional[Path] = None
             try:
                 if source["archive"] is None:
-                    download_to(source["url"], dest, on_progress)
+                    _verified_download(source, dest, on_progress)
                 else:
                     with tempfile.TemporaryDirectory(prefix="viddl-ffmpeg-") as tmp:
                         archive = Path(tmp) / f"ffmpeg-download.{source['archive'].replace('.', '-')}"
-                        download_to(source["url"], archive, on_progress)
+                        # The checksums list covers the bundle, not the program
+                        # inside it: check the archive, then unpack it.
+                        _verified_download(source, archive, on_progress)
                         _extract_member(archive, source["pattern"], dest)
                 try:
                     os.chmod(dest, dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -419,6 +620,7 @@ class Engine:
                     match = re.search(r"ffmpeg version (\S+)", output)
                     if match:
                         version = match.group(1)
+                    record_checksum(dest, sha256_of(dest))
                     tool = Tool("ffmpeg", [str(dest)], "viddl", version=version, path=dest)
                     self._ffmpeg = tool
                     return tool
@@ -484,8 +686,29 @@ class Engine:
                 lines.append(f"{label + ':':<14}not installed")
             else:
                 version = f" {tool.version}" if tool.version else ""
-                lines.append(f"{label + ':':<14}{version} ({tool.origin_text})")
+                lines.append(
+                    f"{label + ':':<14}{version} ({tool.origin_text}){self._checksum_note(tool)}"
+                )
         return lines
+
+    def _checksum_note(self, tool: Tool) -> str:
+        """Whether the copy we installed is still the copy we installed.
+
+        Re-hashing our own copies is cheap next to what downloading them cost,
+        and it is the only way a later swap of the binary would ever be noticed.
+        """
+        if tool.origin != "viddl" or tool.path is None:
+            return ""
+        recorded = recorded_checksum(tool.path)
+        if recorded is None:
+            return ""
+        try:
+            current = sha256_of(tool.path)
+        except OSError:
+            return ""
+        if current != recorded:
+            return f", sha256 {recorded[:12]}… (changed since it was installed)"
+        return f", sha256 {recorded[:12]}… (matches what was installed)"
 
 
 def last_error_hint(raw: str) -> str:

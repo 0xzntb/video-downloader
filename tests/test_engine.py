@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import stat
@@ -16,7 +17,19 @@ from pathlib import Path
 import pytest
 
 from viddl import engine as engine_mod
-from viddl.engine import Engine, Tool, ToolError, _extract_member, download_to
+from viddl.engine import (
+    Engine,
+    Tool,
+    ToolError,
+    _extract_member,
+    _verified_download,
+    digest_from_sums,
+    download_to,
+    expected_sha256,
+    record_checksum,
+    recorded_checksum,
+    sha256_of,
+)
 
 needs_posix_exec = pytest.mark.skipif(
     sys.platform.startswith("win"), reason="POSIX shebang semantics"
@@ -32,6 +45,71 @@ def write_executable(path: Path, body: str) -> Path:
 
 def make_shim(directory: Path, name: str = "yt-dlp", version: str = "2099.01.01") -> Path:
     return write_executable(directory / name, f"#!/bin/sh\necho {version}\n")
+
+
+# ---------------------------------------------------------------------------
+# the checksum layer, stood in for so these tests stay offline
+# ---------------------------------------------------------------------------
+
+FAKE_PIN = "1" * 64
+
+
+def as_download(body):
+    """Adapt a fake download body to the real ``download_to`` signature.
+
+    The installer now tells the downloader which checksum it expects, so a
+    stand-in has to accept it; the interesting part of a test stays in ``body``.
+    """
+
+    def download(url, dest, on_progress=None, timeout=30, expected_sha256=None):
+        return body(url, dest, on_progress)
+
+    return download
+
+
+def patch_checksums(monkeypatch, *names, digest=FAKE_PIN) -> None:
+    """Stand in for the checksums file an installer reads before downloading."""
+    wanted = names or ("yt-dlp", "yt-dlp.exe")
+    text = "".join(f"{digest}  {name}\n" for name in wanted)
+    monkeypatch.setattr(engine_mod, "_fetch_text", lambda url, timeout=30: text)
+
+
+def mirror(url: str, archive=None, pattern=None, **extra) -> dict:
+    """A source the installer will accept, with a stand-in pinned checksum."""
+    return {"url": url, "archive": archive, "pattern": pattern, "sha256": FAKE_PIN, **extra}
+
+
+class FakeResponse:
+    """Just enough of an HTTP response to stream bytes out of."""
+
+    def __init__(self, payload: bytes):
+        self._stream = io.BytesIO(payload)
+        self.headers = {"Content-Length": str(len(payload))}
+
+    def read(self, size: int = -1) -> bytes:
+        return self._stream.read(size)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def serving(monkeypatch, *payloads: bytes) -> list:
+    """Serve ``payloads`` in turn from a patched ``urlopen``.
+
+    Returns the list of URLs asked for, so a test can count the attempts.
+    """
+    asked: list = []
+
+    def fake_urlopen(request, timeout=None):
+        asked.append(getattr(request, "full_url", str(request)))
+        index = min(len(asked) - 1, len(payloads) - 1)
+        return FakeResponse(payloads[index])
+
+    monkeypatch.setattr(engine_mod.urllib.request, "urlopen", fake_urlopen)
+    return asked
 
 
 def test_finds_yt_dlp_that_is_already_installed(tmp_path, monkeypatch):
@@ -65,14 +143,15 @@ def test_broken_copy_is_ignored(tmp_path, monkeypatch):
 def test_install_downloads_verifies_and_runs(tmp_path, monkeypatch):
     requested: list = []
 
-    def fake_download(url, dest, on_progress=None, timeout=30):
+    def body(url, dest, on_progress):
         requested.append(url)
         write_executable(Path(dest), "#!/usr/bin/env python3\nprint('2099.05.05')\n")
         if on_progress:
             on_progress(10, 10)
         return Path(dest)
 
-    monkeypatch.setattr(engine_mod, "download_to", fake_download)
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
+    patch_checksums(monkeypatch)
 
     engine = Engine(home=tmp_path / "app")
     tool = engine.install_ytdlp()
@@ -86,14 +165,15 @@ def test_install_downloads_verifies_and_runs(tmp_path, monkeypatch):
 
 @needs_posix_exec
 def test_install_falls_back_to_our_own_python_when_the_shebang_fails(tmp_path, monkeypatch):
-    def fake_download(url, dest, on_progress=None, timeout=30):
+    def body(url, dest, on_progress):
         # No shebang: the kernel refuses to exec this directly.
         dest = Path(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text("print('2024.05.05')\n", encoding="utf-8")
         return dest
 
-    monkeypatch.setattr(engine_mod, "download_to", fake_download)
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
+    patch_checksums(monkeypatch)
     engine = Engine(home=tmp_path / "app")
     tool = engine.install_ytdlp()
     assert tool.version == "2024.05.05"
@@ -104,12 +184,13 @@ def test_install_falls_back_to_our_own_python_when_the_shebang_fails(tmp_path, m
 def test_ensure_only_downloads_once(tmp_path, monkeypatch):
     calls = []
 
-    def fake_download(url, dest, on_progress=None, timeout=30):
+    def body(url, dest, on_progress):
         calls.append(url)
         write_executable(Path(dest), "#!/usr/bin/env python3\nprint('1.2.3')\n")
         return Path(dest)
 
-    monkeypatch.setattr(engine_mod, "download_to", fake_download)
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
+    patch_checksums(monkeypatch)
     engine = Engine(home=tmp_path / "app")
     first = engine.ensure_ytdlp()
     second = engine.ensure_ytdlp()
@@ -128,6 +209,12 @@ def test_ffmpeg_sources_are_https_and_self_consistent():
         assert source["url"].startswith("https://")
         if source["archive"]:
             assert source["pattern"]
+        # Every mirror has to say how its bytes can be checked: a source with
+        # neither a published checksums list nor a pinned hash is refused at
+        # install time, so it has no business being listed.
+        assert source.get("sums_url") or source.get("sha256")
+        if source.get("sums_url"):
+            assert source["sums_url"].startswith("https://")
 
 
 def test_extract_member_from_tar_xz(tmp_path):
@@ -172,22 +259,19 @@ def _patched_sources(monkeypatch, engine, sources):
 def test_install_ffmpeg_tries_the_next_mirror(tmp_path, monkeypatch):
     attempts: list = []
 
-    def flaky_download(url, dest, on_progress=None, timeout=30):
+    def body(url, dest, on_progress):
         attempts.append(url)
         if len(attempts) == 1:
             raise ToolError("mirror is down")
         write_executable(Path(dest), "#!/usr/bin/env python3\nprint('ffmpeg version 7.0-fake')\n")
         return Path(dest)
 
-    monkeypatch.setattr(engine_mod, "download_to", flaky_download)
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
     engine = Engine(home=tmp_path / "app")
     _patched_sources(
         monkeypatch,
         engine,
-        [
-            {"url": "https://mirror-one/ffmpeg", "archive": None, "pattern": None},
-            {"url": "https://mirror-two/ffmpeg", "archive": None, "pattern": None},
-        ],
+        [mirror("https://mirror-one/ffmpeg"), mirror("https://mirror-two/ffmpeg")],
     )
     tool = engine.install_ffmpeg()
     assert attempts == ["https://mirror-one/ffmpeg", "https://mirror-two/ffmpeg"]
@@ -199,7 +283,7 @@ def test_install_ffmpeg_survives_an_html_error_page(tmp_path, monkeypatch):
     """A mirror answering with a web page instead of an archive must not crash."""
     attempts: list = []
 
-    def broken_mirror(url, dest, on_progress=None, timeout=30):
+    def body(url, dest, on_progress):
         attempts.append(url)
         dest = Path(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -209,18 +293,14 @@ def test_install_ffmpeg_survives_an_html_error_page(tmp_path, monkeypatch):
             write_executable(dest, "#!/usr/bin/env python3\nprint('ffmpeg version 8.0-fake')\n")
         return dest
 
-    monkeypatch.setattr(engine_mod, "download_to", broken_mirror)
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
     engine = Engine(home=tmp_path / "app")
     _patched_sources(
         monkeypatch,
         engine,
         [
-            {
-                "url": "https://mirror-one/ffmpeg.tar.xz",
-                "archive": "tar.xz",
-                "pattern": r"bin/ffmpeg$",
-            },
-            {"url": "https://mirror-two/ffmpeg", "archive": None, "pattern": None},
+            mirror("https://mirror-one/ffmpeg.tar.xz", archive="tar.xz", pattern=r"bin/ffmpeg$"),
+            mirror("https://mirror-two/ffmpeg"),
         ],
     )
     tool = engine.install_ffmpeg()
@@ -229,10 +309,11 @@ def test_install_ffmpeg_survives_an_html_error_page(tmp_path, monkeypatch):
 
 
 def test_install_ffmpeg_gives_up_with_advice(tmp_path, monkeypatch):
-    def always_fails(url, dest, on_progress=None, timeout=30):
+    def always_fails(url, dest, on_progress):
         raise ToolError("no route to host")
 
-    monkeypatch.setattr(engine_mod, "download_to", always_fails)
+    monkeypatch.setattr(engine_mod, "download_to", as_download(always_fails))
+    patch_checksums(monkeypatch, "ffmpeg-master-latest-linux64-gpl.tar.xz")
     with pytest.raises(ToolError) as caught:
         Engine(home=tmp_path / "app").install_ffmpeg()
     assert "ffmpeg could not be downloaded" in caught.value.message
@@ -363,18 +444,16 @@ def test_ensure_ffmpeg_uses_the_copy_that_is_already_there(tmp_path, monkeypatch
 def test_ensure_ffmpeg_downloads_once_and_then_remembers(tmp_path, monkeypatch):
     calls: list = []
 
-    def fake_download(url, dest, on_progress=None, timeout=30):
+    def body(url, dest, on_progress):
         calls.append(url)
         write_executable(Path(dest), "#!/usr/bin/env python3\nprint('ffmpeg version 7.0-fake')\n")
         return Path(dest)
 
-    monkeypatch.setattr(engine_mod, "download_to", fake_download)
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
     no_system_tools(monkeypatch)
 
     engine = Engine(home=tmp_path / "app")
-    _patched_sources(
-        monkeypatch, engine, [{"url": "https://mirror/ffmpeg", "archive": None, "pattern": None}]
-    )
+    _patched_sources(monkeypatch, engine, [mirror("https://mirror/ffmpeg")])
     first = engine.ensure_ffmpeg()
     second = engine.ensure_ffmpeg()
     assert first is second
@@ -384,17 +463,15 @@ def test_ensure_ffmpeg_downloads_once_and_then_remembers(tmp_path, monkeypatch):
 def test_ensure_ffmpeg_says_what_it_is_doing(tmp_path, monkeypatch):
     messages: list = []
 
-    def fake_download(url, dest, on_progress=None, timeout=30):
+    def body(url, dest, on_progress):
         write_executable(Path(dest), "#!/usr/bin/env python3\nprint('ffmpeg version 7.0-fake')\n")
         return Path(dest)
 
-    monkeypatch.setattr(engine_mod, "download_to", fake_download)
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
     no_system_tools(monkeypatch)
 
     engine = Engine(home=tmp_path / "app")
-    _patched_sources(
-        monkeypatch, engine, [{"url": "https://mirror/ffmpeg", "archive": None, "pattern": None}]
-    )
+    _patched_sources(monkeypatch, engine, [mirror("https://mirror/ffmpeg")])
     engine.ensure_ffmpeg(on_status=messages.append)
     assert messages
     assert "ffmpeg" in messages[0]
@@ -413,19 +490,17 @@ def test_two_threads_asking_for_ffmpeg_install_it_once(tmp_path, monkeypatch):
     """A background warm-up and a first download can race for the same file."""
     calls: list = []
 
-    def fake_download(url, dest, on_progress=None, timeout=30):
+    def body(url, dest, on_progress):
         calls.append(url)
         time.sleep(0.05)
         write_executable(Path(dest), "#!/usr/bin/env python3\nprint('ffmpeg version 7.0-fake')\n")
         return Path(dest)
 
-    monkeypatch.setattr(engine_mod, "download_to", fake_download)
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
     no_system_tools(monkeypatch)
 
     engine = Engine(home=tmp_path / "app")
-    _patched_sources(
-        monkeypatch, engine, [{"url": "https://mirror/ffmpeg", "archive": None, "pattern": None}]
-    )
+    _patched_sources(monkeypatch, engine, [mirror("https://mirror/ffmpeg")])
     gate = threading.Barrier(2)
     results: list = []
 
@@ -448,7 +523,7 @@ def test_install_ffmpeg_skips_a_mirror_that_gives_a_broken_program(tmp_path, mon
     attempts: list = []
     messages: list = []
 
-    def broken_then_good(url, dest, on_progress=None, timeout=30):
+    def body(url, dest, on_progress):
         attempts.append(url)
         dest = Path(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -458,15 +533,12 @@ def test_install_ffmpeg_skips_a_mirror_that_gives_a_broken_program(tmp_path, mon
             write_executable(dest, "#!/usr/bin/env python3\nprint('ffmpeg version 7.1-good')\n")
         return dest
 
-    monkeypatch.setattr(engine_mod, "download_to", broken_then_good)
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
     engine = Engine(home=tmp_path / "app")
     _patched_sources(
         monkeypatch,
         engine,
-        [
-            {"url": "https://mirror-one/ffmpeg", "archive": None, "pattern": None},
-            {"url": "https://mirror-two/ffmpeg", "archive": None, "pattern": None},
-        ],
+        [mirror("https://mirror-one/ffmpeg"), mirror("https://mirror-two/ffmpeg")],
     )
     tool = engine.install_ffmpeg(on_status=messages.append)
     assert len(attempts) == 2
@@ -475,15 +547,13 @@ def test_install_ffmpeg_skips_a_mirror_that_gives_a_broken_program(tmp_path, mon
 
 
 def test_install_ffmpeg_keeps_the_reason_it_gave_up(tmp_path, monkeypatch):
-    def always_broken(url, dest, on_progress=None, timeout=30):
+    def always_broken(url, dest, on_progress):
         write_executable(Path(dest), "#!/bin/sh\nexit 9\n")
         return Path(dest)
 
-    monkeypatch.setattr(engine_mod, "download_to", always_broken)
+    monkeypatch.setattr(engine_mod, "download_to", as_download(always_broken))
     engine = Engine(home=tmp_path / "app")
-    _patched_sources(
-        monkeypatch, engine, [{"url": "https://m/ffmpeg", "archive": None, "pattern": None}]
-    )
+    _patched_sources(monkeypatch, engine, [mirror("https://m/ffmpeg")])
     with pytest.raises(ToolError) as caught:
         engine.install_ffmpeg()
     assert "did not run" in caught.value.raw
@@ -653,3 +723,248 @@ def test_extract_member_will_not_hand_over_a_directory(tmp_path):
     with pytest.raises(ToolError):
         _extract_member(archive, r"bin/ffmpeg$", dest)
     assert not dest.exists()
+
+
+# ---------------------------------------------------------------------------
+# checking what gets downloaded (S2)
+# ---------------------------------------------------------------------------
+
+
+def test_sha256_of_matches_the_published_vector(tmp_path):
+    path = tmp_path / "payload"
+    path.write_bytes(b"abc")
+    assert sha256_of(path) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+
+def test_digest_from_sums_reads_the_published_shapes():
+    text = (
+        "# a comment\n"
+        "\n"
+        "1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6  yt-dlp\n"
+        "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a *yt-dlp.exe\n"
+        "short  yt-dlp.tar.gz\n"
+    )
+    assert digest_from_sums(text, "yt-dlp") == (
+        "1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6"
+    )
+    assert digest_from_sums(text, "yt-dlp.exe") == (
+        "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a"
+    )
+    assert digest_from_sums(text, "something-else") is None
+
+
+def test_digest_from_sums_matches_on_the_file_name_only():
+    digest = "ab" * 32
+    assert digest_from_sums(f"{digest}  some/other/path/ffmpeg\n", "ffmpeg") == digest
+
+
+def test_expected_sha256_uses_a_pinned_hash_without_fetching(monkeypatch):
+    def must_not_fetch(url, timeout=30):
+        raise AssertionError("a pinned source needs no checksums file")
+
+    monkeypatch.setattr(engine_mod, "_fetch_text", must_not_fetch)
+    assert expected_sha256({"url": "https://x/ffmpeg", "sha256": FAKE_PIN}) == FAKE_PIN
+
+
+def test_expected_sha256_reads_the_published_list(monkeypatch):
+    patch_checksums(monkeypatch, "yt-dlp")
+    source = {"url": "https://x/yt-dlp", "sums_url": "https://x/SHA2-256SUMS"}
+    assert expected_sha256(source) == FAKE_PIN
+
+
+def test_expected_sha256_is_none_when_nothing_is_published():
+    assert expected_sha256({"url": "https://x/thing"}) is None
+
+
+def test_expected_sha256_says_when_the_list_does_not_mention_the_file(monkeypatch):
+    patch_checksums(monkeypatch, "something-else")
+    with pytest.raises(ToolError) as caught:
+        expected_sha256({"url": "https://x/yt-dlp", "sums_url": "https://x/SHA2-256SUMS"})
+    assert "did not mention" in caught.value.message
+
+
+def test_download_to_never_leaves_mismatched_bytes_behind(tmp_path, monkeypatch):
+    serving(monkeypatch, b"tampered")
+    dest = tmp_path / "tool"
+    with pytest.raises(ToolError) as caught:
+        download_to("https://example.invalid/tool", dest, expected_sha256="0" * 64)
+    assert "did not match the checksum" in caught.value.message
+    assert "expected" in caught.value.raw and "got" in caught.value.raw
+    assert not dest.exists()
+    assert not (tmp_path / "tool.part").exists()
+
+
+def test_download_to_accepts_bytes_that_match(tmp_path, monkeypatch):
+    serving(monkeypatch, b"genuine")
+    dest = tmp_path / "tool"
+    download_to(
+        "https://example.invalid/tool",
+        dest,
+        expected_sha256=hashlib.sha256(b"genuine").hexdigest(),
+    )
+    assert dest.read_bytes() == b"genuine"
+
+
+def test_verified_download_refuses_an_unencrypted_source(tmp_path):
+    source = {"url": "http://example.invalid/tool", "sha256": FAKE_PIN}
+    with pytest.raises(ToolError) as caught:
+        _verified_download(source, tmp_path / "tool")
+    assert "secure connection" in caught.value.message
+    assert not (tmp_path / "tool").exists()
+
+
+def test_verified_download_refuses_a_source_it_cannot_check(tmp_path):
+    with pytest.raises(ToolError) as caught:
+        _verified_download({"url": "https://example.invalid/tool"}, tmp_path / "tool")
+    assert "publishes no checksum" in caught.value.message
+    assert not (tmp_path / "tool").exists()
+
+
+def test_install_skips_a_mirror_whose_bytes_do_not_match(tmp_path, monkeypatch):
+    """The point of the exercise: bad bytes are refused, then the next mirror."""
+    tampered = b"#!/bin/sh\necho TAMPERED\n"
+    genuine = b"#!/usr/bin/env python3\nprint('ffmpeg version 9.9-good')\n"
+    asked = serving(monkeypatch, tampered, genuine)
+    patch_checksums(monkeypatch, "ffmpeg")
+
+    engine = Engine(home=tmp_path / "app")
+    _patched_sources(
+        monkeypatch,
+        engine,
+        [
+            {
+                "url": "https://mirror-one/ffmpeg",
+                "archive": None,
+                "pattern": None,
+                "sums_url": "https://mirror-one/checksums.sha256",
+            },
+            mirror("https://mirror-two/ffmpeg", sha256=hashlib.sha256(genuine).hexdigest()),
+        ],
+    )
+    tool = engine.install_ffmpeg()
+    assert "9.9-good" in tool.version
+    assert engine.ffmpeg_path.read_bytes() == genuine
+    # Mirror one: the attempt, plus the one retry a checksums list allows.
+    # Mirror two: one attempt, which matches and installs.
+    assert len(asked) == 3
+
+
+def test_a_rebuilt_release_is_retried_once(tmp_path, monkeypatch):
+    """A release rebuilt mid-download leaves the list describing newer bytes."""
+    genuine = b"genuine"
+    bodies = [f"{'0' * 64}  tool\n", f"{hashlib.sha256(genuine).hexdigest()}  tool\n"]
+    monkeypatch.setattr(engine_mod, "_fetch_text", lambda url, timeout=30: bodies.pop(0))
+    asked = serving(monkeypatch, genuine)
+
+    dest = tmp_path / "tool"
+    _verified_download({"url": "https://x/tool", "sums_url": "https://x/sums"}, dest)
+    assert dest.read_bytes() == genuine
+    assert len(asked) == 2
+
+
+def test_a_pinned_mismatch_is_taken_at_face_value(tmp_path, monkeypatch):
+    asked = serving(monkeypatch, b"tampered", b"genuine")
+    with pytest.raises(ToolError):
+        _verified_download({"url": "https://x/tool", "sha256": "0" * 64}, tmp_path / "tool")
+    assert len(asked) == 1
+    assert not (tmp_path / "tool").exists()
+
+
+def test_an_archive_that_fails_its_checksum_is_never_unpacked(tmp_path, monkeypatch):
+    serving(monkeypatch, b"<html>502 Bad Gateway</html>")
+    patch_checksums(monkeypatch, "ffmpeg-master-latest-linux64-gpl.tar.xz")
+
+    engine = Engine(home=tmp_path / "app")
+    _patched_sources(
+        monkeypatch,
+        engine,
+        [
+            {
+                "url": "https://mirror/ffmpeg-master-latest-linux64-gpl.tar.xz",
+                "archive": "tar.xz",
+                "pattern": r"bin/ffmpeg$",
+                "sums_url": "https://mirror/checksums.sha256",
+            }
+        ],
+    )
+    with pytest.raises(ToolError) as caught:
+        engine.install_ffmpeg()
+    assert "could not be downloaded" in caught.value.message
+    assert not engine.ffmpeg_path.exists()
+
+
+def test_install_ytdlp_will_not_install_when_the_checksums_cannot_be_read(tmp_path, monkeypatch):
+    def unreachable(url, timeout=30):
+        raise ToolError("Could not reach the list of checksums.")
+
+    monkeypatch.setattr(engine_mod, "_fetch_text", unreachable)
+
+    def must_not_download(url, dest, on_progress):
+        raise AssertionError("nothing may be downloaded when the check cannot happen")
+
+    monkeypatch.setattr(engine_mod, "download_to", as_download(must_not_download))
+    with pytest.raises(ToolError):
+        Engine(home=tmp_path / "app").install_ytdlp()
+    assert not (tmp_path / "app" / "bin" / "yt-dlp").exists()
+
+
+def test_checksums_are_read_from_the_body(monkeypatch):
+    serving(monkeypatch, "aa".encode() + b"b" * 62 + b"  tool\n")
+    assert "tool" in engine_mod._fetch_text("https://example.invalid/SHA2-256SUMS")
+
+
+def test_checksums_are_only_fetched_over_https():
+    with pytest.raises(ToolError) as caught:
+        engine_mod._fetch_text("http://example.invalid/SHA2-256SUMS")
+    assert "secure connection" in caught.value.message
+
+
+def test_a_checksums_list_that_answers_with_an_error_is_explained(monkeypatch):
+    def refused(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 429, "Too Many Requests", {}, None)
+
+    monkeypatch.setattr(engine_mod.urllib.request, "urlopen", refused)
+    with pytest.raises(ToolError) as caught:
+        engine_mod._fetch_text("https://example.invalid/SHA2-256SUMS")
+    assert "429" in caught.value.message
+    assert "cannot check" in (caught.value.hint or "")
+
+
+def test_a_checksums_list_that_cannot_be_reached_is_explained(monkeypatch):
+    def offline(request, timeout=None):
+        raise urllib.error.URLError("no route to host")
+
+    monkeypatch.setattr(engine_mod.urllib.request, "urlopen", offline)
+    with pytest.raises(ToolError) as caught:
+        engine_mod._fetch_text("https://example.invalid/SHA2-256SUMS")
+    assert caught.value.message == "Could not reach the list of checksums."
+
+
+def test_digest_from_sums_skips_the_lines_it_cannot_use():
+    digest = "cd" * 32
+    text = "# comment\nloose-word\n" + f"{'z' * 64}  wrong\n" + f"{digest}  tool\n"
+    assert digest_from_sums(text, "tool") == digest
+
+
+def test_a_sidecar_that_is_missing_or_unwritable_is_not_fatal(tmp_path):
+    assert recorded_checksum(tmp_path / "tool") is None
+    # A path that cannot be written to must not take the install down with it.
+    record_checksum(tmp_path / "does-not-exist" / "tool", "ab" * 32)
+
+
+def test_the_installed_hash_is_recorded_and_a_swap_is_noticed(tmp_path, monkeypatch):
+    def body(url, dest, on_progress):
+        write_executable(Path(dest), "#!/usr/bin/env python3\nprint('2099.05.05')\n")
+        return Path(dest)
+
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
+    patch_checksums(monkeypatch)
+
+    engine = Engine(home=tmp_path / "app")
+    engine.install_ytdlp()
+    assert recorded_checksum(engine.ytdlp_path) == sha256_of(engine.ytdlp_path)
+    assert "matches what was installed" in "\n".join(engine.report())
+
+    # Something replaces the binary behind Viddl's back.
+    write_executable(engine.ytdlp_path, "#!/usr/bin/env python3\nprint('2000.01.01')\n")
+    assert "changed since it was installed" in "\n".join(engine.report())
