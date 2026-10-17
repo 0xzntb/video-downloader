@@ -25,6 +25,10 @@ from . import APP_NAME
 # who installed them and nobody else on the machine.
 _OWNER_ONLY = 0o700
 
+# The log holds links, which can carry tokens and signed query strings, so it is
+# closed to everyone but its owner as well.
+_OWNER_PRIVATE = 0o600
+
 
 def _is_windows() -> bool:
     return sys.platform.startswith("win")
@@ -112,6 +116,26 @@ def ensure_dirs() -> None:
             # A read-only home is better handled later with a clear message
             # than by crashing every code path that only wants a path.
             pass
+
+
+def secure_log_file() -> Optional[Path]:
+    """The log file: created if it is missing, readable only by its owner.
+
+    An existing log left looser by an earlier version is tightened here, on the
+    same reasoning as the folders in :func:`ensure_dirs`. ``None`` means there
+    is nowhere to put it — a missing log is a lost nicety, not a reason for
+    Viddl to refuse to run, so the caller carries on without one.
+    """
+    try:
+        path = log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _OWNER_PRIVATE)
+        os.close(descriptor)
+        if not _is_windows() and stat.S_IMODE(path.stat().st_mode) != _OWNER_PRIVATE:
+            os.chmod(path, _OWNER_PRIVATE)
+    except OSError:
+        return None
+    return path
 
 
 def _xdg_download_dir() -> Optional[Path]:

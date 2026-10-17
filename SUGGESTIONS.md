@@ -9,7 +9,10 @@ statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **3 of 60** (S1, S2 and S3, all in section 1).
+Progress so far: **4 of 60** (S1–S4, all in section 1).
+The four are the security pass on section 1's front half: nothing the app
+downloads is run unchecked, and nothing it writes down is readable by anyone
+else.
 
 **Legend**
 
@@ -187,24 +190,38 @@ plus a log.
 match on startup. Cheap, and it removes a local privilege-escalation surface on
 shared machines.
 
-### S4 — Log content and permissions · **P1** · S
+### S4 — Log content and permissions · **P1** · S · ✅ **Done**
 
-Since **S3** the folder holding the log is `0700`, so another account can no
-longer reach it; the file itself is still whatever the umask gave — measured at
-`0644` in a real run — and nothing is redacted or rotated. What is left is the
-narrower problem: the log travels wherever the folder does (backups, a copied
-home directory, a cloud-synced data folder), any process running as *this* user
-can read it, and it grows without bound once **E3/D1** start writing failures
-into it. **Do** below is unchanged; only the reason to do it has shrunk.
+> **Fixed.** The log is created `0600`, an older loose one is tightened, and the
+> file stays that way through rotation — which needed a handler of its own,
+> because the standard rotating handler opens each new file the way ``open``
+> does and the umask would have quietly undone the mode at the first rollover.
+> ``logfile.py`` now owns the whole contract: a file capped at 256 KB with one
+> roll kept, and every line passed through ``util.redact()`` as it is written.
+> 16 tests added (305 → 321).
+>
+> Redaction runs on the **formatted** line rather than on each record's message,
+> which is what covers the case that matters most: an exception raised while
+> fetching a link carries that link inside its traceback, and the traceback is
+> the line a log is usually opened for. Only the finished text is rewritten, so
+> the rest of the line still says what happened.
+>
+> Verified through the real CLI and the real logger, not only in tests: a fresh
+> run leaves a `0600` log; a 360 KB `0644` log left by an earlier version is
+> tightened to `0600` and rolled on the first write (`viddl.log.1` at `0600`,
+> live file 68 bytes); and a logged line plus traceback containing
+> `?token=SECRET123` and `?sig=SIGNED456` came out as `<redacted>` with
+> `v=…` and the host untouched, `grep` finding neither secret in the file.
+>
+> One limitation, deliberately recorded rather than papered over: a credential
+> sent in a shape the parameter list does not recognise — a whole cookie header,
+> say — is not redacted. The list is fixed and documented (`util.SECRET_PARAMS`)
+> so a miss is visible in the code that reads it, and so the filter cannot
+> rewrite a link into something that merely looks right.
 
-Video URLs
-can carry tokens, signed query strings or account identifiers; a future
-"log the command line" change (see **D1**) would write those to disk forever, as
-`viddl.log` is never rotated or truncated.
-
-**Do:** create the log `0o600`, rotate/truncate at, say, 256 KB, and redact
-query strings for a documented set of parameters before writing any URL. Make
-redaction a function with tests, since it is exactly the kind of code that rots.
+Video URLs can carry tokens, signed query strings or account identifiers, and
+before this landed a future "log the command line" change (see **D1**) would have
+written those to disk forever, as `viddl.log` was never rotated or truncated.
 
 ### S5 — Any web page can cold-open the app · **P2** · M
 
@@ -655,8 +672,9 @@ a way the screen could not explain." In practice the file is created and left at
 single `LOGGER.exception("Viddl: could not update the screen")`. Nothing logs a
 failed download, the yt-dlp command line, the exit code or the raised error.
 
-**Do:** log the command line, exit code and error details on failure, with the
-redaction from **S4**. Then the README becomes true, and `--doctor` becomes
+**Do:** log the command line, exit code and error details on failure. The
+redaction **S4** asked for is now in place, so this can simply log and get the
+filtering for free. Then the README becomes true, and `--doctor` becomes
 genuinely useful for support.
 
 ### E4 — Reproducible installs · **P2** · S
@@ -757,8 +775,8 @@ unrelated. Fix the URL or make it configurable, and keep the UA informative
 
 The app handles errors well but gives the user nothing to paste into a bug
 report. `viddl --report` could print a copy-pasteable block: versions from
-**E12**, the platform, which tool origin was used, the last error (redacted by
-**S4**) and the log path. No telemetry, no network — consistent with the
+**E12**, the platform, which tool origin was used, the last error (redacted
+automatically by the log's own filter, see **S4**) and the log path. No telemetry, no network — consistent with the
 project's "nothing leaves your machine" promise.
 
 ---
@@ -780,8 +798,9 @@ project's "nothing leaves your machine" promise.
 
 1. ✅ **S1** (argument injection) + regression tests — **done**.
 2. **E2** (LICENSE) and **E1** (CI) — cheap, and they protect everything after.
-3. ✅ **S3** (directory permissions) — **done**; **S4** (log content and
-   permissions) and **E3/D1** (make the log real) remain.
+3. ✅ **S3** and **S4** (directory, log and its content) — **done**; **E3/D1**
+   (make the log real) remain, and are now cheaper because the log is a safe
+   place to put things.
 4. **R1**/**R2** (resume, and actually stop children) — the biggest day-to-day pain.
 5. **R4**/**F3** (`viddl --update` + staleness hint) — the fix for the most common complaint.
 6. ✅ **S2** (verify downloads) — **done**; **R3** (expose the config escape hatch) still open. `--ignore-config` itself landed with **S1**.
@@ -836,7 +855,8 @@ bundled copy ahead of the system one, which the README does not say.
 the definition (`tui/app.py:40`) and one `LOGGER.exception` (`tui/app.py:279`).
 Running the real CLI into a clean home (`VIDDL_HOME=/tmp/vhome viddl --doctor`,
 exit 0) produces exactly two things: an empty `bin/` and a **0-byte**
-`viddl.log`.
+`viddl.log`. (Both still hold; only their modes have moved on — `0700` and
+`0600` as of **S3** and **S4**.)
 
 **The test suite is hermetic** — `tests/conftest.py` has an autouse fixture that
 redirects `VIDDL_HOME`, `VIDDL_DOWNLOAD_DIR`, `HOME`, `XDG_DATA_HOME`,
@@ -890,6 +910,18 @@ fetched for real and hashed:
 | A real yt-dlp 2026.08.19 installed through the engine | file `0700`, `bin/` `0700`, still prints its version when run |
 | Downloads folder when `VIDDL_DOWNLOAD_DIR` points elsewhere | left as the user's own folder (`0755`) — not ours to lock |
 
+**S4 checked by running the app and the real logger** — every line below is a
+`stat`, `cat` or `grep` on a real file, not a simulation:
+
+| Step | Result |
+| --- | --- |
+| `viddl --doctor` with a fresh folder | `viddl.log` created `0600`, 0 bytes |
+| An existing `0644` log, 360,000 bytes | tightened to `0600` by the next run |
+| The first write after that | rolled over: `viddl.log` 68 bytes, `viddl.log.1` 360,000 bytes, **both `0600`** |
+| `LOGGER.error` with `?token=SECRET123&v=dQw4w9WgXcQ` | written as `?token=<redacted>&v=dQw4w9WgXcQ` |
+| `LOGGER.exception` whose traceback holds `?sig=SIGNED456` | traceback written, `sig=<redacted>` |
+| Grepping the log for either secret | no match, exit 1 — neither value reached the file |
+
 ## Appendix B — Verified vs. assumed
 
 **Verified by running code or reading it here:** every code reference and every
@@ -909,6 +941,9 @@ systems. For **S3**, what a *second account* can reach was not attempted — thi
 sandbox refuses to drop privileges — so the claim rests on the mode bits being
 `0700` on disk and on the kernel enforcing them, not on a rival user trying and
 failing. Locking a folder down also cannot be verified on Windows at all here.
+For **S4** the same caveat applies to the log's mode on Windows, where access is
+governed by ACLs, and redaction was checked against the shapes listed in
+Appendix A — a credential sent in some other shape is not covered by it.
 
 **Checked rather than assumed now:** that `--ignore-config` leaves an explicit
 `--config-locations` alone, and that `--` really does end the options for yt-dlp

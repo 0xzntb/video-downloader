@@ -5,9 +5,12 @@ from __future__ import annotations
 import pytest
 
 from viddl.util import (
+    REDACTED,
+    SECRET_PARAMS,
     human_duration,
     human_size,
     is_probably_url,
+    redact,
     safe_video_link,
     shorten,
 )
@@ -84,6 +87,54 @@ def test_is_probably_url_accepts_links_and_rejects_sentences():
 )
 def test_safe_video_link_returns_only_plain_links(raw, expected):
     assert safe_video_link(raw) == expected
+
+
+def test_redact_keeps_a_link_worth_reading():
+    """Only the credentials go: what was fetched, and from where, stays."""
+    line = "could not fetch https://cdn.example.com/v?token=SECRET&v=dQw4w9WgXcQ"
+    cleaned = redact(line)
+    assert "SECRET" not in cleaned
+    assert f"token={REDACTED}" in cleaned
+    assert "cdn.example.com/v" in cleaned
+    assert "v=dQw4w9WgXcQ" in cleaned
+
+
+def test_redact_leaves_the_parameters_that_are_not_secrets():
+    for line in (
+        "https://www.youtube.com/watch?v=abc&list=PL123&t=42",
+        "https://example.com/a/b/c.mp4",
+        "a sentence with no link in it at all",
+        "",
+    ):
+        assert redact(line) == line
+
+
+def test_redact_covers_the_names_it_documents():
+    assert len(SECRET_PARAMS) == len(set(SECRET_PARAMS))
+    for name in SECRET_PARAMS:
+        cleaned = redact(f"https://example.com/v?{name}=hunter2")
+        assert "hunter2" not in cleaned, name
+        assert f"{name}={REDACTED}" in cleaned, name
+
+
+def test_redact_ignores_case_and_a_percent_encoded_separator():
+    """A hand-off link arrives with its inner link percent-encoded."""
+    hand_off = "viddl://download?url=https%3A%2F%2Fx%2Fv%3Ftoken%3Dhunter2"
+    assert "hunter2" not in redact("https://x/v?TOKEN=hunter2")
+    assert "hunter2" not in redact("https://x/v?Sig=hunter2")
+    assert "hunter2" not in redact(hand_off)
+
+
+def test_redact_removes_a_login_from_a_link():
+    cleaned = redact("https://someone:hunter2@example.com/v")
+    assert "hunter2" not in cleaned
+    assert cleaned == f"https://{REDACTED}@example.com/v"
+
+
+def test_redact_covers_a_bearer_token():
+    cleaned = redact("headers={'Authorization': 'Bearer abcdef1234567890'}")
+    assert "abcdef1234567890" not in cleaned
+    assert f"Bearer {REDACTED}" in cleaned
 
 
 def test_is_probably_url_refuses_option_shaped_input():

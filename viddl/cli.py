@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from . import APP_TITLE, __version__
-from . import appdata
+from . import appdata, logfile
 from .engine import Engine, ToolError
 from .formats import format_rows
 from .protocol import (
@@ -41,21 +41,11 @@ def _enable_log_file() -> None:
 
     Nothing here is required for Viddl to work, but when something does go
     wrong on a machine we cannot see, ``viddl --doctor`` prints this path and
-    the last run is already written down.
+    the last run is already written down. ``logfile`` owns what a line may
+    contain and how large the file is allowed to grow.
     """
-    logger = logging.getLogger("viddl")
-    if logger.handlers:
-        return
-    try:
-        appdata.ensure_dirs()
-        handler = logging.FileHandler(appdata.log_path(), encoding="utf-8")
-    except OSError:
-        return
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    )
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+    appdata.ensure_dirs()
+    logfile.enable(logging.getLogger(logfile.LOGGER_NAME))
 
 
 def build_parser() -> argparse.ArgumentParser:
