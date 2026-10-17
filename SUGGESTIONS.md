@@ -9,7 +9,7 @@ statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **1 of 60** (S1, in section 1).
+Progress so far: **2 of 60** (S1 and S2, both in section 1).
 
 **Legend**
 
@@ -34,7 +34,7 @@ Progress so far: **1 of 60** (S1, in section 1).
 | 4 | **R1** — resume interrupted downloads | A cancelled or dropped download starts from zero |
 | 5 | **R4** — `viddl --update` | Stale yt-dlp is *the* top cause of "this link stopped working" |
 | 6 | **F1** — cookies from the browser | Unlocks Instagram, Threads, TikTok, sometimes Vimeo (README says unsupported) |
-| 7 | **S2/S3** — verify and lock down downloaded helpers | Executables are fetched and `chmod +x`'d with no hash check |
+| 7 | ✅ **S2** / **S3** — verify and lock down downloaded helpers | Executables were fetched and `chmod +x`'d with no hash check — **S2 done**, S3 open |
 | 8 | **D1** — make the log tell the truth | README promises last-run details; the log is almost always empty |
 | 9 | **E7** — one real end-to-end test | Unit tests stub the engine; nothing proves the pipeline works together |
 | 10 | **U1** — theme and `NO_COLOR` support | Hardcoded colours; no light-terminal or high-contrast story |
@@ -106,7 +106,38 @@ weakens the fix.
 4. Regression tests: `build_args()` contains `--` before the URL; every payload
    in the table above is rejected by the CLI and by `parse_scheme()`.
 
-### S2 — Downloaded helpers are never verified · **P1** · M
+### S2 — Downloaded helpers are never verified · **P1** · M · ✅ **Done**
+
+> **Fixed.** Nothing Viddl downloads is executed without first checking it
+> against a published hash. `download_to()` now takes `expected_sha256` and
+> hashes the bytes *before* the atomic rename, so a file that fails its check is
+> deleted where it stands and never exists at the destination even briefly;
+> `_verified_download()` refuses anything that is not HTTPS, refuses a source
+> that publishes no checksum at all, and retries once on a mismatch (the one
+> innocent cause: a release rebuilt mid-download). Each mirror states how it can
+> be checked — yt-dlp through the `SHA2-256SUMS` beside every release (looked up,
+> not pinned, so a newer engine keeps working), the BtbN bundles through
+> `checksums.sha256` (the archive is checked before it is unpacked), and
+> eugeneware's macOS/Linux fallback binaries through hashes pinned in the source.
+> `--doctor` shows the hash recorded at install time and whether the file still
+> matches it. 23 tests added (270 → 293).
+>
+> One deliberate behaviour change, because the alternative was worse:
+> **johnvansickle.com is no longer an ffmpeg mirror** — it publishes only an MD5,
+> which is not verification. macOS ffmpeg installs now depend on pinned hashes for
+> eugeneware's 6.1.1 release and will refuse, with an explanation, if that
+> upstream `latest` moves — a real trade-off, since meanwhile the user installs
+> ffmpeg via Homebrew instead. Copies installed before this change carry no
+> recorded hash, so `--doctor` stays silent about them rather than guessing, and
+> system-installed tools are trusted as they are, since Viddl does not own them.
+>
+> Verified against the real mirrors, not simulated: a real yt-dlp install checked
+> against its published sums (2026.08.19, `1fa6733c…`); a real download with a
+> wrong hash refused with no file and no `.part` left behind; all three pinned
+> hashes matching the downloaded files; and the full ffmpeg route — a 156 MB
+> BtbN archive verified against BtbN's own checksums, extracted and running
+> (`N-127564-g3c92f003c7-20261015`). The Windows zip path and an actual macOS
+> install were hashed but never executed here.
 
 `engine.download_to()` streams over HTTPS and does a size sanity check
 (empty file → error), then `install_ytdlp`/`install_ffmpeg` `chmod 0o755` and
@@ -274,17 +305,19 @@ much later with a message about downloads rather than about permissions.
 **Do:** remember the failure (`appdata.ensure_dirs()` returning the error, or a
 module-level `last_error`) and surface it in `--doctor` and on the home screen.
 
-### R8 — The ffmpeg download is large, unverified and unresumable · **P2** · M
+### R8 — The ffmpeg download is large and unresumable · **P2** · M
 
-~100 MB from a hardcoded mirror with `_TIMEOUT = 30`, no resume, no hash check
-(**S2**), and on macOS arm64 the first mirror is native while the fallback is
+~100–156 MB from a mirror list pinned in the code, with `_TIMEOUT = 30` and no
+resume, and on macOS arm64 the first mirror is native while the fallback is
 `x64` — which only works through Rosetta, so a user without Rosetta gets a
-confusing failure rather than a clear message.
+confusing failure rather than a clear message. (The missing hash check this item
+also described has since landed — see **S2** — but a dropped 156 MB transfer still
+starts from zero.)
 
 **Do:** show the download size before asking (the app already asks before
 downloading large files — good), resume interrupted transfers with a Range
-request, verify the hash, and detect Rosetta availability on macOS or say plainly
-that the fallback needs it.
+request, and detect Rosetta availability on macOS or say plainly that the
+fallback needs it.
 
 ### R9 — Probing is a single 150-second blocking call · **P2** · M
 
@@ -713,7 +746,7 @@ project's "nothing leaves your machine" promise.
 3. **S3**/**S4** (dir and log permissions) and **E3/D1** (make the log real).
 4. **R1**/**R2** (resume, and actually stop children) — the biggest day-to-day pain.
 5. **R4**/**F3** (`viddl --update` + staleness hint) — the fix for the most common complaint.
-6. **S2** + **R3** (verify downloads; expose the config escape hatch) — finish the security pass. `--ignore-config` itself landed with **S1**.
+6. ✅ **S2** (verify downloads) — **done**; **R3** (expose the config escape hatch) still open. `--ignore-config` itself landed with **S1**.
 7. **F1** (cookies) — turns a documented dead end into a feature.
 8. **E7** (one real end-to-end test) + **E10** (coverage floor).
 9. **U1**/**U2**/**U3** (theme, title, done screen) — visible quality.
@@ -799,6 +832,18 @@ environment, with a local HTTP server standing in for a site, 8/8 checks:
 | the app's own `DownloadJob` with the hostile link | refused, nothing executed |
 | the app's own `DownloadJob` with a real link | downloaded `clip [clip].mp4`, 4128 bytes, phase `done` |
 
+**S2 checked against the real mirrors** — no simulation; every URL below was
+fetched for real and hashed:
+
+| Check | Result |
+| --- | --- |
+| Publish a checksums file at all? | yt-dlp yes (`SHA2-256SUMS`); BtbN yes (`checksums.sha256`); eugeneware no (stable per-asset hashes, no list); **johnvansickle MD5 only** |
+| Real yt-dlp install through `_verified_download()` | version 2026.08.19, `1fa6733c…`, matching the published sums |
+| A real download whose expected hash is wrong | refused, `ChecksumMismatch`, no file and no `.part` left |
+| The three pinned eugeneware hashes vs. the real files | all matched (`a90e3db6…`, `ebdddc93…`, `e7e7fb30…`) |
+| The BtbN list against the build Viddl asks for | `be655b0766…` present and matching |
+| Full ffmpeg route: 156 MB archive → verify → extract → run | `N-127564-g3c92f003c7-20261015`, archive hash checked, recorded hash matches what `--doctor` prints |
+
 ## Appendix B — Verified vs. assumed
 
 **Verified by running code or reading it here:** every code reference and every
@@ -811,11 +856,17 @@ behaviour (no network access to third-party sites during this survey); and
 whether Chrome demands a user gesture before launching a `viddl://` handler — a
 browser question this environment cannot answer. The *severity* of **S1** is no
 longer in doubt: it was reproduced against a real yt-dlp, which executed the
-payload in the injected config file.
+payload in the injected config file. For **S2** the same line applies to the
+Windows ffmpeg zip and to any actual macOS install: their hashes were confirmed
+by downloading and hashing the real files, not by installing them on those
+systems.
 
 **Checked rather than assumed now:** that `--ignore-config` leaves an explicit
 `--config-locations` alone, and that `--` really does end the options for yt-dlp
-— both confirmed by running yt-dlp 2026.08.19. The
+— both confirmed by running yt-dlp 2026.08.19. Likewise for **S2**: which mirrors
+actually publish a usable checksum (`SHA2-256SUMS`, `checksums.sha256`, the
+pinned eugeneware digests) and which publishes only an MD5 (johnvansickle) were
+established by fetching the files, not by reading documentation. The
 [yt-dlp README](https://github.com/yt-dlp/yt-dlp/tree/master#configuration) and
 the [Arch man page](https://man.archlinux.org/man/extra/yt-dlp/yt-dlp.1.en) match
 what the tool actually does.
