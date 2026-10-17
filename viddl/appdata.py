@@ -8,35 +8,65 @@ Everything lives in one folder per user, so there is nothing to configure:
 
 ``VIDDL_HOME`` overrides that folder and ``VIDDL_DOWNLOAD_DIR`` overrides the
 output folder; ``VIDDL_YTDLP`` and ``VIDDL_FFMPEG`` point at the two programs
-Viddl otherwise finds or fetches for itself.
+Viddl otherwise finds or fetches for itself, and ``VIDDL_YTDLP_ARGS`` adds
+extra yt-dlp options on purpose.
 
-All four are read through :func:`folder_override` and :func:`program_override`,
-which check what they are given before it is used. An environment variable is
-not a command line: nobody sees it in the app, and in a shared checkout or a CI
-job it can be set by something other than the person using Viddl. So a value is
-treated as a request — one that can be refused, with the refusal visible in
-``viddl --doctor`` — rather than as an instruction.
+All five are read through :func:`folder_override`, :func:`program_override` and
+:func:`ytdlp_arguments`, which check what they are given before it is used. An
+environment variable is not a command line: nobody sees it in the app, and in a
+shared checkout or a CI job it can be set by something other than the person
+using Viddl. So a value is treated as a request — one that can be refused, with
+the refusal visible in ``viddl --doctor`` — rather than as an instruction.
 """
 
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from . import APP_NAME
 
-# The four variables Viddl reads, named once so the documentation, the doctor
+# The five variables Viddl reads, named once so the documentation, the doctor
 # output and the tests cannot drift from the code that reads them.
 ENV_HOME = "VIDDL_HOME"
 ENV_DOWNLOAD_DIR = "VIDDL_DOWNLOAD_DIR"
 ENV_YTDLP = "VIDDL_YTDLP"
 ENV_FFMPEG = "VIDDL_FFMPEG"
-ENVIRONMENT_VARIABLES = (ENV_HOME, ENV_DOWNLOAD_DIR, ENV_YTDLP, ENV_FFMPEG)
+ENV_YTDLP_ARGS = "VIDDL_YTDLP_ARGS"
+ENVIRONMENT_VARIABLES = (
+    ENV_HOME,
+    ENV_DOWNLOAD_DIR,
+    ENV_YTDLP,
+    ENV_FFMPEG,
+    ENV_YTDLP_ARGS,
+)
+
+# Options Viddl builds for itself, by short and long name. A value that sets one
+# of these is refused rather than honoured: they decide where the file goes, what
+# it is called and which quality is fetched — the things the qualities screen
+# promised and the finished screen reports. Everything else is the user's to
+# choose, which is the whole point of the escape hatch.
+_OWNED_OPTIONS = {
+    "-P": "--paths",
+    "--paths": "--paths",
+    "-o": "--output",
+    "--output": "--output",
+    "-f": "--format",
+    "--format": "--format",
+    "-a": "--batch-file",
+    "--batch-file": "--batch-file",
+    "-s": "--simulate",
+    "--simulate": "--simulate",
+    "--skip-download": "--skip-download",
+    "--config-locations": "--config-locations",
+    "--progress-template": "--progress-template",
+}
 
 # Viddl's own folders hold two downloaded programs, so they are for the user
 # who installed them and nobody else on the machine.
@@ -135,6 +165,75 @@ def program_override(name: str) -> Optional[Path]:
     return path
 
 
+def _owned_option(token: str) -> str:
+    """The option this token sets, when it is one Viddl decides for itself.
+
+    Long options are matched by abbreviation too, because yt-dlp's parser
+    accepts them: ``--path /tmp`` means ``--paths``, and a guard that only knew
+    the full spelling would be a guard you can walk around by typing less.
+    """
+    name = token.split("=", 1)[0]
+    if name in _OWNED_OPTIONS:
+        return _OWNED_OPTIONS[name]
+    # Short options take their value attached, as in ``-P/tmp`` or ``-fbest``.
+    if len(token) > 2 and token[:2] in _OWNED_OPTIONS:
+        return _OWNED_OPTIONS[token[:2]]
+    if name.startswith("--"):
+        for owned in sorted(set(_OWNED_OPTIONS.values())):
+            if owned.startswith(name):
+                return owned
+    return ""
+
+
+def _arguments(value: str) -> Tuple[List[str], str]:
+    """The options ``VIDDL_YTDLP_ARGS`` asks for, and why they cannot be used.
+
+    Split the way a shell splits them, because that is what a person writing a
+    list of options expects, and checked one token at a time. Refusing the whole
+    value on the first bad token is deliberate: half a command line is a
+    command line nobody wrote.
+    """
+    if not value:
+        return [], "empty"
+    if any(character in value for character in "\x00\n\r"):
+        return [], "contains a control character"
+    try:
+        tokens = shlex.split(value)
+    except ValueError:
+        return [], "unbalanced quotes"
+    if not tokens:
+        return [], "empty"
+    for token in tokens:
+        if token == "--":
+            return [], "would end Viddl's own options early"
+        if "://" in token or token.startswith("www."):
+            # A link is not a setting: it would be a second thing to download,
+            # and Viddl would report one file. A word without an option in
+            # front of it is left to yt-dlp to complain about, because that is
+            # exactly what an option's value looks like (``--limit-rate 2M``).
+            return [], f"contains a link, not an option: {token}"
+        owned = _owned_option(token)
+        if owned:
+            return [], f"sets {owned}, which Viddl decides"
+    return tokens, ""
+
+
+def ytdlp_arguments() -> List[str]:
+    """Extra yt-dlp options from the environment, checked; empty if refused."""
+    return _arguments(_asked(ENV_YTDLP_ARGS))[0]
+
+
+def ytdlp_arguments_problem() -> str:
+    """Why ``VIDDL_YTDLP_ARGS`` cannot be used, or ``""`` when it can.
+
+    Unset is not a problem: it is the ordinary case. Set and useless — empty,
+    unbalanced, or asking for something Viddl decides — is.
+    """
+    if ENV_YTDLP_ARGS not in os.environ:
+        return ""
+    return _arguments(_asked(ENV_YTDLP_ARGS))[1]
+
+
 def overrides() -> List[Override]:
     """Every environment variable that is set, and what became of it.
 
@@ -146,11 +245,14 @@ def overrides() -> List[Override]:
         if name not in os.environ:
             continue
         value = _asked(name)
-        problem = _refuse(value)
+        if name == ENV_YTDLP_ARGS:
+            problem = ytdlp_arguments_problem()
+        else:
+            problem = _refuse(value)
         if not problem:
             if name in (ENV_YTDLP, ENV_FFMPEG):
                 problem = "" if program_override(name) else "not a program Viddl can run"
-            else:
+            elif name != ENV_YTDLP_ARGS:
                 problem = "" if folder_override(name) else "not a folder"
         found.append(Override(name, value, problem))
     return found

@@ -185,9 +185,10 @@ defend against — is in [SECURITY.md](SECURITY.md).
 
 ## Environment variables
 
-Four variables change where Viddl looks. None are needed for normal use; they
-exist for tests, shared machines and unusual setups. `viddl --doctor` prints the
-ones that are set and what became of each, so none of them is a secret.
+Five variables change where Viddl looks, and one of them changes what it asks
+for. None are needed for normal use; they exist for tests, shared machines and
+unusual setups. `viddl --doctor` prints the ones that are set and what became of
+each, so none of them is a secret.
 
 | Variable | What it does | Why you would use it |
 | --- | --- | --- |
@@ -195,6 +196,7 @@ ones that are set and what became of each, so none of them is a secret.
 | `VIDDL_DOWNLOAD_DIR` | Where finished videos and MP3s go (default: your Downloads folder). | Save to a media drive, or straight into a project folder. |
 | `VIDDL_YTDLP` | The yt-dlp to run, instead of the one Viddl finds or downloads. | Use a build of your own, or the one your package manager installed. |
 | `VIDDL_FFMPEG` | The ffmpeg to use, instead of the one Viddl finds or downloads. | Same, for ffmpeg. |
+| `VIDDL_YTDLP_ARGS` | Extra options for yt-dlp, split like a shell splits them: `--limit-rate 2M --cookies-from-browser chrome`. | Slow a link down, use your browser's cookies for a site that asks you to sign in, or pass anything else yt-dlp understands. |
 
 Each value is checked before it is used, and one that cannot be honoured is
 ignored rather than half-applied. A value that looks like an option
@@ -202,8 +204,29 @@ ignored rather than half-applied. A value that looks like an option
 folder that is really a file is refused, rather than failing later in a way
 nobody can explain; and a bare program name means your `PATH` — never the
 working directory, which is not something Viddl gets to choose when a browser
-starts it. `viddl --doctor` says which of the four are in use, which were
+starts it. `viddl --doctor` says which of the five are in use, which were
 ignored, and why.
+
+`VIDDL_YTDLP_ARGS` is the deliberate way to ask for something unusual, because
+yt-dlp's own config file is not read at all: a line in `~/.config/yt-dlp/config`
+can change where files go, rename them, or run a command afterwards, and a
+setting you forgot about is a strange failure a year later. Your options are
+added to both the download and the look-up that builds the quality menu, and
+they come last, so where they and Viddl's defaults disagree yours win. A few
+are refused whole rather than half-applied — abbreviated or not, since yt-dlp
+accepts `--form` and `--path` — because they decide something Viddl has already
+promised: `--paths`, `--output`, `--format` and `--batch-file` (where the file
+goes and what is fetched — what the quality you clicked said, and what the
+finished screen reports), `--simulate` and `--skip-download` (which would
+download nothing), `--progress-template` (the progress Viddl reads) and
+`--config-locations` (which would read the config file this variable exists to
+replace). A link in the value is refused too, since it would be a second thing
+to download while Viddl reports one.
+
+Refusal is all-or-nothing: one bad option drops the whole value, because the
+rest of a command line nobody finished writing is not something to guess at.
+If a setting seems not to have taken, `viddl --doctor` says which part of the
+value was refused and why.
 
 ## Development
 

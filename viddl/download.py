@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+from . import appdata
 from .engine import Engine, ToolError, is_windows
 from .errors import explain
 from .formats import MediaInfo, MediaOption, parse_info
@@ -116,10 +117,13 @@ def probe_video(engine: Engine, url: str, timeout: int = 150) -> MediaInfo:
         "--socket-timeout",
         "20",
         "--no-color",
-        # "--" ends the options: the link can never be read as one.
-        "--",
-        url,
     )
+    # The same extra options as a download: a link that needs cookies to be read
+    # would otherwise show an empty quality menu, which is a worse failure than
+    # a probe that fails with a reason.
+    args += appdata.ytdlp_arguments()
+    # "--" ends the options: the link can never be read as one.
+    args += ["--", url]
     try:
         completed = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
@@ -228,6 +232,11 @@ class DownloadJob:
             self.option.format_selector,
         ]
         args += list(self.option.extra_args)
+        # Options the user asked for by name (R3). They come last, so that where
+        # they and Viddl's own settings disagree theirs win — the few that would
+        # make the app lose track of the file it is watching for are refused
+        # before they get here (see ``appdata.ytdlp_arguments``).
+        args += appdata.ytdlp_arguments()
         # "--" ends the options, so the link is always read as a link even if
         # it starts with a dash. Without this, a page handing over
         # "--config-locations=./x.conf" would have it treated as a flag.

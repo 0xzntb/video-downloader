@@ -9,7 +9,7 @@ statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **10 of 60** — S1–S6 in section 1, R1–R2 in section 2, D2–D3 in
+Progress so far: **11 of 60** — S1–S6 in section 1, R1–R3 in section 2, D2–D3 in
 section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -390,11 +390,43 @@ process group; escalate `terminate()` → `kill()` after a few seconds; `wait()`
 with a timeout. On Windows use `CREATE_NEW_PROCESS_GROUP` / `taskkill /T`. Add a
 test that a fake long-running child is actually gone after cancel.
 
-### R3 — yt-dlp's user config leaks into every download · **P1** · S
+### R3 — yt-dlp's user config leaks into every download · **P1** · S · ✅ **Done**
 
-> **Half done, by S1:** both yt-dlp invocations now pass `--ignore-config`, so a
-> config file cannot quietly change a run. What is still missing is the other
-> half of the "Do" — a documented way to pass options *deliberately*.
+> **Fixed.** Both invocations already passed `--ignore-config` (that came with
+> S1); what was missing was the deliberate counterpart, and it is now
+> `VIDDL_YTDLP_ARGS`. The value is split the way a shell splits it — quotes and
+> all, never through a shell — checked token by token, and added to **both** the
+> download and the look-up that builds the quality menu, since a link that needs
+> cookies fails at the probe long before a download starts. It goes last, so a
+> deliberate choice wins over Viddl's defaults, and the few options that would
+> take over a decision Viddl has already made are refused whole: `--paths`,
+> `--output`, `--format`, `--batch-file`, `--simulate`, `--skip-download`,
+> `--progress-template` and `--config-locations`. Half a command line is a
+> command line nobody wrote. A value containing a link is refused too — it would
+> be a second thing to download while Viddl reports one. Refusals are named in
+> `viddl --doctor`, like every other override, and `ENVIRONMENT_VARIABLES` now
+> lists five.
+>
+> **What the first version of the guard missed, measured rather than assumed:**
+> yt-dlp's parser accepts abbreviations of long options — `--form best`,
+> `--path /tmp`, `--sim` and `--ski` all parse — so a check on the full spellings
+> alone could be walked around by typing less. The matching now covers
+> abbreviations, and `--format-sort` (a different, real option) still passes.
+>
+> Measured with real yt-dlp 2026.08.19 and the same `~/.config/yt-dlp/config`
+> throughout: **plain yt-dlp** with that file ran its `--exec` line and wrote the
+> marker; **Viddl's own command** with the same file downloaded the video and did
+> not (`--ignore-config`), so the leak the item describes is real and closed.
+> `VIDDL_YTDLP_ARGS=--user-agent Viddl-R3-UA` was seen by a local HTTP server on
+> the download **and** on the probe; a refused `-o` left the file in Viddl's own
+> folder and never created the directory it asked for; `--doctor` prints
+> `(in use)` or `(ignored — sets --format, which Viddl decides)`. 31 tests added
+> (372 → 403).
+>
+> Not defended against, and now stated in `SECURITY.md`: this variable is
+> *options*, so anyone who can set your environment can ask yt-dlp to do almost
+> anything, `--exec` included. The checks are a boundary against forgetting and
+> mistyping, not a sandbox.
 
 No `--ignore-config`, so a user's `~/.config/yt-dlp/config` (or a portable
 `yt-dlp.conf` next to the binary) silently changes Viddl's behaviour — output

@@ -42,6 +42,18 @@ def test_doctor_says_which_overrides_are_in_effect(capsys, monkeypatch):
     assert "VIDDL_YTDLP=--exec=calc.exe (ignored" in output
 
 
+def test_doctor_shows_the_extra_yt_dlp_options(capsys, monkeypatch):
+    """The one deliberate way to add a setting is visible where the others are."""
+    monkeypatch.setenv("VIDDL_YTDLP_ARGS", "--limit-rate 2M")
+
+    assert main(["--doctor"]) == 0
+    assert "VIDDL_YTDLP_ARGS=--limit-rate 2M (in use)" in capsys.readouterr().out
+
+    monkeypatch.setenv("VIDDL_YTDLP_ARGS", "-f best")
+    assert main(["--doctor"]) == 0
+    assert "(ignored — sets --format, which Viddl decides)" in capsys.readouterr().out
+
+
 def test_version_flag(capsys):
     with pytest.raises(SystemExit) as caught:
         main(["--version"])

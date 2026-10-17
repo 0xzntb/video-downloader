@@ -859,6 +859,60 @@ def test_a_process_without_a_group_of_its_own_is_still_stopped(tmp_path, monkeyp
     assert stopped == ["term", "kill"]
 
 
+# ---------------------------------------------------------------------------
+# options the user asks for by name (R3)
+#
+# The config file is ignored, so this is the one deliberate way to add an option:
+# it has to reach the real command line, and it has to reach the probe as well,
+# or a link that needs cookies shows an empty quality menu.
+# ---------------------------------------------------------------------------
+
+
+def test_extra_options_reach_the_download_command(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIDDL_YTDLP_ARGS", "--limit-rate 2M --cookies-from-browser chrome")
+    job = DownloadJob(FakeEngine(["/fake"]), "https://x.invalid/v", video_option(), tmp_path)
+
+    args = job.build_args()
+
+    assert "--limit-rate" in args and "2M" in args
+    assert "--cookies-from-browser" in args and "chrome" in args
+    # Last, so a deliberate choice wins over Viddl's own default for anything
+    # it has not reserved — and never after the separator, where it would be a
+    # link.
+    assert args[-1] == "https://x.invalid/v"
+    assert args[-2] == "--"
+    assert args.index("--limit-rate") < args.index("--")
+
+
+def test_extra_options_reach_the_probe_too(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        return subprocess.CompletedProcess(args, 0, stdout='{"title": "Fake"}', stderr="")
+
+    monkeypatch.setattr(download_mod.subprocess, "run", fake_run)
+    monkeypatch.setenv("VIDDL_YTDLP_ARGS", "--cookies-from-browser chrome")
+
+    probe_video(FakeEngine(["/fake/yt-dlp"]), "https://x.invalid/v")
+
+    args = captured["args"]
+    assert "--cookies-from-browser" in args
+    assert args[-2:] == ["--", "https://x.invalid/v"]
+
+
+def test_a_refused_option_never_reaches_the_command(tmp_path, monkeypatch):
+    """An option that would take over a decision the app already made is dropped."""
+    monkeypatch.setenv("VIDDL_YTDLP_ARGS", "-o/tmp/elsewhere/%(title)s.%(ext)s")
+    job = DownloadJob(FakeEngine(["/fake"]), "https://x.invalid/v", video_option(), tmp_path)
+
+    args = job.build_args()
+
+    assert not any("elsewhere" in token for token in args)
+    assert args.count("-o") == 1  # Viddl's own output template, and only it
+    assert str(tmp_path) in args
+
+
 def test_a_stop_before_the_engine_starts_leaves_nothing_running(tmp_path, monkeypatch):
     """Cancel used to land in the gap before ``Popen`` and be forgotten."""
     def must_not_start(*args, **kwargs):  # pragma: no cover - the point

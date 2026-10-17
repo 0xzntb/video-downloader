@@ -62,13 +62,18 @@ in it that you can ignore.
 * **A hostile page choosing the link is not a data leak by itself** — but the
   link is visible on screen, and the probe goes to whoever chose it. Do not click
   a hand-off you did not ask for.
-* **Anyone who can set your environment.** Four variables point Viddl at other
-  folders and other programs (`VIDDL_HOME`, `VIDDL_DOWNLOAD_DIR`, `VIDDL_YTDLP`,
-  `VIDDL_FFMPEG`; the README lists them). Each value is checked before it is
-  used, and `viddl --doctor` shows which are in effect — but that is visibility,
-  not prevention: someone who can set `VIDDL_YTDLP` for your process can name a
-  program of their choosing, exactly as they could by changing your `PATH`. Do
-  not run Viddl with an environment someone else controls.
+* **Anyone who can set your environment.** Five variables point Viddl at other
+  folders and other programs, and one — `VIDDL_YTDLP_ARGS` — hands yt-dlp
+  options of the setter's choosing (`VIDDL_HOME`, `VIDDL_DOWNLOAD_DIR`,
+  `VIDDL_YTDLP`, `VIDDL_FFMPEG`, `VIDDL_YTDLP_ARGS`; the README lists them).
+  Each value is checked before it is used, and `viddl --doctor` shows which are
+  in effect — but that is visibility, not prevention. Someone who can set
+  `VIDDL_YTDLP` for your process can name a program of their choosing, exactly
+  as they could by changing your `PATH`, and someone who can set
+  `VIDDL_YTDLP_ARGS` can ask that program to do more or less anything yt-dlp
+  does, `--exec` included. The checks stop a *forgotten* or *mistyped* setting
+  from quietly moving files or changing the quality that was chosen; they are
+  not a sandbox. Do not run Viddl with an environment someone else controls.
 * **Windows and macOS registration** are implemented but exercised only through
   simulated platform branches in tests; the running app's behaviour on those
   systems is not verified here.

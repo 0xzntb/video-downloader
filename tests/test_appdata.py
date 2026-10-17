@@ -208,6 +208,7 @@ def test_the_variables_are_the_ones_the_readme_lists(no_environment):
         "VIDDL_DOWNLOAD_DIR",
         "VIDDL_YTDLP",
         "VIDDL_FFMPEG",
+        "VIDDL_YTDLP_ARGS",
     )
 
 
@@ -309,6 +310,120 @@ def test_an_override_of_an_unknown_program_says_so(no_environment, monkeypatch):
     monkeypatch.setenv("VIDDL_FFMPEG", "ffmpeg-on-my-path")  # nothing of that name
     assert [entry.problem for entry in appdata.overrides()] == [
         "not a program Viddl can run"
+    ]
+
+
+# ---------------------------------------------------------------------------
+# extra yt-dlp options, deliberately (R3)
+#
+# yt-dlp's own config file used to change every run behind the user's back. It
+# is now ignored, and this is the documented way to ask for something unusual:
+# named, visible in --doctor, and refused when it would take over a decision the
+# app has already made on the user's behalf.
+# ---------------------------------------------------------------------------
+
+
+def test_no_extra_options_unless_asked_for(no_environment):
+    assert appdata.ytdlp_arguments() == []
+    assert appdata.ytdlp_arguments_problem() == ""
+
+
+def test_set_but_empty_is_said_to_be_empty(no_environment, monkeypatch):
+    """The other variables are reported when set and useless; so is this one."""
+    monkeypatch.setenv("VIDDL_YTDLP_ARGS", "   ")
+    assert appdata.ytdlp_arguments() == []
+    assert appdata.ytdlp_arguments_problem() == "empty"
+    assert appdata.environment_report() == [
+        "Environment:  VIDDL_YTDLP_ARGS= (ignored — empty)"
+    ]
+
+
+def test_extra_options_are_split_the_way_a_shell_splits_them(no_environment, monkeypatch):
+    monkeypatch.setenv(
+        "VIDDL_YTDLP_ARGS", '--limit-rate 2M --cookies-from-browser chrome --user-agent "a b"'
+    )
+    assert appdata.ytdlp_arguments() == [
+        "--limit-rate",
+        "2M",
+        "--cookies-from-browser",
+        "chrome",
+        "--user-agent",
+        "a b",
+    ]
+    assert appdata.ytdlp_arguments_problem() == ""
+
+
+@pytest.mark.parametrize(
+    "value, reason",
+    [
+        ("-o/tmp/elsewhere/%(title)s.%(ext)s", "sets --output, which Viddl decides"),
+        ("--output %(ext)s", "sets --output, which Viddl decides"),
+        ("-P /tmp", "sets --paths, which Viddl decides"),
+        ("--paths=/tmp", "sets --paths, which Viddl decides"),
+        ("-f best", "sets --format, which Viddl decides"),
+        ("--format=worst", "sets --format, which Viddl decides"),
+        ("--config-locations=./c.conf", "sets --config-locations, which Viddl decides"),
+        ("--progress-template %(progress)s", "sets --progress-template, which Viddl decides"),
+        ("-s", "sets --simulate, which Viddl decides"),
+        ("--skip-download", "sets --skip-download, which Viddl decides"),
+        # yt-dlp accepts abbreviations, so an abbreviation has to be refused too.
+        ("--form best", "sets --format, which Viddl decides"),
+        ("--path /tmp", "sets --paths, which Viddl decides"),
+        ("--out %(ext)s", "sets --output, which Viddl decides"),
+        ("--ski", "sets --skip-download, which Viddl decides"),
+        ("--sim", "sets --simulate, which Viddl decides"),
+        ("--config-loc ./c.conf", "sets --config-locations, which Viddl decides"),
+        ("-- https://x.invalid/v", "would end Viddl's own options early"),
+        ("https://x.invalid/v", "contains a link, not an option: https://x.invalid/v"),
+        (
+            "--limit-rate 2M www.example.invalid/v",
+            "contains a link, not an option: www.example.invalid/v",
+        ),
+        ('--limit-rate "2M', "unbalanced quotes"),
+        ("--limit-rate 2M\n--exec echo hi", "contains a control character"),
+    ],
+)
+def test_an_extra_option_that_takes_over_a_decision_is_refused(
+    no_environment, monkeypatch, value, reason
+):
+    """Refused whole: half a command line is a command line nobody wrote."""
+    monkeypatch.setenv("VIDDL_YTDLP_ARGS", value)
+
+    assert appdata.ytdlp_arguments() == []
+    assert appdata.ytdlp_arguments_problem() == reason
+
+
+def test_a_second_link_is_refused_but_a_word_that_is_a_value_is_not(
+    no_environment, monkeypatch
+):
+    """``--limit-rate 2M`` has to survive: a value is not a setting."""
+    monkeypatch.setenv("VIDDL_YTDLP_ARGS", "--limit-rate 2M")
+    assert appdata.ytdlp_arguments() == ["--limit-rate", "2M"]
+
+    monkeypatch.setenv("VIDDL_YTDLP_ARGS", "--limit-rate 2M https://x.invalid/other")
+    assert appdata.ytdlp_arguments() == []
+    assert "contains a link" in appdata.ytdlp_arguments_problem()
+
+
+def test_nothing_in_the_value_is_handed_to_a_shell(no_environment, monkeypatch):
+    """It is a list of arguments, not a command line: no expansion, no splitting."""
+    monkeypatch.setenv("VIDDL_YTDLP_ARGS", "--limit-rate=$(rm -rf /)")
+    assert appdata.ytdlp_arguments() == ["--limit-rate=$(rm", "-rf", "/)"]
+
+
+def test_the_doctor_reports_the_extra_options_like_the_other_variables(
+    no_environment, monkeypatch
+):
+    monkeypatch.setenv("VIDDL_YTDLP_ARGS", "--limit-rate 2M")
+    assert appdata.overrides() == [appdata.Override("VIDDL_YTDLP_ARGS", "--limit-rate 2M")]
+    assert appdata.environment_report() == [
+        "Environment:  VIDDL_YTDLP_ARGS=--limit-rate 2M (in use)"
+    ]
+
+    monkeypatch.setenv("VIDDL_YTDLP_ARGS", "-o/tmp/x")
+    assert appdata.environment_report() == [
+        "Environment:  VIDDL_YTDLP_ARGS=-o/tmp/x "
+        "(ignored — sets --output, which Viddl decides)"
     ]
 
 
