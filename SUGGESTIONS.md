@@ -9,7 +9,7 @@ statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **2 of 60** (S1 and S2, both in section 1).
+Progress so far: **3 of 60** (S1, S2 and S3, all in section 1).
 
 **Legend**
 
@@ -34,7 +34,7 @@ Progress so far: **2 of 60** (S1 and S2, both in section 1).
 | 4 | **R1** — resume interrupted downloads | A cancelled or dropped download starts from zero |
 | 5 | **R4** — `viddl --update` | Stale yt-dlp is *the* top cause of "this link stopped working" |
 | 6 | **F1** — cookies from the browser | Unlocks Instagram, Threads, TikTok, sometimes Vimeo (README says unsupported) |
-| 7 | ✅ **S2** / **S3** — verify and lock down downloaded helpers | Executables were fetched and `chmod +x`'d with no hash check — **S2 done**, S3 open |
+| 7 | ✅ **S2** + **S3** — verify and lock down downloaded helpers | Executables were fetched and `chmod +x`'d with no hash check, into a folder anyone could read — **both done** |
 | 8 | **D1** — make the log tell the truth | README promises last-run details; the log is almost always empty |
 | 9 | **E7** — one real end-to-end test | Unit tests stub the engine; nothing proves the pipeline works together |
 | 10 | **U1** — theme and `NO_COLOR` support | Hardcoded colours; no light-terminal or high-contrast story |
@@ -153,10 +153,34 @@ published `SHA2-256SUMS`. At minimum, reject non-`https://` URLs explicitly
 rather than relying on the caller's list, and record the hash of what was
 installed in `--doctor` output so a later replacement is visible.
 
-### S3 — The app's own directory is world-readable and holds executables · **P1** · S
+### S3 — The app's own directory is world-readable and holds executables · **P1** · S · ✅ **Done**
 
-`ensure_dirs()` creates `~/.local/share/viddl` and `bin/` with whatever the umask
-gives (commonly `0755`). That folder holds two executables (`yt-dlp`, `ffmpeg`)
+> **Fixed.** `appdata._secure_dir()` now creates Viddl's folders *and* applies
+> `0700` to them, so a folder left `0755` by an earlier version is tightened the
+> next time the app starts rather than only for new installs. The mode is set
+> after `mkdir`, because the mode passed to `mkdir` is the umask's to trim, and
+> the last-resort `Downloads` folder inside the app folder gets the same
+> treatment. Two places are deliberately left alone: the root directory and the
+> user's own home directory, which `VIDDL_HOME` can point at and which are not
+> Viddl's to lock down. On Windows the mode change is skipped rather than
+> pretended about, since access there is governed by ACLs.
+>
+> The executables were tightened too, which the item did not ask for but the
+> reasoning demands: `engine._make_runnable()` now sets `0700` on a downloaded
+> helper instead of OR-ing the three execute bits onto whatever the umask gave,
+> so a folder whose permissions are later reset (a restore, a copied home
+> directory) does not turn two programs world-executable again. 12 tests added
+> (293 → 305).
+>
+> Verified with the real CLI and a real install, not just in tests: starting
+> `viddl --doctor` against an app folder deliberately left at `0755` returned it
+> to `0700` (folder and `bin/`), and a real yt-dlp 2026.08.19 installed into it
+> landed as a `0700` file that still runs. A second account reading it could not
+> be tried here — this sandbox refuses to drop privileges — so cross-user access
+> rests on the mode bits rather than on an attempt.
+
+`ensure_dirs()` created `~/.local/share/viddl` and `bin/` with whatever the umask
+gave (commonly `0755`). That folder holds two executables (`yt-dlp`, `ffmpeg`)
 plus a log.
 
 **Do:** create the data dir `0o700` (and `bin/` too), and chmod existing dirs to
@@ -743,7 +767,8 @@ project's "nothing leaves your machine" promise.
 
 1. ✅ **S1** (argument injection) + regression tests — **done**.
 2. **E2** (LICENSE) and **E1** (CI) — cheap, and they protect everything after.
-3. **S3**/**S4** (dir and log permissions) and **E3/D1** (make the log real).
+3. ✅ **S3** (directory permissions) — **done**; **S4** (log content and
+   permissions) and **E3/D1** (make the log real) remain.
 4. **R1**/**R2** (resume, and actually stop children) — the biggest day-to-day pain.
 5. **R4**/**F3** (`viddl --update` + staleness hint) — the fix for the most common complaint.
 6. ✅ **S2** (verify downloads) — **done**; **R3** (expose the config escape hatch) still open. `--ignore-config` itself landed with **S1**.
@@ -844,6 +869,14 @@ fetched for real and hashed:
 | The BtbN list against the build Viddl asks for | `be655b0766…` present and matching |
 | Full ffmpeg route: 156 MB archive → verify → extract → run | `N-127564-g3c92f003c7-20261015`, archive hash checked, recorded hash matches what `--doctor` prints |
 
+**S3 checked by running the app** — real CLI, real install, `stat` on the result:
+
+| Step | Result |
+| --- | --- |
+| `viddl --doctor` with the app folder and `bin/` pre-created `0755` | both returned `0700`, exit 0 |
+| A real yt-dlp 2026.08.19 installed through the engine | file `0700`, `bin/` `0700`, still prints its version when run |
+| Downloads folder when `VIDDL_DOWNLOAD_DIR` points elsewhere | left as the user's own folder (`0755`) — not ours to lock |
+
 ## Appendix B — Verified vs. assumed
 
 **Verified by running code or reading it here:** every code reference and every
@@ -859,7 +892,10 @@ longer in doubt: it was reproduced against a real yt-dlp, which executed the
 payload in the injected config file. For **S2** the same line applies to the
 Windows ffmpeg zip and to any actual macOS install: their hashes were confirmed
 by downloading and hashing the real files, not by installing them on those
-systems.
+systems. For **S3**, what a *second account* can reach was not attempted — this
+sandbox refuses to drop privileges — so the claim rests on the mode bits being
+`0700` on disk and on the kernel enforcing them, not on a rival user trying and
+failing. Locking a folder down also cannot be verified on Windows at all here.
 
 **Checked rather than assumed now:** that `--ignore-config` leaves an explicit
 `--config-locations` alone, and that `--` really does end the options for yt-dlp

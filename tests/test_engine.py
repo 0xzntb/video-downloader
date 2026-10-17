@@ -702,6 +702,18 @@ def test_extract_member_skips_directories_in_a_zip(tmp_path):
     assert os.access(dest, os.X_OK)
 
 
+@needs_posix_exec
+def test_an_unpacked_helper_is_runnable_by_its_owner_and_nobody_else(tmp_path):
+    """The folder is locked, and the program inside is too (S3)."""
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("bin/ffmpeg", b"ELF")
+    dest = tmp_path / "out" / "ffmpeg"
+    _extract_member(archive, r"bin/ffmpeg$", dest)
+    assert os.access(dest, os.X_OK)
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o700
+
+
 def test_extract_member_can_leave_the_executable_bit_alone(tmp_path):
     archive = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive, "w") as zf:
@@ -950,6 +962,44 @@ def test_a_sidecar_that_is_missing_or_unwritable_is_not_fatal(tmp_path):
     assert recorded_checksum(tmp_path / "tool") is None
     # A path that cannot be written to must not take the install down with it.
     record_checksum(tmp_path / "does-not-exist" / "tool", "ab" * 32)
+
+
+@needs_posix_exec
+def test_an_installed_engine_is_not_readable_by_anyone_else(tmp_path, monkeypatch):
+    """A downloaded program nobody else can read or run, even outside our folder."""
+
+    def body(url, dest, on_progress):
+        write_executable(Path(dest), "#!/usr/bin/env python3\nprint('2099.05.05')\n")
+        return Path(dest)
+
+    monkeypatch.setattr(engine_mod, "download_to", as_download(body))
+    patch_checksums(monkeypatch)
+
+    engine = Engine(home=tmp_path / "app")
+    engine.install_ytdlp()
+
+    assert stat.S_IMODE(engine.ytdlp_path.stat().st_mode) == 0o700
+
+
+@needs_posix_exec
+def test_making_a_helper_runnable_tightens_a_loose_file(tmp_path):
+    """What the mode is, not what it used to be: a 0755 file becomes 0700."""
+    path = write_executable(tmp_path / "ffmpeg", "#!/bin/sh\n")
+    assert stat.S_IMODE(path.stat().st_mode) == 0o755
+
+    engine_mod._make_runnable(path)
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o700
+
+
+def test_a_file_chmod_refuses_does_not_take_the_install_down(tmp_path, monkeypatch):
+    path = write_executable(tmp_path / "ffmpeg", "#!/bin/sh\n")
+
+    def refuse(target, mode):
+        raise OSError("operation not supported")
+
+    monkeypatch.setattr(engine_mod.os, "chmod", refuse)
+    engine_mod._make_runnable(path)  # must not raise
 
 
 def test_the_installed_hash_is_recorded_and_a_swap_is_noticed(tmp_path, monkeypatch):

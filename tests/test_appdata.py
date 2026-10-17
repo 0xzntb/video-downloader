@@ -7,12 +7,21 @@ exercise the real per-platform decisions, not the test overrides.
 from __future__ import annotations
 
 import os
+import stat
 import sys
 from pathlib import Path
 
 import pytest
 
 from viddl import appdata
+
+needs_posix_permissions = pytest.mark.skipif(
+    sys.platform.startswith("win"), reason="Windows governs access with ACLs"
+)
+
+
+def mode_of(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
 
 
 @pytest.fixture
@@ -72,6 +81,98 @@ def test_ensure_dirs_stays_quiet_when_it_cannot_write(tmp_path, monkeypatch):
     blocker.write_text("not a folder", encoding="utf-8")
     monkeypatch.setenv("VIDDL_HOME", str(blocker / "viddl"))
     appdata.ensure_dirs()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# keeping the app folder to ourselves (S3)
+#
+# The folder holds two downloaded programs. Another account on a shared machine
+# should be able to read neither them nor the log beside them, and should not be
+# able to drop a replacement in their place.
+# ---------------------------------------------------------------------------
+
+
+@needs_posix_permissions
+def test_the_app_folder_and_bin_are_owner_only(tmp_path, monkeypatch):
+    home = tmp_path / "app"
+    monkeypatch.setenv("VIDDL_HOME", str(home))
+    appdata.ensure_dirs()
+    assert mode_of(home) == 0o700
+    assert mode_of(home / "bin") == 0o700
+
+
+@needs_posix_permissions
+def test_a_folder_left_loose_by_an_earlier_version_is_tightened(tmp_path, monkeypatch):
+    """An upgrade has to fix what is already on disk, not only what it creates."""
+    home = tmp_path / "app"
+    (home / "bin").mkdir(parents=True)
+    os.chmod(home, 0o755)
+    os.chmod(home / "bin", 0o775)
+    monkeypatch.setenv("VIDDL_HOME", str(home))
+
+    appdata.ensure_dirs()
+
+    assert mode_of(home) == 0o700
+    assert mode_of(home / "bin") == 0o700
+
+
+@needs_posix_permissions
+def test_a_permissive_umask_cannot_loosen_the_app_folder(tmp_path, monkeypatch):
+    """A mode asked for at ``mkdir`` time is the umask's to trim; this one is not."""
+    monkeypatch.setenv("VIDDL_HOME", str(tmp_path / "app"))
+    previous = os.umask(0)
+    try:
+        appdata.ensure_dirs()
+    finally:
+        os.umask(previous)
+    assert mode_of(tmp_path / "app") == 0o700
+
+
+@needs_posix_permissions
+def test_a_folder_that_is_not_viddls_is_left_alone(tmp_path, monkeypatch):
+    """``VIDDL_HOME`` may point at your home directory; that is not ours to lock."""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    os.chmod(home, 0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("VIDDL_HOME", str(home))
+
+    appdata.ensure_dirs()
+
+    assert mode_of(home) == 0o755
+    assert mode_of(home / "bin") == 0o700
+
+
+def test_the_root_directory_is_recognised_as_not_ours():
+    """Asserted through the guard rather than by running ``chmod`` on ``/``."""
+    assert appdata._not_ours_to_tighten(Path("/")) is True
+    assert appdata._not_ours_to_tighten(Path.home()) is True
+    assert appdata._not_ours_to_tighten(Path("/tmp")) is False
+
+
+def test_windows_keeps_its_own_access_rules(monkeypatch, tmp_path):
+    """Rather than pretending a POSIX mode means something there."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.delenv("VIDDL_HOME", raising=False)
+    changed: list = []
+    monkeypatch.setattr(os, "chmod", lambda path, mode: changed.append(path))
+
+    appdata.ensure_dirs()
+
+    assert changed == []
+    assert (tmp_path / "viddl" / "bin").is_dir()
+
+
+def test_a_filesystem_without_permissions_does_not_stop_viddl(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIDDL_HOME", str(tmp_path / "app"))
+
+    def refuse(path, mode):
+        raise OSError("operation not supported")
+
+    monkeypatch.setattr(os, "chmod", refuse)
+    appdata.ensure_dirs()  # must not raise
+    assert (tmp_path / "app" / "bin").is_dir()
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +237,19 @@ def test_downloads_dir_falls_back_when_there_is_nowhere_to_write(
 
     assert appdata.downloads_dir() == home / "Downloads"
     assert (home / "Downloads").is_dir()
+
+
+@needs_posix_permissions
+def test_the_fallback_downloads_folder_is_owner_only(tmp_path, monkeypatch):
+    """The last resort sits inside our own folder, so it gets the same treatment."""
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a folder", encoding="utf-8")
+    home = tmp_path / "app"
+    monkeypatch.setenv("VIDDL_HOME", str(home))
+    monkeypatch.setenv("VIDDL_DOWNLOAD_DIR", str(blocker / "Downloads"))
+
+    assert appdata.downloads_dir() == home / "Downloads"
+    assert mode_of(home / "Downloads") == 0o700
 
 
 # ---------------------------------------------------------------------------

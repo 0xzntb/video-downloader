@@ -14,11 +14,16 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 from typing import Optional
 
 from . import APP_NAME
+
+# Viddl's own folders hold two downloaded programs, so they are for the user
+# who installed them and nobody else on the machine.
+_OWNER_ONLY = 0o700
 
 
 def _is_windows() -> bool:
@@ -56,10 +61,53 @@ def log_path() -> Path:
     return data_dir() / "viddl.log"
 
 
+def _not_ours_to_tighten(path: Path) -> bool:
+    """Whether this folder belongs to someone else, or to everyone.
+
+    ``VIDDL_HOME`` can point anywhere, and the two places where ``chmod 0700``
+    would be a disaster rather than a precaution are the root directory and the
+    user's home directory itself. Those are skipped; every other folder is
+    Viddl's to lock down.
+    """
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return True
+    if resolved == Path(resolved.anchor):
+        return True
+    try:
+        return resolved == Path.home().resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
+def _secure_dir(path: Path) -> None:
+    """Create one of Viddl's folders, reachable only by its owner.
+
+    The mode is applied after the folder exists, because ``mkdir``'s is masked
+    by the umask and a folder made by an earlier version keeps whatever it was
+    given then — so an upgrade tightens what is already on disk. Windows is
+    skipped rather than pretended about: it governs access with ACLs, and the
+    POSIX bits ``chmod`` accepts there do not mean this.
+
+    A folder that cannot be created raises, as before; a mode that cannot be set
+    does not, since a filesystem without permissions is not a reason to refuse
+    to run.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    if _is_windows() or _not_ours_to_tighten(path):
+        return
+    try:
+        if stat.S_IMODE(path.stat().st_mode) != _OWNER_ONLY:
+            os.chmod(path, _OWNER_ONLY)
+    except OSError:
+        pass
+
+
 def ensure_dirs() -> None:
     for path in (data_dir(), bin_dir()):
         try:
-            path.mkdir(parents=True, exist_ok=True)
+            _secure_dir(path)
         except OSError:
             # A read-only home is better handled later with a clear message
             # than by crashing every code path that only wants a path.
@@ -103,8 +151,10 @@ def downloads_dir() -> Path:
         if not os.access(path, os.W_OK):
             raise OSError("not writable")
     except OSError:
+        # Our own folder is the fallback, and it is ours to lock down too: what
+        # is downloaded here is nobody else's business.
         fallback = data_dir() / "Downloads"
-        fallback.mkdir(parents=True, exist_ok=True)
+        _secure_dir(fallback)
         return fallback
     return path
 

@@ -12,7 +12,6 @@ import os
 import platform
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import tarfile
@@ -331,7 +330,26 @@ def _verified_download(
                 raise
 
 
-def _extract_member(archive: Path, pattern: str, dest: Path, mode: Optional[int] = 0o755) -> None:
+def _make_runnable(path: Path) -> None:
+    """Mark a downloaded helper as runnable by its owner, and nobody else.
+
+    Owner-only on purpose: these are Viddl's own copies, living in a folder only
+    their owner can enter, so no other account has any business running them.
+    Applying the whole mode rather than only the execute bits is what makes that
+    true — and it means a folder whose permissions are later reset (a restore, a
+    copied home directory) does not turn two programs world-executable again.
+    Windows is skipped: ``chmod`` there only sets the read-only flag, so the bits
+    would mean nothing.
+    """
+    if is_windows():
+        return
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+
+
+def _extract_member(archive: Path, pattern: str, dest: Path, mode: Optional[int] = 0o700) -> None:
     """Pull one file out of a ``.zip`` or ``.tar.xz`` without unpacking the rest."""
     name = archive.name.lower()
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -363,7 +381,7 @@ def _extract_member(archive: Path, pattern: str, dest: Path, mode: Optional[int]
 
     if mode is not None:
         try:
-            os.chmod(dest, dest.stat().st_mode | mode)
+            os.chmod(dest, mode)
         except OSError:
             pass
 
@@ -453,10 +471,7 @@ class Engine:
         if on_status:
             on_status("Downloading the video engine (about 3 MB)…")
         _verified_download(source, dest, on_progress)
-        try:
-            os.chmod(dest, dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        except OSError:
-            pass
+        _make_runnable(dest)
 
         ok, output = _run_probe([str(dest)], "--version")
         origin = "viddl"
@@ -610,10 +625,7 @@ class Engine:
                         # inside it: check the archive, then unpack it.
                         _verified_download(source, archive, on_progress)
                         _extract_member(archive, source["pattern"], dest)
-                try:
-                    os.chmod(dest, dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-                except OSError:
-                    pass
+                _make_runnable(dest)
                 ok, output = _run_probe([str(dest)], "-version")
                 if ok:
                     version = ""
