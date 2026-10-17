@@ -43,6 +43,10 @@ class DownloadCancelled(Exception):
     """The user asked to stop."""
 
 
+#: What yt-dlp leaves beside a file it is still working on, and resumes from.
+_PARTIAL_SUFFIXES = (".part", ".ytdl")
+
+
 def _is_intermediate(path: Path) -> bool:
     """True for a stream that only exists to be merged into the real file."""
     stem = path.name.rsplit(".", 1)[0]
@@ -154,6 +158,7 @@ class DownloadJob:
         out_dir: Path,
         on_progress: Optional[Callable[[Progress], None]] = None,
         on_log: Optional[Callable[[str], None]] = None,
+        keep_partial: bool = True,
     ):
         self.engine = engine
         self.url = url
@@ -161,6 +166,10 @@ class DownloadJob:
         self.out_dir = Path(out_dir)
         self.on_progress = on_progress
         self.on_log = on_log
+        # Keeping what a stopped download fetched is what makes resuming
+        # possible, so it is the default. ``keep_partial=False`` is the old
+        # tidy-up behaviour, for a caller that wants it.
+        self.keep_partial = keep_partial
 
         self._process: Optional[subprocess.Popen] = None
         self._cancelled = threading.Event()
@@ -180,6 +189,12 @@ class DownloadJob:
             "--no-playlist",
             "--no-color",
             "--no-warnings",
+            # Carry on from a ".part" file a previous attempt left. yt-dlp does
+            # this by default, but the default is the thing being relied on, so
+            # it is asked for: that is also what makes the prompt honest, since
+            # a user's own config cannot switch it off (`--ignore-config` above)
+            # and neither can a future change to yt-dlp's defaults.
+            "--continue",
             "--retries",
             "5",
             "--fragment-retries",
@@ -257,7 +272,8 @@ class DownloadJob:
         code = self._process.returncode
 
         if self._cancelled.is_set():
-            self._cleanup_partial()
+            if not self.keep_partial:
+                self._cleanup_partial()
             raise DownloadCancelled()
 
         if code != 0:
@@ -290,11 +306,38 @@ class DownloadJob:
             pass
         return snapshot
 
+    def partial_paths(self) -> List[Path]:
+        """What this job left half-finished, ready to resume or to throw away.
+
+        yt-dlp writes ``<destination>.part`` beside the file it is working on —
+        one per stream when it is going to merge them — and both resuming and
+        discarding work from those. Only files this job announced are listed:
+        searching the folder by pattern could take somebody else's
+        half-download with it, which is not a thing a cancel button may do.
+        """
+        found: List[Path] = []
+        for path in self._paths:
+            for suffix in _PARTIAL_SUFFIXES:
+                candidate = Path(str(path) + suffix)
+                if candidate not in found and candidate.exists():
+                    found.append(candidate)
+        return found
+
+    def discard_partial(self) -> int:
+        """Delete the half-finished files; returns how many are gone."""
+        removed = 0
+        for path in self.partial_paths():
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                continue
+        return removed
+
     def _cleanup_partial(self) -> None:
-        for entry in list(self._paths):
-            for candidate in (entry, Path(str(entry) + ".part")):
-                if candidate.suffix in (".part", ".ytdl") or candidate.name.endswith(".part"):
-                    candidate.unlink(missing_ok=True)
+        """What a cancel used to do to the files it had fetched. Still here,
+        but only reached when a caller asks for it (``keep_partial=False``)."""
+        self.discard_partial()
 
     def _handle_line(self, line: str) -> None:
         if line:
@@ -311,6 +354,9 @@ class DownloadJob:
             if match:
                 self._remember_path(match.group(1))
             self._emit(status="Downloading…")
+        elif line.startswith("[download] Resuming download at byte"):
+            # yt-dlp picked up where the last attempt stopped.
+            self._emit(status="Resuming the interrupted download…")
         elif line.startswith("[Merger]"):
             # The merged file is what the user ends up with, so this is the
             # path we want to report, ahead of the separate streams.

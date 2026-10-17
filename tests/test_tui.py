@@ -26,6 +26,7 @@ from viddl.tui.app import (
     OptionsScreen,
     ResultScreen,
     Services,
+    StoppedScreen,
     ViddlApp,
     _open_folder,
 )
@@ -125,6 +126,33 @@ class BlockingJob(FakeJob):
     def cancel(self):
         self.cancelled = True
         self.release.set()
+
+
+class JobWithAPartial(BlockingJob):
+    """A stand-in that really leaves a half-finished file behind.
+
+    The real ``DownloadJob`` reports its own leftovers and deletes them on
+    request; this one writes a file so the screen's Discard button has
+    something real to remove.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.partial = self.out_dir / "A Very Real Video [dQw4w9WgXcQ].mp4.part"
+
+    def run(self):
+        self.partial.parent.mkdir(parents=True, exist_ok=True)
+        self.partial.write_bytes(b"h" * 2048)
+        self.release.wait(timeout=10)
+        raise DownloadCancelled()
+
+    def partial_paths(self):
+        return [self.partial] if self.partial.exists() else []
+
+    def discard_partial(self):
+        existed = self.partial.exists()
+        self.partial.unlink(missing_ok=True)
+        return 1 if existed else 0
 
 
 class ChattyJob(FakeJob):
@@ -500,7 +528,121 @@ async def test_escape_cancels_a_running_download(tmp_path):
         await settle(pilot, rounds=12)
 
         assert job.cancelled is True
-        assert isinstance(app.screen, OptionsScreen)
+        assert isinstance(app.screen, StoppedScreen)
+
+
+# ---------------------------------------------------------------------------
+# stopping and resuming (R1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stopping_keeps_the_part_and_offers_the_choice(tmp_path):
+    services = make_services(tmp_path, job_class=JobWithAPartial)
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        job = await wait_for_job(app, pilot)
+        for _ in range(50):
+            await pilot.pause()
+            await asyncio.sleep(0.01)
+            if job.partial.is_file():
+                break
+
+        await pilot.press("escape")
+        await settle(pilot, rounds=12)
+
+        assert isinstance(app.screen, StoppedScreen)
+        assert "kept" in shown(app.screen, "#stopped-message")
+        assert app.screen.query("#resume")
+        assert app.screen.query("#discard")
+        # Cancelling must not throw away work the user waited for.
+        assert job.partial.is_file()
+
+
+@pytest.mark.asyncio
+async def test_resume_runs_the_same_download_again(tmp_path):
+    services = make_services(tmp_path, job_class=JobWithAPartial)
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        first = await wait_for_job(app, pilot)
+        await pilot.press("escape")
+        await settle(pilot, rounds=12)
+        assert isinstance(app.screen, StoppedScreen)
+
+        await pilot.press("r")
+        second = await wait_for_job(app, pilot)
+        await settle(pilot)
+
+        assert second is not first
+        assert isinstance(app.screen, DownloadScreen)
+        assert second.option.key == first.option.key
+        assert first.partial.is_file()
+
+
+@pytest.mark.asyncio
+async def test_discard_deletes_what_was_left_behind(tmp_path):
+    services = make_services(tmp_path, job_class=JobWithAPartial)
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        job = await wait_for_job(app, pilot)
+        for _ in range(50):
+            await pilot.pause()
+            await asyncio.sleep(0.01)
+            if job.partial.is_file():
+                break
+        await pilot.press("escape")
+        await settle(pilot, rounds=12)
+
+        await pilot.press("d")
+        await settle(pilot, rounds=12)
+
+        assert not job.partial.exists()
+        assert isinstance(app.screen, HomeScreen)
+
+
+@pytest.mark.asyncio
+async def test_leaving_it_alone_keeps_the_part_for_next_time(tmp_path):
+    services = make_services(tmp_path, job_class=JobWithAPartial)
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        job = await wait_for_job(app, pilot)
+        await pilot.press("escape")  # stop
+        await settle(pilot, rounds=12)
+        await pilot.press("escape")  # leave it for later
+        await settle(pilot, rounds=12)
+
+        assert isinstance(app.screen, HomeScreen)
+        assert job.partial.is_file()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_before_anything_was_written_offers_no_discard(tmp_path):
+    services = make_services(tmp_path, job_class=BlockingJob)
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await wait_for_job(app, pilot)
+        await pilot.press("escape")
+        await settle(pilot, rounds=12)
+
+        assert isinstance(app.screen, StoppedScreen)
+        assert "Nothing had been written" in shown(app.screen, "#stopped-message")
+        assert not app.screen.query("#discard")
+        assert app.screen.query("#resume")
 
 
 @pytest.mark.asyncio
@@ -812,7 +954,7 @@ async def test_the_progress_screen_reports_size_speed_and_time_left(tmp_path):
         await pilot.click("#cancel")
         await settle(pilot)
         assert job.cancelled is True
-        assert isinstance(app.screen, OptionsScreen)
+        assert isinstance(app.screen, StoppedScreen)
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,8 @@ statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **8 of 60** — S1–S6 in section 1, and D2–D3 in section 6.
+Progress so far: **9 of 60** — S1–S6 in section 1, R1 in section 2, D2–D3 in
+section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
 down keeps a secret, and a web page can no longer start it *doing* anything —
@@ -36,7 +37,7 @@ in `SECURITY.md`, which is what **D3** asked for.
 | 1 | ✅ **S1** — stop option-shaped "links" reaching yt-dlp | Proven argument injection; a web page could trigger it — **done** |
 | 2 | **E1** — add CI | Nothing is checked on push today; the tests only run if someone runs them |
 | 3 | **E2** — add a `LICENSE` file | README and `pyproject.toml` both claim MIT; no licence text ships |
-| 4 | **R1** — resume interrupted downloads | A cancelled or dropped download starts from zero |
+| 4 | ✅ **R1** — resume interrupted downloads | A cancelled or dropped download started from zero — **done** |
 | 5 | **R4** — `viddl --update` | Stale yt-dlp is *the* top cause of "this link stopped working" |
 | 6 | **F1** — cookies from the browser | Unlocks Instagram, Threads, TikTok, sometimes Vimeo (README says unsupported) |
 | 7 | ✅ **S2** + **S3** — verify and lock down downloaded helpers | Executables were fetched and `chmod +x`'d with no hash check, into a folder anyone could read — **both done** |
@@ -314,18 +315,38 @@ with a place to report — the remaining half of this item is the manifest.)
 
 ## 2. Stability and correctness
 
-### R1 — Interrupted downloads start over · **P1** · M
+### R1 — Interrupted downloads start over · **P1** · M · ✅ **Done**
 
-`build_args()` sets `--retries 5 --fragment-retries 5` for network hiccups, but
-there is no `-c/--continue`. Worse, cancelling deletes the work:
-`run()` → `_cleanup_partial()` removes partial files. A 4 GB download that the
-user pauses at 90% is lost, and a dropped connection mid-download is re-fetched
+> **Fixed.** `build_args()` now asks for `--continue` explicitly (yt-dlp's own
+> default, but the run must not depend on a default staying put), and cancelling
+> **keeps** the `.part` file instead of deleting it — the deletion was the bug,
+> since it threw away work the user had waited for. `_cleanup_partial()` still
+> exists but is opt-in (`DownloadJob(..., keep_partial=False)`), so nothing
+> deletes a half-download unless it is asked to. The truck-and-trailer of a
+> change is the screen: stopping now lands on a **Stopped** screen offering
+> **Resume** (runs the same download again, and yt-dlp continues from the
+> `.part`) and **Discard** (deletes it), with escape meaning "later, keep it".
+> Discard only ever deletes files *this job announced* — matching the folder by
+> pattern could take someone else's half-download with it. 12 tests added
+> (351 → 363).
+>
+> Verified end to end against the real tool, not simulated: a 10 MB payload
+> served slowly over local HTTP, downloaded by Viddl's own `DownloadJob` with
+> yt-dlp 2026.08.19, stopped at 40% — the part (4,193,280 bytes) stayed on disk;
+> a second job on the same link had yt-dlp print
+> *"Resuming download at byte 4193280"*, showed the user *"Resuming the
+> interrupted download…"*, finished at 10,240,000 bytes with a SHA-256 matching
+> the original, and left no partial behind.
+>
+> What this cannot fix, and does not claim to: resuming needs the site to honour
+> a ranged request. Where it does not, yt-dlp starts the file again — better
+> than losing it, but not a resume.
+
+`build_args()` set `--retries 5 --fragment-retries 5` for network hiccups, but
+there was no `-c/--continue`. Worse, cancelling deleted the work:
+`run()` → `_cleanup_partial()` removed partial files. A 4 GB download that the
+user paused at 90% was lost, and a dropped connection mid-download was re-fetched
 from byte zero.
-
-**Do:** add `-c/--continue` and keep `.part` files on cancel, with the progress
-screen offering **Resume** / **Discard**. Add a `--keep-partial` internal flag
-and make `_cleanup_partial()` opt-in rather than automatic. yt-dlp resumes
-`.part` files; the same change makes `--keep-video` leftovers reusable.
 
 ### R2 — Cancelling does not stop the children · **P1** · S
 
@@ -650,8 +671,10 @@ prints progress on one line and the final path on its own — usable from script
 Bindings today: `Esc`, `Tab`, `Ctrl+Q`, `Ctrl+C`, arrows/`j`/`k`, `Enter`, `c`.
 Cheap wins: `p` to paste the clipboard link, `r` to retry a failed download,
 `o` to open the folder from the done screen, and `?` for a key help overlay.
-Also: `Esc` currently cancels a running download instantly — consider confirming,
-since **R1** means the lost progress is real.
+(`r` for retry is now half-taken: `r` resumes from the **Stopped** screen.) The
+older note here — that `Esc` cancels instantly and **R1** made that cost real
+progress — no longer applies: **R1** is done, so `Esc` keeps the part and the
+screen asks whether to resume it or throw it away.
 
 ### U6 — Accessibility · **P2** · M
 
@@ -854,7 +877,9 @@ project's "nothing leaves your machine" promise.
 3. ✅ **S3**, **S4** and **S5** (directory, log, and what a page may start) —
    **done**; **E3/D1** (make the log real) remain, and are now cheaper because
    the log is a safe place to put things.
-4. **R1**/**R2** (resume, and actually stop children) — the biggest day-to-day pain.
+4. ✅ **R1** (resume) — **done**; **R2** (actually stop the children) is the other
+   half of the same pain and remains, which matters more now: a partial file is
+   only worth keeping if the process writing it has really stopped.
 5. **R4**/**F3** (`viddl --update` + staleness hint) — the fix for the most common complaint.
 6. ✅ **S2** (verify downloads) — **done**; **R3** (expose the config escape hatch) still open. `--ignore-config` itself landed with **S1**.
 7. **F1** (cookies) — turns a documented dead end into a feature.
@@ -996,6 +1021,19 @@ marked *before* are the old code, run again from this repository:
 | `VIDDL_YTDLP=./yt-dlp` (an explicit path) | ran it, labelled "downloaded by Viddl" | still runs it — a path is a path — but as `/tmp/plant/yt-dlp`, "the copy you pointed Viddl at" |
 | `VIDDL_HOME=--exec=echo RCE-MARKER-13579` | accepted verbatim as the app folder | refused; the platform default is used and the refusal printed |
 | `viddl --doctor` with all four set | printed none of them | prints each, with `in use` or the reason it was ignored |
+
+**R1 checked end to end with the real tool** — real yt-dlp 2026.08.19, a 10 MB
+payload served slowly over local HTTP, then stopped and resumed through Viddl's
+own `DownloadJob`:
+
+| Step | Result |
+| --- | --- |
+| Stopped at 40% | `.part` kept: `video [video].mp4.part`, **4,193,280 bytes** |
+| Second run, same link | yt-dlp printed `[download] Resuming download at byte 4193280` — the exact byte left behind |
+| What the user saw | `Resuming the interrupted download…` |
+| Final file | 10,240,000 bytes, **SHA-256 identical to the original**, no `.part` left |
+| `build_args()` | contains `--continue`, before the `--` separator |
+| A stray `other.mp4.part` in the folder | left alone: Discard deletes only what the job announced |
 | `yt-dlp --ignore-config -P --exec=echo MARKER <url>` (real yt-dlp 2026.08.19) | — | the token is taken as a *value*, not a flag: no execution |
 
 ## Appendix B — Verified vs. assumed
@@ -1020,6 +1058,12 @@ failing. Locking a folder down also cannot be verified on Windows at all here.
 For **S4** the same caveat applies to the log's mode on Windows, where access is
 governed by ACLs, and redaction was checked against the shapes listed in
 Appendix A — a credential sent in some other shape is not covered by it.
+
+**R1 is verified for a single-file download and not beyond that**: a *merged*
+download (two streams, two `.part` files) was not exercised end to end, nor was a
+resume after the app itself restarted, nor any of it on Windows. Resuming also
+depends on the site accepting a ranged request — where it does not, yt-dlp
+starts again, which the item records rather than hides.
 
 **S6's fix is visibility plus a boundary that cannot be crossed by accident**, not
 sandboxing: the check makes an override visible and stops a *name* from silently

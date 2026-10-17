@@ -126,7 +126,7 @@ class ViddlApp(App):
         background: $background;
     }
 
-    #home-panel, #options-panel, #download-panel, #result-panel {
+    #home-panel, #options-panel, #download-panel, #stopped-panel, #result-panel {
         width: 86;
         max-width: 98%;
         height: auto;
@@ -762,9 +762,11 @@ class DownloadScreen(Screen):
         self.app.push_screen(ResultScreen(error=error))
 
     def finish_cancelled(self) -> None:
+        # The partial file is kept, so the honest thing is to ask what to do
+        # with it rather than throw away work the user waited for.
+        job = self.app.state.job
         self.app.state.job = None
-        self.notify("Download cancelled.", severity="information")
-        self.app.pop_screen()
+        self.app.switch_screen(StoppedScreen(job=job, option=self.app.state.option))
 
     def action_cancel(self) -> None:
         job = self.app.state.job
@@ -777,6 +779,89 @@ class DownloadScreen(Screen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
             self.action_cancel()
+
+
+class StoppedScreen(Screen):
+    """Shown when a download is stopped: carry on, or throw the part away.
+
+    Cancelling keeps what has already been downloaded, which is the whole point
+    of resuming — so the choice belongs to the user. **Resume** runs the same
+    download again and yt-dlp continues from the ``.part`` file; **Discard**
+    deletes that file; leaving with escape keeps it.
+    """
+
+    BINDINGS = [
+        Binding("escape", "later", "Later", show=True),
+        Binding("r", "resume", "Resume", show=False),
+        Binding("d", "discard", "Discard", show=False),
+    ]
+
+    def __init__(
+        self,
+        job: Optional[DownloadJob] = None,
+        option: Optional[MediaOption] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.job = job
+        self.option = option
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="stopped-panel"):
+            yield Static("Stopped", id="brand")
+            yield Static("", id="stopped-message")
+            with Horizontal(classes="buttons"):
+                if self.option is not None:
+                    yield Button("Resume", variant="primary", id="resume")
+                if self.kept_files():
+                    yield Button("Discard", id="discard")
+                yield Button("Start over", id="again")
+        yield Footer()
+
+    def kept_files(self) -> list:
+        """The half-finished files on disk, if the job knows of any."""
+        if self.job is None:
+            return []
+        finder = getattr(self.job, "partial_paths", None)
+        return list(finder()) if callable(finder) else []
+
+    def on_mount(self) -> None:
+        lines = []
+        if self.option is not None:
+            lines.append(_plain(f"{self.option.label}  {_ARP}  {self.option.size_text}"))
+        if self.kept_files():
+            lines.append(
+                "What has been downloaded so far is kept, so Resume carries on "
+                "from there. Discard throws it away."
+            )
+        else:
+            lines.append("Nothing had been written to disk yet.")
+        self.query_one("#stopped-message", Static).update("\n".join(lines))
+
+    # -- actions ------------------------------------------------------------
+    def action_resume(self) -> None:
+        if self.app.state.option is None:  # pragma: no cover - defensive
+            self.action_later()
+            return
+        # A fresh download screen runs the same option again, and yt-dlp picks
+        # the ".part" file up from where the last attempt stopped.
+        self.app.switch_screen(DownloadScreen())
+
+    def action_discard(self) -> None:
+        if self.job is not None:
+            self.job.discard_partial()
+        self.app.go_home()
+
+    def action_later(self) -> None:
+        self.app.go_home()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "resume":
+            self.action_resume()
+        elif event.button.id == "discard":
+            self.action_discard()
+        elif event.button.id == "again":
+            self.action_later()
 
 
 class ResultScreen(Screen):

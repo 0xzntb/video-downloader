@@ -41,6 +41,21 @@ import time
 time.sleep(30)
 """
 
+# Announces a destination, writes half the file, then sits there until it is
+# cancelled — which is what a stopped download looks like on disk.
+PARTIAL_SCRIPT = """\
+import pathlib, sys, time
+args = sys.argv[1:]
+out = pathlib.Path(args[args.index("-P") + 1])
+target = out / "Half A Video [abc].mp4"
+target.parent.mkdir(parents=True, exist_ok=True)
+print("[download] Destination: " + str(target), flush=True)
+print("VIDDLPROGRESS|50.0|1048576|5|500|1000|NA|" + str(target), flush=True)
+pathlib.Path(str(target) + ".part").write_bytes(b"h" * 500)
+print("[download] Resuming download at byte 500", flush=True)
+time.sleep(30)
+"""
+
 INFO_SCRIPT = """\
 import json, sys
 print(json.dumps({
@@ -446,7 +461,8 @@ def test_the_newest_file_scan_skips_leftover_streams(tmp_path):
     assert job._find_output(before) == out / "A Video [abc].mp4"
 
 
-def test_cancelling_clears_the_partial_files(tmp_path):
+def test_the_opt_in_cleanup_still_clears_the_partial_files(tmp_path):
+    """Kept for a caller that asks for the old tidy-up; no longer the default."""
     out = tmp_path / "Downloads"
     out.mkdir()
     half = out / "Half [abc].mp4"
@@ -457,6 +473,113 @@ def test_cancelling_clears_the_partial_files(tmp_path):
     job._paths.append(half)
     job._cleanup_partial()
     assert not part.exists()
+
+
+# ---------------------------------------------------------------------------
+# resuming (R1)
+# ---------------------------------------------------------------------------
+
+
+def test_the_command_asks_yt_dlp_to_carry_on(tmp_path):
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), tmp_path)
+    args = job.build_args()
+    assert "--continue" in args
+    assert "--no-continue" not in args
+    # Before the link, and after the separator would be too late.
+    assert args.index("--continue") < args.index("--")
+
+
+def partial_job(tmp_path, **kwargs):
+    return DownloadJob(
+        engine_for(tmp_path, "fake_partial.py", PARTIAL_SCRIPT),
+        "https://x.invalid/v",
+        video_option(),
+        tmp_path / "Downloads",
+        **kwargs,
+    )
+
+
+def run_until_cancelled(job, after=0.0):
+    """Start a job, let it get going, stop it, and report what happened."""
+    outcome = {}
+
+    def run():
+        try:
+            job.run()
+        except DownloadCancelled:
+            outcome["cancelled"] = True
+        except Exception as exc:  # pragma: no cover - defensive
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    deadline = time.time() + 15
+    while after and time.time() < deadline:
+        if job.partial_paths():
+            break
+        time.sleep(0.05)
+    job.cancel()
+    worker.join(timeout=20)
+    return outcome
+
+
+def test_cancelling_keeps_the_part_so_it_can_be_resumed(tmp_path):
+    job = partial_job(tmp_path)
+    outcome = run_until_cancelled(job, after=1.0)
+
+    assert outcome.get("cancelled") is True
+    kept = job.partial_paths()
+    assert kept, "the half-finished file should still be there"
+    assert kept[0].name == "Half A Video [abc].mp4.part"
+    assert kept[0].is_file()
+
+
+def test_discarding_removes_what_kindness_kept(tmp_path):
+    job = partial_job(tmp_path)
+    run_until_cancelled(job, after=1.0)
+
+    assert job.discard_partial() == 1
+    assert job.partial_paths() == []
+
+
+def test_a_caller_may_ask_for_the_old_tidy_up(tmp_path):
+    job = partial_job(tmp_path, keep_partial=False)
+    run_until_cancelled(job, after=1.0)
+    assert job.partial_paths() == []
+
+
+def test_another_downloads_part_is_not_ours_to_delete(tmp_path):
+    """Discard works from what this job announced, never from a pattern."""
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    someone_else = out / "Another Video [xyz].mp4.part"
+    someone_else.write_bytes(b"not ours")
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+
+    assert job.partial_paths() == []
+    assert job.discard_partial() == 0
+    assert someone_else.is_file()
+
+
+def test_a_partial_that_cannot_be_deleted_is_not_fatal(tmp_path):
+    """Discarding is a kindness, so it must not be able to raise."""
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    half = out / "Half [abc].mp4"
+    (out / "Half [abc].mp4.part").mkdir()  # a directory where the file should be
+
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    job._paths.append(half)
+
+    assert job.discard_partial() == 0
+    assert job.partial_paths() == [out / "Half [abc].mp4.part"]
+
+
+def test_a_resumed_download_says_so(tmp_path):
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), tmp_path)
+    job._handle_line("[download] Resuming download at byte 1048576")
+    assert "Resuming" in job.progress.status
+    assert job.progress.phase == "download"
 
 
 def test_a_runner_that_cannot_start_is_explained(tmp_path, monkeypatch):
