@@ -103,6 +103,16 @@ overwritten by accident:
 When it finishes, the app shows the **full path** on screen, along with buttons
 to copy it or open the folder.
 
+If that name is already taken, the new file becomes `Me at the zoo [jNQXAC9IVRw]
+(2).mp4` rather than replacing what is there — including when two Viddl windows
+download the same video at the same time. Each download writes in a hidden
+folder of its own inside Downloads and only the finished file is moved out, so
+two windows can never write over each other's bytes. That folder is named after
+the link and quality, which is also what lets a stopped download be resumed: the
+half-finished file is waiting there — out of sight, not gone — and picking the
+same video again carries on from it, even in a later session. Choose
+**Discard** on the stopped screen and the folder goes too.
+
 ## Audio only (MP3)
 
 Pick any `Audio only · MP3` row. Viddl downloads the best audio stream the site
@@ -193,7 +203,7 @@ of yt-dlp when you want to manage that yourself.
 | `viddl/tui/` | The terminal interface (Textual). Five screens: home, qualities, progress, stopped, done. |
 | `viddl/engine.py` | Finds yt-dlp and ffmpeg, or downloads its own copy into `~/.local/share/viddl/bin`. |
 | `viddl/formats.py` | Turns site metadata into the quality menu, with size estimates. |
-| `viddl/download.py` | Runs yt-dlp, reads its progress, and works out which file was written. A failure worth a second attempt is retried after a doubling wait; stopping it stops the whole tree yt-dlp started — the ffmpeg merge included — and keeps what was fetched so it can be resumed. |
+| `viddl/download.py` | Runs yt-dlp in a per-download working folder, reads its progress, and moves the finished file out under a name reserved before the move, so two windows cannot collide. A failure worth a second attempt is retried after a doubling wait; stopping it stops the whole tree yt-dlp started — the ffmpeg merge included — and keeps what was fetched so it can be resumed. |
 | `viddl/errors.py` | Maps raw tool output onto plain-language explanations, and says whether the failure is one another attempt may fix. |
 | `viddl/protocol.py` | The `viddl://` hand-off and its per-OS registration. |
 | `viddl/browser_extension/` | The Chromium (Manifest V3) extension. |

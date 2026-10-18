@@ -626,6 +626,8 @@ async def test_resume_runs_the_same_download_again(tmp_path):
         second = await wait_for_job(app, pilot)
         await settle(pilot)
 
+        # A new job, and still the same download: the folder it writes in is
+        # named after the link and quality, not after the object (R6).
         assert second is not first
         assert isinstance(app.screen, DownloadScreen)
         assert second.option.key == first.option.key

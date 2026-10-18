@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -65,6 +67,10 @@ RETRY_BASE_SECONDS = 4.0
 #: A wait is slept in slices this long, so a cancel is felt at once instead of
 #: whenever the wait happens to end. The user pressed stop; they mean now.
 _RETRY_SLICE_SECONDS = 0.1
+
+#: Marks a working folder as being written in right now. Creating it is the
+#: test and the claim in one step, which is what keeps two windows apart.
+_CLAIM_NAME = ".viddl-busy"
 
 
 def _is_intermediate(path: Path) -> bool:
@@ -217,10 +223,104 @@ class DownloadJob:
         self._process: Optional[subprocess.Popen] = None
         self._escalation: Optional[threading.Timer] = None
         self._cancelled = threading.Event()
+        self._work_dir: Optional[Path] = None
+        self._claim: Optional[Path] = None
+        self._started = False
         self._lines: List[str] = []
         self._paths: List[Path] = []
         self.progress = Progress()
         self.started_at = time.time()
+
+    # -- where the bytes go --------------------------------------------------
+    def work_dir(self) -> Path:
+        """The folder this download writes in, inside the downloads folder.
+
+        Two Viddl windows downloading the same video used to aim at the same
+        output name, which means the same ``.part`` file and the same finished
+        file: whoever finished last won, and the other reported a path whose
+        bytes had changed underneath it. Each run now writes in a folder of its
+        own, and only the finished file is moved out of it — see
+        :meth:`_deliver`.
+
+        The name is derived from *what is being downloaded*, not from this
+        object, so a download stopped today is found again tomorrow and carries
+        on from its ``.part``. Two runs that overlap cannot share it: whoever
+        claims it first owns it, and the other takes the next name along (see
+        :meth:`_enter_work_dir`).
+        """
+        if self._work_dir is None:
+            self._work_dir = self.out_dir / f".viddl-{self._identity()}"
+        return self._work_dir
+
+    def _identity(self) -> str:
+        """A stable, short name for this link at this quality."""
+        raw = "|".join(
+            (self.url, self.option.format_selector, self.option.merge_container or "")
+        )
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+
+    def _enter_work_dir(self) -> Path:
+        """Claim a working folder for this run, and remember which one.
+
+        ``O_EXCL`` is the whole mechanism: creating the claim file either works
+        or tells us somebody else is already writing in that folder, with no
+        window in between for both to decide it is free. A folder left by a
+        stopped download has no claim, so it is claimed again and its ``.part``
+        is resumed; a folder another window is using is left alone and the next
+        name along is tried.
+        """
+        base = self.work_dir()
+        for number in range(1, 100):
+            candidate = base if number == 1 else base.with_name(f"{base.name}-{number}")
+            claim = candidate / _CLAIM_NAME
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                handle = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                # A file where the folder should be, or a claim somebody else
+                # holds: either way this name is not ours, so try the next.
+                continue
+            except OSError as exc:
+                # Not a collision — the folder cannot be written in at all. Say
+                # that, rather than looping and blaming too many downloads.
+                raise ToolError(
+                    "Viddl could not make room for the download.",
+                    f"It is not allowed to write in {self.out_dir}: {exc}",
+                    raw=str(exc),
+                ) from exc
+            os.close(handle)
+            self._work_dir = candidate
+            self._claim = claim
+            return candidate
+        raise ToolError(
+            "Too many copies of this download are already running.",
+            f"There are twenty or more working folders in {self.out_dir}. "
+            "Wait for the other downloads to finish, or delete the hidden "
+            "folders left behind by stopped ones.",
+        )
+
+    def _release_claim(self) -> None:
+        """Let go of the folder, keeping what it holds; drop it if it is empty.
+
+        A stopped download keeps its ``.part`` so the next run carries on, so
+        the folder stays and simply loses its claim. A download that got
+        nowhere has nothing worth keeping, and leaving an empty hidden folder in
+        somebody's downloads folder is just litter.
+        """
+        claim = self._claim
+        if claim is None:
+            return
+        self._claim = None
+        try:
+            claim.unlink()
+        except OSError:
+            pass
+        try:
+            empty = not any(self.work_dir().iterdir())
+        except OSError:
+            return
+        if empty:
+            shutil.rmtree(self.work_dir(), ignore_errors=True)
 
     # -- command ------------------------------------------------------------
     def build_args(self) -> List[str]:
@@ -257,8 +357,10 @@ class DownloadJob:
             args += ["--merge-output-format", self.option.merge_container]
         args += self.engine.ffmpeg_location_args()
         args += [
+            # Down into the job's own folder, not straight into the downloads
+            # folder: another window may be writing there.
             "-P",
-            str(self.out_dir),
+            str(self.work_dir()),
             "-o",
             _OUTPUT_TEMPLATE,
             "-f",
@@ -354,34 +456,59 @@ class DownloadJob:
         one left rather than fetching the same bytes again.
         """
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        before = self._snapshot()
-        args = self.build_args()
+        if self._started:
+            # Running again after a stop (Resume) is a fresh attempt: the stop
+            # that ended the last one must not be remembered as this one's.
+            # The first run does not clear it — a stop that arrived before the
+            # engine was even started is a reason not to start it.
+            self._cancelled = threading.Event()
+            self._process = None
+            self._escalation = None
         if self._cancelled.is_set():
-            # Stopped while the command was being built: never start it. The
-            # alternative is a process nobody is left to stop.
             raise DownloadCancelled()
-        if self.on_log:
-            self.on_log("$ " + " ".join(args))
+        self._started = True
+        self._enter_work_dir()
 
-        for attempt in range(1, self.attempts + 1):
-            try:
-                return self._attempt(args, before)
-            except ToolError as exc:
-                if self._cancelled.is_set():
-                    # The attempt was failing as the stop arrived. The user
-                    # asked to stop, which is what this is — not a failure to
-                    # explain to them.
-                    raise DownloadCancelled() from exc
-                if not exc.temporary:
-                    # Permanent: the answer will not change, so say it now.
+        try:
+            before = self._snapshot()
+            args = self.build_args()
+            if self._cancelled.is_set():
+                # Stopped while the command was being built: never start it. The
+                # alternative is a process nobody is left to stop.
+                raise DownloadCancelled()
+            if self.on_log:
+                self.on_log("$ " + " ".join(args))
+
+            for attempt in range(1, self.attempts + 1):
+                try:
+                    finished = self._attempt(args, before)
+                except ToolError as exc:
+                    if self._cancelled.is_set():
+                        # The attempt was failing as the stop arrived. The user
+                        # asked to stop, which is what this is — not a failure
+                        # to explain to them.
+                        raise DownloadCancelled() from exc
+                    if exc.temporary and attempt < self.attempts:
+                        wait = self._retry_wait(attempt)
+                        self._announce_retry(exc, attempt, wait)
+                        if not self._wait(wait):
+                            raise DownloadCancelled() from exc
+                        continue
+                    if exc.temporary:
+                        raise self._after_failure(exc, attempt) from exc
                     raise
-                if attempt >= self.attempts:
-                    raise self._after_failure(exc, attempt) from exc
-                wait = self._retry_wait(attempt)
-                self._announce_retry(exc, attempt, wait)
-                if not self._wait(wait):
-                    raise DownloadCancelled() from exc
-        raise AssertionError("unreachable: every loop path returns or raises")  # pragma: no cover
+                else:
+                    return self._deliver(finished)
+        except DownloadCancelled:
+            # Stopped by the user: what was fetched stays, so running this
+            # download again carries on from it rather than starting over.
+            self._release_claim()
+            raise
+        except ToolError:
+            # Failed: the same kindness applies to whatever it managed to fetch.
+            self._release_claim()
+            raise
+        raise AssertionError("unreachable: every path returns or raises")  # pragma: no cover
 
     # -- one attempt ---------------------------------------------------------
     def _attempt(self, args: List[str], before: Dict[Path, float]) -> Path:
@@ -461,10 +588,59 @@ class DownloadJob:
                 "The download finished but the file could not be found.",
                 f"Look in your Downloads folder: {self.out_dir}",
             )
+        return finished
+
+    # -- delivering the result ----------------------------------------------
+    def _deliver(self, source: Path) -> Path:
+        """Move the finished file into the downloads folder, never onto a file.
+
+        The name is claimed with an exclusive create *before* the move, so two
+        windows finishing at the same instant take ``Title.mp4`` and
+        ``Title (2).mp4`` rather than one overwriting the other. ``os.replace``
+        then puts our bytes where the claim is, atomically: a reader either sees
+        the claim (an empty file, for a moment) or the finished file, never half
+        of one download and half of another.
+        """
+        target = self._claim_name(source.name)
+        try:
+            os.replace(source, target)
+        except OSError:
+            # Nothing else can be done with a name we could not fill; leaving an
+            # empty file behind under a real name would be the worse outcome.
+            try:
+                target.unlink()
+            except OSError:
+                pass
+            # The finished file is still in the working folder, so let the next
+            # run have it back rather than keeping the folder claimed for ever.
+            self._release_claim()
+            raise
+        self._discard_work()
         self.progress = Progress(status="Done", percent=100.0, phase="done")
         if self.on_progress:
             self.on_progress(self.progress)
-        return finished
+        return target
+
+    def _claim_name(self, filename: str) -> Path:
+        """Reserve the first free name for ``filename`` in the output folder.
+
+        O_EXCL is the whole point: the check and the claim are one step, so no
+        two jobs can both decide a name is free and then both write to it.
+        """
+        stem, suffix = os.path.splitext(filename)
+        for number in range(1, 1000):
+            name = filename if number == 1 else f"{stem} ({number}){suffix}"
+            target = self.out_dir / name
+            try:
+                handle = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            except FileExistsError:
+                continue
+            os.close(handle)
+            return target
+        raise ToolError(
+            "There are already too many files with that name.",
+            f"Tidy up the ones you do not need in {self.out_dir} and try again.",
+        )
 
     # -- internals ----------------------------------------------------------
     def _retry_wait(self, attempt: int) -> float:
@@ -529,7 +705,7 @@ class DownloadJob:
     def _snapshot(self) -> Dict[Path, float]:
         snapshot: Dict[Path, float] = {}
         try:
-            for entry in self.out_dir.iterdir():
+            for entry in self.work_dir().iterdir():
                 if entry.is_file():
                     try:
                         snapshot[entry] = entry.stat().st_mtime
@@ -557,7 +733,12 @@ class DownloadJob:
         return found
 
     def discard_partial(self) -> int:
-        """Delete the half-finished files; returns how many are gone."""
+        """Throw the half-finished files away; returns how many were there.
+
+        The whole working folder goes, not only the ``.part`` files: it exists
+        for this job alone, and leaving a stream or a stray fragment of it
+        behind would be litter in the user's downloads folder.
+        """
         removed = 0
         for path in self.partial_paths():
             try:
@@ -565,7 +746,13 @@ class DownloadJob:
                 removed += 1
             except OSError:
                 continue
+        self._discard_work()
         return removed
+
+    def _discard_work(self) -> None:
+        """Remove the working folder altogether, keeping quiet if it cannot go."""
+        self._claim = None
+        shutil.rmtree(self.work_dir(), ignore_errors=True)
 
     def _cleanup_partial(self) -> None:
         """What a cancel used to do to the files it had fetched. Still here,
@@ -665,9 +852,13 @@ class DownloadJob:
         if existing:
             return existing[-1]
 
+        # Only this job's own folder is scanned. The shared downloads folder is
+        # not: another window's half-finished or just-finished file is not
+        # this download, and reporting it would hand the user a path that can
+        # change under them (R6).
         newest: Optional[Tuple[float, Path]] = None
         try:
-            for entry in self.out_dir.iterdir():
+            for entry in self.work_dir().iterdir():
                 if not entry.is_file() or entry.name.endswith(_BAD_SUFFIXES):
                     continue
                 if _is_intermediate(entry):

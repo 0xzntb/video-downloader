@@ -9,7 +9,7 @@ statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **13 of 60** — S1–S6 in section 1, R1–R5 in section 2, D2–D3 in
+Progress so far: **14 of 60** — S1–S6 in section 1, R1–R6 in section 2, D2–D3 in
 section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -564,7 +564,48 @@ DNS failure ends the download with a message about the network.
 backoff and a visible "retrying in 4s (2/3)" state. Nothing erodes trust like a
 failure that a second attempt would have fixed.
 
-### R6 — Two instances can collide on the same output · **P2** · S
+### R6 — Two instances can collide on the same output · **P2** · S · ✅ **Done**
+
+> **Fixed.** Each download now writes in a **working folder of its own** inside
+> the downloads folder, and only the finished file is moved out of it. Two
+> windows never touch the same bytes, so neither can overwrite the other, and
+> the "newest file in the folder" fallback that used to pick up somebody else's
+> download now only ever looks inside the job's own folder.
+>
+> The move itself is the other half. The final name is **reserved with an
+> exclusive create before the move** and then filled with `os.replace`, so the
+> check and the claim are one step and a finish is atomic: two instances
+> finishing at the same instant take `Title.mp4` and `Title (2).mp4`, never
+> `Title.mp4` twice. A file the user already has is never replaced.
+>
+> The folder is named after **what is being downloaded** (link + format), not
+> after the job object, and a claim file inside it marks it as in use. That is
+> what keeps the two properties that matter apart: a stopped download's `.part`
+> is found again by a *later* run and resumed — even in a new session — while a
+> folder another window is writing in is left alone and the next name along is
+> claimed. A stopped or failed download releases its claim; a folder with
+> nothing in it but the claim is removed rather than left as litter, and a
+> delivered file takes the whole folder with it.
+>
+> Measured with real yt-dlp 2026.08.19 and a slow local server, with **two real
+> Viddl processes** downloading a 1.2 MB file at the same time: they produced
+> `big [big].mp3` and `big [big] (2).mp3`, both 1,200,000 bytes, and nothing
+> half-finished or hidden was left in the folder. Downloading it again gave
+> `(3)` with the earlier files untouched. Stopping one at 2 s left
+> `big [big].mp3.part` inside `.viddl-2a8224b7` — the visible folder held only
+> that hidden one — and a **new job** for the same link and quality claimed the
+> same folder, yt-dlp said "Resuming download at byte …", and the finished
+> 1,200,000-byte file was delivered with the folder removed. 13 tests added
+> (464 → 477).
+>
+> What changes for the user, said plainly: downloading a video that is already
+> in the folder now produces a second copy instead of reusing the first, because
+> "is the destination already there?" was the same shared-name check that let
+> two windows collide. A stopped download keeps its half-file in a hidden folder
+> rather than beside the finished one — **Discard** removes it. And a crash
+> leaves that folder claimed, so the next run of the same download takes the
+> next name and starts fresh; the stale folder stays until it is deleted. None
+> of those can corrupt a file, which is the point.
 
 `_find_output()` prefers a recorded path, then the newest non-intermediate file
 in the output directory. Run two downloads of the same video at once (two

@@ -871,8 +871,9 @@ class StoppedScreen(Screen):
         if self.app.state.option is None:  # pragma: no cover - defensive
             self.action_later()
             return
-        # A fresh download screen runs the same option again, and yt-dlp picks
-        # the ".part" file up from where the last attempt stopped.
+        # A fresh download screen runs the same option again. The partial is
+        # in the folder that download always uses (R6), so yt-dlp picks the
+        # ".part" file up from where the last attempt stopped.
         self.app.switch_screen(DownloadScreen())
 
     def action_discard(self) -> None:

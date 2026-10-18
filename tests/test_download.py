@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import types
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -212,7 +213,9 @@ def test_build_args_targets_the_downloads_folder(tmp_path):
     args = job.build_args()
     assert args[0] == "/fake/yt-dlp"
     assert args[args.index("-f") + 1] == "137+140"
-    assert args[args.index("-P") + 1] == str(tmp_path / "Downloads")
+    work = Path(args[args.index("-P") + 1])
+    assert work.parent == tmp_path / "Downloads"
+    assert work == job.work_dir()
     assert "%(id)s" in args[args.index("-o") + 1]
     assert args[args.index("--merge-output-format") + 1] == "mp4"
     assert "--newline" in args
@@ -365,12 +368,14 @@ def test_find_output_falls_back_to_the_newest_file(tmp_path):
     old = out / "old.mp4"
     old.write_bytes(b"old")
     job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    work = job.work_dir()
+    work.mkdir(parents=True)
     before = job._snapshot()
 
     time.sleep(0.01)
-    fresh = out / "fresh.mp3"
+    fresh = work / "fresh.mp3"
     fresh.write_bytes(b"new")
-    (out / "half.mp4.part").write_bytes(b"junk")
+    (work / "half.mp4.part").write_bytes(b"junk")
 
     assert job._find_output(before) == fresh
 
@@ -456,11 +461,13 @@ def test_the_newest_file_scan_skips_leftover_streams(tmp_path):
     out = tmp_path / "Downloads"
     out.mkdir()
     job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    work = job.work_dir()
+    work.mkdir(parents=True)
     before = job._snapshot()
     time.sleep(0.01)
-    (out / "A Video [abc].f137.mp4").write_bytes(b"stream")
-    (out / "A Video [abc].mp4").write_bytes(b"merged")
-    assert job._find_output(before) == out / "A Video [abc].mp4"
+    (work / "A Video [abc].f137.mp4").write_bytes(b"stream")
+    (work / "A Video [abc].mp4").write_bytes(b"merged")
+    assert job._find_output(before) == work / "A Video [abc].mp4"
 
 
 def test_the_opt_in_cleanup_still_clears_the_partial_files(tmp_path):
@@ -610,8 +617,10 @@ def test_find_output_ignores_partial_files(tmp_path):
     out = tmp_path / "Downloads"
     out.mkdir()
     job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    work = job.work_dir()
+    work.mkdir(parents=True)
     before = job._snapshot()
-    (out / "half.mp4.part").write_bytes(b"junk")
+    (work / "half.mp4.part").write_bytes(b"junk")
     assert job._find_output(before) is None
 
 
@@ -737,7 +746,7 @@ def test_stopping_a_download_stops_the_process_it_started(tmp_path):
         out,
     )
     worker, outcome = run_in_background(job)
-    child_pid = wait_for_pid(out / "child.pid", job, outcome)
+    child_pid = wait_for_pid(job.work_dir() / "child.pid", job, outcome)
     try:
         assert still_running(child_pid), "the fake merge should have been running"
         job.cancel()
@@ -766,7 +775,7 @@ def test_a_process_that_ignores_the_polite_stop_is_killed(tmp_path, monkeypatch)
         out,
     )
     worker, outcome = run_in_background(job)
-    pid = wait_for_pid(out / "started.pid", job, outcome)
+    pid = wait_for_pid(job.work_dir() / "started.pid", job, outcome)
     started_at = time.time()
     job.cancel()
     worker.join(timeout=30)
@@ -789,7 +798,7 @@ def test_quitting_stops_the_tree_without_a_grace_period(tmp_path, monkeypatch):
         out,
     )
     worker, outcome = run_in_background(job)
-    pid = wait_for_pid(out / "started.pid", job, outcome)
+    pid = wait_for_pid(job.work_dir() / "started.pid", job, outcome)
     job.cancel(force=True)
     worker.join(timeout=20)
 
@@ -910,7 +919,7 @@ def test_a_refused_option_never_reaches_the_command(tmp_path, monkeypatch):
 
     assert not any("elsewhere" in token for token in args)
     assert args.count("-o") == 1  # Viddl's own output template, and only it
-    assert str(tmp_path) in args
+    assert tmp_path in Path(args[args.index("-P") + 1]).parents
 
 
 def test_a_stop_before_the_engine_starts_leaves_nothing_running(tmp_path, monkeypatch):
@@ -1135,3 +1144,310 @@ def test_stopping_during_the_wait_ends_at_once_and_starts_nothing(
     assert outcome.get("error") is None
     assert elapsed < 5, "a cancel waited for the retry delay instead of being felt"
     assert (tmp_path / "runs").read_text() == "1", "a stopped job started another attempt"
+
+
+# ---------------------------------------------------------------------------
+# two windows, one downloads folder (R6)
+#
+# Two downloads of the same video used to aim at the same file: whoever
+# finished last won, and the other reported a path whose bytes had changed
+# underneath it. Each job now writes in a folder of its own and only the
+# finished file is moved out, under a name reserved before the move.
+# ---------------------------------------------------------------------------
+
+# Both instances write the same file name inside their own folders, and wait
+# until both have started before writing — so the runs really do overlap.
+PARALLEL_SCRIPT = """\
+import os, pathlib, sys, time
+args = sys.argv[1:]
+out = pathlib.Path(args[args.index("-P") + 1])
+marker = pathlib.Path(os.environ["PARALLEL_MARKER"])
+with open(marker, "a", encoding="utf-8") as handle:
+    handle.write(out.name + "\\n")
+for _ in range(200):
+    if len(marker.read_text(encoding="utf-8").splitlines()) >= 2:
+        break
+    time.sleep(0.02)
+target = out / "A Real Video [dQw4w9WgXcQ].mp4"
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_bytes(out.name.encode())
+print("[download] Destination: " + str(target), flush=True)
+sys.exit(0)
+"""
+
+# Leaves half a file behind and waits, like a download stopped by the user.
+RESUME_AGAIN_SCRIPT = """\
+import os, pathlib, sys, time
+args = sys.argv[1:]
+out = pathlib.Path(args[args.index("-P") + 1])
+target = out / "Half A Video [abc].mp4"
+part = pathlib.Path(str(target) + ".part")
+flag = pathlib.Path(os.environ["RESUME_FLAG"])
+if not part.exists():
+    part.write_bytes(b"half")
+    print("[download] Destination: " + str(target), flush=True)
+    print("[download] Resuming download at byte 0", flush=True)
+    time.sleep(30)
+flag.write_text("resumed" if part.exists() else "fresh")
+target.write_bytes(b"v")
+print("[download] Destination: " + str(target), flush=True)
+sys.exit(0)
+"""
+
+
+def test_the_same_download_always_uses_the_same_folder(tmp_path):
+    """So a download stopped today is found again tomorrow, and resumed."""
+    out = tmp_path / "Downloads"
+    first = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    same = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    other_quality = DownloadJob(
+        FakeEngine(["/fake"]), "u", replace(video_option(), format_selector="18"), out
+    )
+    other_link = DownloadJob(FakeEngine(["/fake"]), "https://x.invalid/other", video_option(), out)
+
+    assert first.work_dir() == same.work_dir()
+    assert first.work_dir() == first.work_dir()  # decided once, not per call
+    assert first.work_dir().parent == out  # same filesystem as the result
+    assert other_quality.work_dir() != first.work_dir()
+    assert other_link.work_dir() != first.work_dir()
+    args = first.build_args()
+    assert Path(args[args.index("-P") + 1]) == first.work_dir()
+
+
+def test_two_runs_at_once_claim_different_folders(tmp_path):
+    """Sharing a name is fine; sharing a folder while writing is not."""
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    jobs = [DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out) for _ in range(3)]
+
+    claimed = [job._enter_work_dir() for job in jobs]
+
+    assert len(set(claimed)) == 3
+    assert all(path.parent == out for path in claimed)
+    # Each claim is a real marker on disk, inside its own folder.
+    assert all((path / ".viddl-busy").is_file() for path in claimed)
+
+
+def test_a_folder_another_run_is_using_is_not_resumed_into(tmp_path):
+    """A claimed folder belongs to the run writing in it, not to a new one."""
+    out = tmp_path / "Downloads"
+    busy = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)._enter_work_dir()
+    (busy / "A Video [abc].mp4.part").write_bytes(b"theirs")
+
+    newcomer = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    claimed = newcomer._enter_work_dir()
+
+    assert claimed != busy
+    assert claimed.name.startswith(busy.name + "-")
+    assert (busy / "A Video [abc].mp4.part").read_bytes() == b"theirs"
+
+
+def test_two_downloads_at_once_do_not_write_the_same_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("PARALLEL_MARKER", str(tmp_path / "marker"))
+    out = tmp_path / "Downloads"
+    jobs = [
+        DownloadJob(
+            engine_for(tmp_path, f"parallel{index}.py", PARALLEL_SCRIPT),
+            "https://x.invalid/v",
+            video_option(),
+            out,
+        )
+        for index in range(2)
+    ]
+    results = {}
+
+    def run(index: int) -> None:
+        try:
+            results[index] = jobs[index].run()
+        except Exception as exc:  # pragma: no cover - defensive
+            results[index] = exc
+
+    threads = [threading.Thread(target=run, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert not any(thread.is_alive() for thread in threads)
+    names = sorted(path.name for path in results.values())
+    assert names == [
+        "A Real Video [dQw4w9WgXcQ] (2).mp4",
+        "A Real Video [dQw4w9WgXcQ].mp4",
+    ]
+    # Each file holds its own download's bytes, so neither was overwritten and
+    # neither instance is pointing at the other's work.
+    contents = sorted(path.read_bytes() for path in results.values())
+    assert contents == sorted(job.work_dir().name.encode() for job in jobs)
+    # Nothing half-finished is left behind in the folder the user looks at.
+    assert sorted(path.name for path in out.iterdir()) == names
+
+
+def test_a_download_never_replaces_a_file_that_is_already_there(tmp_path):
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    mine = out / "A Real Video [dQw4w9WgXcQ].mp4"
+    mine.write_bytes(b"already here")
+
+    job = DownloadJob(
+        engine_for(tmp_path, "fake_ok.py", SUCCESS_SCRIPT),
+        "https://x.invalid/v",
+        video_option(),
+        out,
+    )
+    finished = job.run()
+
+    assert mine.read_bytes() == b"already here"
+    assert finished.name == "A Real Video [dQw4w9WgXcQ] (2).mp4"
+    assert finished.read_bytes() == b"v" * 4096
+
+
+def test_a_claimed_name_is_never_handed_out_twice(tmp_path):
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    first = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    second = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+
+    claimed = [first._claim_name("A Video [abc].mp4") for _ in range(3)]
+    claimed.append(second._claim_name("A Video [abc].mp4"))
+
+    assert [path.name for path in claimed] == [
+        "A Video [abc].mp4",
+        "A Video [abc] (2).mp4",
+        "A Video [abc] (3).mp4",
+        "A Video [abc] (4).mp4",
+    ]
+    # Every claim is a real, empty reservation on disk.
+    assert all(path.is_file() and path.stat().st_size == 0 for path in claimed)
+
+
+def test_the_working_folder_is_gone_once_the_file_is_delivered(tmp_path):
+    out = tmp_path / "Downloads"
+    job = DownloadJob(
+        engine_for(tmp_path, "fake_ok.py", SUCCESS_SCRIPT),
+        "https://x.invalid/v",
+        video_option(),
+        out,
+    )
+    work = job.work_dir()
+
+    finished = job.run()
+
+    assert finished.parent == out
+    assert not work.exists(), "the working folder is litter once the file is out"
+    assert [path.name for path in out.iterdir()] == ["A Real Video [dQw4w9WgXcQ].mp4"]
+
+
+def test_a_failed_download_takes_its_working_folder_with_it(tmp_path):
+    out = tmp_path / "Downloads"
+    job = DownloadJob(
+        engine_for(tmp_path, "fake_bad.py", FAILURE_SCRIPT),
+        "https://x.invalid/v",
+        video_option(),
+        out,
+    )
+    with pytest.raises(ToolError):
+        job.run()
+
+    assert not job.work_dir().exists()
+    assert list(out.iterdir()) == []
+
+
+def test_a_stopped_download_keeps_its_folder_and_resumes_from_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESUME_FLAG", str(tmp_path / "flag"))
+    out = tmp_path / "Downloads"
+    job = DownloadJob(
+        engine_for(tmp_path, "resume_again.py", RESUME_AGAIN_SCRIPT),
+        "https://x.invalid/v",
+        video_option(),
+        out,
+    )
+    work = job.work_dir()
+
+    outcome = run_until_cancelled(job, after=1.0)
+
+    assert outcome.get("cancelled") is True
+    assert work.is_dir()
+    assert job.partial_paths(), "the part should be kept inside the job's folder"
+
+    # Resuming is the same job run again — which is why the folder has to be
+    # remembered by the job, not chosen afresh each time.
+    finished = job.run()
+
+    assert (tmp_path / "flag").read_text() == "resumed"
+    assert finished.parent == out
+    assert not work.exists()
+
+
+def test_a_new_job_finds_the_part_a_stopped_one_left(tmp_path, monkeypatch):
+    """Resuming is not a privilege of the object that was stopped."""
+    monkeypatch.setenv("RESUME_FLAG", str(tmp_path / "flag"))
+    out = tmp_path / "Downloads"
+    engine = engine_for(tmp_path, "resume_again.py", RESUME_AGAIN_SCRIPT)
+    first = DownloadJob(engine, "https://x.invalid/v", video_option(), out)
+
+    outcome = run_until_cancelled(first, after=1.0)
+    assert outcome.get("cancelled") is True
+
+    # A later download of the same link and quality finds the same folder, so
+    # yt-dlp carries on instead of fetching the bytes again.
+    second = DownloadJob(engine, "https://x.invalid/v", video_option(), out)
+    finished = second.run()
+
+    assert (tmp_path / "flag").read_text() == "resumed"
+    assert finished.stat().st_size == 1
+    assert not second.work_dir().exists()
+
+
+def test_another_window_s_file_is_never_reported_as_ours(tmp_path):
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    job.work_dir().mkdir()
+
+    # A file that appeared in the shared folder belongs to someone else.
+    (out / "Someone Else's Video [xyz].mp4").write_bytes(b"theirs")
+
+    assert job._find_output({}) is None
+
+
+def test_a_file_that_cannot_be_put_in_place_leaves_no_empty_one_behind(
+    tmp_path, monkeypatch
+):
+    """The name is reserved before the move, so a failed move must free it."""
+    out = tmp_path / "Downloads"
+    job = DownloadJob(
+        engine_for(tmp_path, "fake_ok.py", SUCCESS_SCRIPT),
+        "https://x.invalid/v",
+        video_option(),
+        out,
+    )
+
+    def cannot_move(*args, **kwargs):
+        raise OSError("the disk went away")
+
+    monkeypatch.setattr(download_mod.os, "replace", cannot_move)
+    with pytest.raises(OSError):
+        job.run()
+
+    assert not (out / "A Real Video [dQw4w9WgXcQ].mp4").exists()
+    assert [path.name for path in out.iterdir()] == [job.work_dir().name]
+    # The download is still there to be delivered by a later run.
+    assert (job.work_dir() / "A Real Video [dQw4w9WgXcQ].mp4").is_file()
+    assert not (job.work_dir() / ".viddl-busy").exists()
+
+
+def test_a_folder_that_cannot_be_written_in_says_so(tmp_path, monkeypatch):
+    """A permissions problem is a permissions problem, not a busy folder."""
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+
+    def denied(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(download_mod.os, "open", denied)
+    with pytest.raises(ToolError) as caught:
+        job.run()
+
+    assert "make room" in caught.value.message
+    assert "Permission denied" in (caught.value.hint or "")
