@@ -63,6 +63,10 @@ class State:
     saved_path: Optional[Path] = None
     engine_note: str = ""
     engine_error: Optional[str] = None
+    # Set once, at startup, from what appdata could not create (R7). It is a
+    # warning rather than a stop: downloads can still work with an engine that
+    # was already installed, and the folder may only be un-writable for now.
+    folder_problem: str = ""
     ffmpeg_available: bool = False
 
 
@@ -274,6 +278,9 @@ class ViddlApp(App):
         # A link arriving from the command line or a browser hand-off is still
         # a link from outside: it is checked here as well as at the CLI.
         self.state = State(url=safe_video_link(initial_url) or "", prefer_audio=prefer_audio)
+        problem = appdata.ensure_dirs()
+        if problem is not None:
+            self.state.folder_problem = problem.line
 
     # -- lifecycle ----------------------------------------------------------
     def on_mount(self) -> None:
@@ -424,7 +431,9 @@ class HomeScreen(Screen):
         widget = self.query_one("#engine-status", Static)
         state = self.app.state
         if state.engine_error:
-            widget.update("")
+            # A folder that cannot be written in is the usual reason the engine
+            # could not be set up, so it stays on screen under the notification.
+            widget.update(_plain(state.folder_problem))
             self.notify(
                 _plain(state.engine_error.splitlines()[0]),
                 title="Viddl could not set itself up",
@@ -433,7 +442,10 @@ class HomeScreen(Screen):
             )
             return
 
-        widget.update(_plain(shorten(state.engine_note, 96)))
+        lines = [state.folder_problem] if state.folder_problem else []
+        if state.engine_note:
+            lines.append(shorten(state.engine_note, 96))
+        widget.update(_plain("\n".join(lines)))
 
     def submit_url(self) -> None:
         field = self.query_one("#url-input", Input)

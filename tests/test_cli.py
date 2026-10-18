@@ -30,6 +30,25 @@ def test_doctor_reports_paths_and_tools(capsys):
     assert str(appdata.downloads_dir()) in output
 
 
+def test_doctor_says_when_the_app_folder_cannot_be_made(capsys, monkeypatch, tmp_path):
+    """The doctor is where a broken setup is asked about, so it has to answer."""
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a folder", encoding="utf-8")
+    monkeypatch.setenv("VIDDL_HOME", str(blocker / "viddl"))
+
+    assert main(["--doctor"]) == 0
+    output = capsys.readouterr().out
+
+    assert "Problem:" in output
+    assert str(blocker / "viddl") in output
+    assert "VIDDL_HOME" in output
+
+
+def test_doctor_has_no_problem_line_when_the_folder_is_fine(capsys):
+    assert main(["--doctor"]) == 0
+    assert "Problem:" not in capsys.readouterr().out
+
+
 def test_doctor_says_which_overrides_are_in_effect(capsys, monkeypatch):
     """An environment variable is invisible in the app, so the doctor says it."""
     monkeypatch.setenv("VIDDL_YTDLP", "--exec=calc.exe")

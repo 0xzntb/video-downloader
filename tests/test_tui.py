@@ -525,6 +525,39 @@ async def test_the_home_screen_says_when_the_engine_is_old(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_the_home_screen_says_when_it_cannot_save_its_own_files(
+    tmp_path, monkeypatch
+):
+    """R7: a read-only home used to surface much later, as a download failure."""
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a folder", encoding="utf-8")
+    monkeypatch.setenv("VIDDL_HOME", str(blocker / "viddl"))
+
+    app = ViddlApp(services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        line = shown(app.screen, "#engine-status")
+        assert "Cannot save Viddl's files" in line
+        assert "viddl --doctor" in line
+        # The engine still works (it was found, not fetched), so its line stays.
+        assert "Ready to download" in line
+
+
+@pytest.mark.asyncio
+async def test_the_folder_problem_stays_on_screen_when_the_engine_fails_too(
+    tmp_path, monkeypatch
+):
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a folder", encoding="utf-8")
+    monkeypatch.setenv("VIDDL_HOME", str(blocker / "viddl"))
+
+    app = ViddlApp(services=make_services(tmp_path, engine=FakeEngine(fail=True)))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        assert "Cannot save Viddl's files" in shown(app.screen, "#engine-status")
+
+
+@pytest.mark.asyncio
 async def test_engine_setup_failure_is_visible_and_kind(tmp_path):
     engine = FakeEngine(fail=True)
     app = ViddlApp(services=make_services(tmp_path, engine=engine))

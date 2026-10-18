@@ -178,6 +178,14 @@ That prints the app folder, the log file, and where downloads go. The log holds
 the last run's details if something failed in a way the screen could not
 explain.
 
+If Viddl cannot create its own folder — a read-only home, or one owned by
+another account — the app says so on its first screen (*"Cannot save Viddl's
+files (Permission denied) — run `viddl --doctor`"*) instead of leaving you to
+find out from a download that fails for what looks like an unrelated reason. The
+doctor names the folder and both ways out: fix its permissions, or point
+`VIDDL_HOME` at somewhere you own. It is a warning, not a refusal: downloads
+still work if an engine is already installed.
+
 The first thing to try when a link that used to work stops working is:
 
 ```sh

@@ -86,6 +86,41 @@ def _is_macos() -> bool:
 
 
 @dataclass(frozen=True)
+class FolderProblem:
+    """One of Viddl's own folders that could not be created, and why.
+
+    ``line`` is for a screen, which has one line; ``details`` is for
+    ``viddl --doctor``, which has room to say which folder and what to do.
+    """
+
+    path: Path
+    error: OSError
+
+    @property
+    def reason(self) -> str:
+        """"Permission denied", "Not a directory" — never an empty string."""
+        return (self.error.strerror or str(self.error) or "unknown error").strip()
+
+    @property
+    def line(self) -> str:
+        """The short version, for a screen with one line of room.
+
+        It says what is wrong and where to read more, not how to fix it: the
+        path and the way out are the doctor's job, and a sentence that fits in
+        an 80-column terminal cannot hold all three.
+        """
+        return f"Cannot save Viddl's files ({self.reason}) — run `viddl --doctor`"
+
+    @property
+    def details(self) -> List[str]:
+        """``--doctor`` lines: the folder, the reason, and the way out."""
+        return [
+            f"cannot create {self.path} ({self.reason})",
+            "Check that you can write there, or set VIDDL_HOME to a folder you own.",
+        ]
+
+
+@dataclass(frozen=True)
 class Override:
     """What one environment variable asked for, and what became of it."""
 
@@ -351,14 +386,27 @@ def _secure_dir(path: Path) -> None:
         pass
 
 
-def ensure_dirs() -> None:
+def ensure_dirs() -> Optional[FolderProblem]:
+    """Create Viddl's folders, and report the one that could not be made.
+
+    Nothing here raises: a read-only home must not crash every code path that
+    only wants a path. But it must not be *forgotten* either, which is what it
+    used to be — the first sign of it was a failed download talking about
+    something else. The failure is returned, so ``viddl --doctor`` and the home
+    screen can say what is actually wrong, and so can anyone else who cares.
+
+    ``None`` means both folders are there. Only failing to *create* one is
+    reported: a filesystem that cannot hold a permission bit is not a problem
+    worth refusing to run over (see :func:`_secure_dir`).
+    """
+    first: Optional[FolderProblem] = None
     for path in (data_dir(), bin_dir()):
         try:
             _secure_dir(path)
-        except OSError:
-            # A read-only home is better handled later with a clear message
-            # than by crashing every code path that only wants a path.
-            pass
+        except OSError as exc:
+            if first is None:
+                first = FolderProblem(path, exc)
+    return first
 
 
 def secure_log_file() -> Optional[Path]:

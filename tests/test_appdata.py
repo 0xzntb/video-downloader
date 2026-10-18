@@ -88,7 +88,43 @@ def test_ensure_dirs_stays_quiet_when_it_cannot_write(tmp_path, monkeypatch):
     blocker = tmp_path / "blocked"
     blocker.write_text("not a folder", encoding="utf-8")
     monkeypatch.setenv("VIDDL_HOME", str(blocker / "viddl"))
-    appdata.ensure_dirs()  # must not raise
+    problem = appdata.ensure_dirs()  # must not raise
+    assert problem is not None, "the failure is reported, not swallowed"
+
+
+def test_ensure_dirs_returns_nothing_when_the_folders_are_there(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIDDL_HOME", str(tmp_path / "app"))
+    assert appdata.ensure_dirs() is None
+
+
+def test_the_problem_says_which_folder_and_what_to_do_about_it(tmp_path, monkeypatch):
+    """R7: a read-only home used to surface later as a downloads failure."""
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a folder", encoding="utf-8")
+    home = blocker / "viddl"
+    monkeypatch.setenv("VIDDL_HOME", str(home))
+
+    problem = appdata.ensure_dirs()
+
+    assert problem is not None
+    assert problem.path == home
+    assert problem.reason, "a reason is always given, never an empty bracket"
+    assert "viddl --doctor" in problem.line
+    assert len(problem.line) <= 76  # it has to fit on a terminal line
+    assert str(home) in problem.details[0]
+    assert "VIDDL_HOME" in problem.details[1]
+
+
+def test_it_names_the_folder_that_failed_not_one_that_was_fine(tmp_path, monkeypatch):
+    home = tmp_path / "app"
+    home.mkdir()
+    (home / "bin").write_text("not a folder", encoding="utf-8")
+    monkeypatch.setenv("VIDDL_HOME", str(home))
+
+    problem = appdata.ensure_dirs()
+
+    assert problem is not None
+    assert problem.path == home / "bin"
 
 
 # ---------------------------------------------------------------------------

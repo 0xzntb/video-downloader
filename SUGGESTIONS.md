@@ -9,7 +9,7 @@ statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **14 of 60** — S1–S6 in section 1, R1–R6 in section 2, D2–D3 in
+Progress so far: **15 of 60** — S1–S6 in section 1, R1–R7 in section 2, D2–D3 in
 section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -616,7 +616,47 @@ first while the first instance reports a file whose bytes changed underneath it.
 `engine.download_to` already does for its own downloads), and/or take a lock file
 per output directory.
 
-### R7 — `ensure_dirs()` hides a fatal problem · **P2** · S
+### R7 — `ensure_dirs()` hides a fatal problem · **P2** · S · ✅ **Done**
+
+> **Fixed.** `ensure_dirs()` still never raises — a read-only home must not crash
+> every code path that only wants a path — but it now **returns** what it could
+> not create: `FolderProblem(path, error)`, with a one-line version for a screen
+> and two lines for the doctor. It is reported in both places the item asked
+> for: `viddl --doctor` puts it directly under the app folder
+>
+> ```
+> Problem:      cannot create /home/me/.local/share/viddl (Permission denied)
+>               Check that you can write there, or set VIDDL_HOME to a folder you own.
+> ```
+>
+> and the home screen keeps *"Cannot save Viddl's files (Permission denied) —
+> run `viddl --doctor`"* on screen, above the ready line when the engine is fine
+> and **kept** when the engine setup also failed — that failure is usually the
+> same problem wearing a different hat, so the cause stays visible under the
+> notification.
+>
+> The one-line form is 66–72 characters depending on the reason (68 with
+> "Permission denied") and deliberately names the doctor rather than attempting
+> the fix: the path and the way out do not fit on one line of an 80-column
+> terminal, and the doctor already has both.
+>
+> Measured with the real CLI and the real app. `--doctor` against a folder with a
+> file in the way printed `Not a directory`; against a real `chmod 500` folder
+> printed `Permission denied`; against a usable folder printed no `Problem:` line
+> at all, so the message is not noise on a healthy install. The real app with a
+> real engine (yt-dlp 2026.08.19) started normally and showed the line above
+> "Engine 60 days old"; with **no engine anywhere and a read-only home**, the
+> engine failure toast was still the bare
+> `[Errno 13] Permission denied: '/…'`, and the screen above it now read
+> *"Cannot save Viddl's files (Permission denied)"* rather than leaving the errno
+> to explain itself. 7 tests added (477 → 484).
+>
+> What was deliberately left alone: the `chmod` swallow in `_secure_dir()` stays
+> — a filesystem without permission bits (a FAT stick, an exotic mount) is not a
+> reason to refuse to run, which is **S3**'s point — and the engine's own error
+> is still the raw `OSError`; the screen above it is what names the cause now.
+> Both folders are checked, so a failure in `bin/` is reported as `bin/`, not as
+> the folder before it.
 
 It swallows `OSError` deliberately, with a comment saying a read-only home is
 "better handled later with a clear message". It mostly is —

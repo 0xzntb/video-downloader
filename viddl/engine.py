@@ -848,6 +848,13 @@ class Engine:
         """Human-readable status used by ``viddl --doctor`` and the UI."""
         lines: List[str] = [f"Viddl {__version__}"]
         lines.append(f"App folder:   {self.home}")
+        # Asked here as well as at startup: a folder that cannot be created is
+        # the cause of most of what follows, so it goes above the rest of it.
+        problem = appdata.ensure_dirs()
+        if problem is not None:
+            for index, detail in enumerate(problem.details):
+                label = "Problem:" if index == 0 else ""
+                lines.append(f"{label:<14}{detail}")
         lines.append(f"Log file:     {self.home / 'viddl.log'}")
         try:
             lines.append(f"Downloads:    {appdata.downloads_dir()}")
