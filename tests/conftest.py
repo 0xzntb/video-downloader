@@ -8,7 +8,17 @@ from pathlib import Path
 
 import pytest
 
+from viddl import download as download_mod
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def fresh_probe_cache():
+    """A remembered look-up must never leak from one test to the next (R9)."""
+    download_mod.clear_probe_cache()
+    yield
+    download_mod.clear_probe_cache()
 
 
 @pytest.fixture(autouse=True)

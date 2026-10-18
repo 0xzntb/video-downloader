@@ -10,11 +10,12 @@ import time
 import types
 from dataclasses import replace
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
 from viddl import download as download_mod
-from viddl.download import DownloadCancelled, DownloadJob, probe_video
+from viddl.download import DownloadCancelled, DownloadJob, ProbeCancelled, probe_video
 from viddl.engine import Tool, ToolError
 from viddl.formats import MediaOption
 
@@ -110,6 +111,74 @@ def engine_for(tmp_path: Path, name: str, body: str) -> FakeEngine:
     return FakeEngine([sys.executable, str(script)])
 
 
+class FakeLookupProcess:
+    """A yt-dlp look-up process that never existed.
+
+    The real thing is started through ``Popen`` so it can be stopped mid-flight,
+    which is what these tests are about; a stand-in lets them be about that
+    rather than about waiting for a script.
+    """
+
+    def __init__(
+        self, argv, stdout: str, stderr: str, returncode: int, never_answers: bool
+    ):
+        self.argv = list(argv)
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+        self.never_answers = never_answers
+        self.killed = False
+        self.finished = False
+
+    @property
+    def pid(self) -> int:
+        return 4242
+
+    def communicate(self, timeout=None):
+        if self.never_answers and timeout is not None:
+            raise subprocess.TimeoutExpired(cmd=self.argv, timeout=timeout)
+        self.finished = True
+        return self.stdout, self.stderr
+
+    def poll(self):
+        return self.returncode if self.finished else None
+
+    def kill(self):
+        self.killed = True
+
+    def terminate(self):
+        self.killed = True
+
+
+class FakeLookup:
+    """What ``fake_lookup`` hands back: the command line, and the process."""
+
+    def __init__(self):
+        self.args: list = []
+        self.process: Optional[FakeLookupProcess] = None
+
+
+def fake_lookup(
+    monkeypatch,
+    stdout: str = "",
+    stderr: str = "",
+    returncode: int = 0,
+    never_answers: bool = False,
+) -> FakeLookup:
+    """Patch the process a look-up starts, and record how it was invoked."""
+    result = FakeLookup()
+
+    def fake_popen(args, **options):
+        result.args = list(args)
+        result.process = FakeLookupProcess(
+            args, stdout, stderr, returncode, never_answers
+        )
+        return result.process
+
+    monkeypatch.setattr(download_mod.subprocess, "Popen", fake_popen)
+    return result
+
+
 def video_option() -> MediaOption:
     return MediaOption(
         key="v1080",
@@ -143,18 +212,10 @@ def test_probe_explains_a_private_video(tmp_path):
 
 def test_probe_hands_the_link_over_as_data(monkeypatch):
     """Probing builds its own command line, so it needs the same guard."""
-    captured = {}
-
-    def fake_run(args, **kwargs):
-        captured["args"] = args
-        return subprocess.CompletedProcess(
-            args, 0, stdout='{"title": "Fake Video"}', stderr=""
-        )
-
-    monkeypatch.setattr(download_mod.subprocess, "run", fake_run)
+    fake = fake_lookup(monkeypatch, stdout='{"title": "Fake Video"}')
     info = probe_video(FakeEngine(["/fake/yt-dlp"]), "--exec=calc.exe")
 
-    args = captured["args"]
+    args = fake.args
     assert args[-2:] == ["--", "--exec=calc.exe"]
     assert "--ignore-config" in args
     assert info.title == "Fake Video"
@@ -168,15 +229,16 @@ def test_probe_reports_unreadable_output(tmp_path):
 
 
 def test_probe_reports_a_slow_site(tmp_path, monkeypatch):
+    """A site that never answers ends the look-up instead of hanging on it."""
     engine = engine_for(tmp_path, "unused.py", "")
+    fake = fake_lookup(monkeypatch, never_answers=True)
 
-    def too_slow(*args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd="yt-dlp", timeout=1)
-
-    monkeypatch.setattr(download_mod.subprocess, "run", too_slow)
     with pytest.raises(ToolError) as caught:
-        probe_video(engine, "https://x.invalid/v")
+        probe_video(engine, "https://x.invalid/v", timeout=0)
+
     assert "too long" in caught.value.message
+    assert caught.value.temporary, "a site that hangs is worth trying again"
+    assert fake.process.killed
 
 
 def test_probe_reports_an_engine_that_will_not_start(tmp_path, monkeypatch):
@@ -185,7 +247,7 @@ def test_probe_reports_an_engine_that_will_not_start(tmp_path, monkeypatch):
     def cannot_start(*args, **kwargs):
         raise OSError("Exec format error")
 
-    monkeypatch.setattr(download_mod.subprocess, "run", cannot_start)
+    monkeypatch.setattr(download_mod.subprocess, "Popen", cannot_start)
     with pytest.raises(ToolError) as caught:
         probe_video(engine, "https://x.invalid/v")
     assert "could not be started" in caught.value.message
@@ -196,6 +258,120 @@ def test_probe_rejects_output_that_is_not_a_video(tmp_path):
     with pytest.raises(ToolError) as caught:
         probe_video(engine, "https://x.invalid/v")
     assert "single video" in caught.value.message
+
+
+# ---------------------------------------------------------------------------
+# a look-up that can be stopped, and one that is not asked twice (R9)
+# ---------------------------------------------------------------------------
+
+
+def test_probe_stops_when_it_is_told_to(tmp_path):
+    """The 150-second call used to be unbreakable; now the button works."""
+    marker = tmp_path / "finished.txt"
+    engine = engine_for(
+        tmp_path,
+        "slow_info.py",
+        "import pathlib, sys, time\n"
+        "time.sleep(2)\n"
+        f"pathlib.Path({str(marker)!r}).write_text('done')\n"
+        "print('{}')\n",
+    )
+    cancel = threading.Event()
+    threading.Timer(0.4, cancel.set).start()
+
+    started = time.monotonic()
+    with pytest.raises(ProbeCancelled):
+        probe_video(engine, "https://x.invalid/v", cancel=cancel)
+    stopped_after = time.monotonic() - started
+
+    assert stopped_after < 1.5, f"the look-up ran on for {stopped_after:.1f}s after being stopped"
+    assert not marker.exists(), "the stopped yt-dlp carried on and finished its work"
+
+
+def test_probe_does_not_start_when_it_is_already_stopped(tmp_path, monkeypatch):
+    def must_not_start(*args, **kwargs):  # pragma: no cover - the point
+        raise AssertionError("a stopped look-up started yt-dlp anyway")
+
+    monkeypatch.setattr(download_mod.subprocess, "Popen", must_not_start)
+    cancel = threading.Event()
+    cancel.set()
+
+    with pytest.raises(ProbeCancelled):
+        probe_video(engine_for(tmp_path, "unused.py", ""), "https://x.invalid/v", cancel=cancel)
+
+
+def test_a_look_up_is_not_asked_twice(tmp_path):
+    """Going back and forth between the link box and the qualities screen."""
+    engine = engine_for(tmp_path, "fake_info.py", INFO_SCRIPT)
+
+    first = probe_video(engine, "https://x.invalid/v")
+    # A second engine whose script would fail: an answer coming back at all
+    # proves the site was not asked again.
+    broken = engine_for(tmp_path, "broken_info.py", "import sys; sys.exit(3)\n")
+    second = probe_video(broken, "https://x.invalid/v")
+
+    assert second.title == first.title == "Fake Video"
+    assert [opt.key for opt in second.options] == [opt.key for opt in first.options]
+
+
+def test_a_remembered_answer_is_forgotten_after_a_few_minutes(tmp_path):
+    engine = engine_for(tmp_path, "fake_info.py", INFO_SCRIPT)
+    probe_video(engine, "https://x.invalid/v")
+
+    with download_mod._PROBE_CACHE_LOCK:
+        for answer in download_mod._PROBE_CACHE.values():
+            answer.at -= download_mod.PROBE_CACHE_SECONDS + 1
+
+    broken = engine_for(tmp_path, "broken_info.py", "import sys; sys.exit(3)\n")
+    with pytest.raises(ToolError):
+        probe_video(broken, "https://x.invalid/v")
+
+
+def test_a_failed_look_up_is_not_remembered(tmp_path):
+    """The failure most likely to be fixed by trying again must be able to be."""
+    engine = engine_for(tmp_path, "fake_fail.py", INFO_FAILURE_SCRIPT)
+
+    for _ in range(2):
+        with pytest.raises(ToolError):
+            probe_video(engine, "https://x.invalid/v")
+
+    assert download_mod._PROBE_CACHE == {}
+
+
+def test_the_users_options_are_part_of_what_was_asked(tmp_path, monkeypatch):
+    """Cookies change the answer, so the same link is a different question."""
+    engine = engine_for(tmp_path, "fake_info.py", INFO_SCRIPT)
+
+    monkeypatch.setenv("VIDDL_YTDLP_ARGS", "--cookies-from-browser chrome")
+    probe_video(engine, "https://x.invalid/v")
+    assert len(download_mod._PROBE_CACHE) == 1
+
+    monkeypatch.setenv("VIDDL_YTDLP_ARGS", "--cookies-from-browser firefox")
+    probe_video(engine, "https://x.invalid/v")
+    assert len(download_mod._PROBE_CACHE) == 2
+
+
+def test_only_so_many_links_are_remembered(tmp_path):
+    engine = engine_for(tmp_path, "fake_info.py", INFO_SCRIPT)
+    for number in range(download_mod._PROBE_CACHE_MAX + 5):
+        probe_video(engine, f"https://x.invalid/v{number}")
+
+    assert len(download_mod._PROBE_CACHE) == download_mod._PROBE_CACHE_MAX
+    # The newest is kept and the oldest is gone, so it is the answer that is
+    # least likely to be asked for next that is dropped.
+    assert "https://x.invalid/v0" not in download_mod._PROBE_CACHE
+    assert f"https://x.invalid/v{download_mod._PROBE_CACHE_MAX + 4}" in download_mod._PROBE_CACHE
+
+
+def test_the_probe_only_asks_for_the_first_video_of_a_playlist(monkeypatch):
+    """A fifty-item playlist is fifty extractions otherwise (see R9)."""
+    fake = fake_lookup(monkeypatch, stdout='{"title": "Fake Video"}')
+    probe_video(FakeEngine(["/fake/yt-dlp"]), "https://www.youtube.com/playlist?list=X")
+
+    args = fake.args
+    assert "--no-playlist" in args
+    assert args[args.index("--playlist-end") + 1] == "1"
+    assert args[-2:] == ["--", "https://www.youtube.com/playlist?list=X"]
 
 
 # ---------------------------------------------------------------------------
@@ -894,20 +1070,28 @@ def test_extra_options_reach_the_download_command(tmp_path, monkeypatch):
 
 
 def test_extra_options_reach_the_probe_too(tmp_path, monkeypatch):
-    captured = {}
-
-    def fake_run(args, **kwargs):
-        captured["args"] = args
-        return subprocess.CompletedProcess(args, 0, stdout='{"title": "Fake"}', stderr="")
-
-    monkeypatch.setattr(download_mod.subprocess, "run", fake_run)
+    fake = fake_lookup(monkeypatch, stdout='{"title": "Fake"}')
     monkeypatch.setenv("VIDDL_YTDLP_ARGS", "--cookies-from-browser chrome")
 
     probe_video(FakeEngine(["/fake/yt-dlp"]), "https://x.invalid/v")
 
-    args = captured["args"]
+    args = fake.args
     assert "--cookies-from-browser" in args
     assert args[-2:] == ["--", "https://x.invalid/v"]
+
+
+def test_a_download_takes_only_the_first_video_of_a_playlist(tmp_path):
+    """The menu says "only the first"; the download has to agree (R9).
+
+    ``--no-playlist`` covers a video link carrying a list. A playlist link of
+    its own would otherwise be fetched whole: six files for a link the screen
+    described as one video.
+    """
+    job = DownloadJob(FakeEngine(["/fake"]), "https://x.invalid/v", video_option(), tmp_path)
+    args = job.build_args()
+
+    assert "--no-playlist" in args
+    assert args[args.index("--playlist-end") + 1] == "1"
 
 
 def test_a_refused_option_never_reaches_the_command(tmp_path, monkeypatch):

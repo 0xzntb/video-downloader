@@ -187,7 +187,13 @@ def parse_info(info: Dict[str, Any]) -> MediaInfo:
     playlist_note = ""
     if isinstance(info.get("entries"), list) and info["entries"]:
         entries = [entry for entry in info["entries"] if entry]
-        playlist_note = f"Only the first of {len(entries)} videos in this playlist."
+        # The probe asks yt-dlp for the first entry only, so the list here is
+        # one item long however big the playlist is; the total is what the
+        # playlist itself reported. A single-video "playlist" needs no note.
+        total = int(_num(info.get("playlist_count")) or 0)
+        total = max(total, len(entries))
+        if total > 1:
+            playlist_note = f"Only the first of {total} videos in this playlist."
         info = entries[0]
 
     url = str(info.get("webpage_url") or info.get("original_url") or info.get("url") or "")

@@ -72,6 +72,28 @@ _RETRY_SLICE_SECONDS = 0.1
 #: test and the claim in one step, which is what keeps two windows apart.
 _CLAIM_NAME = ".viddl-busy"
 
+#: How long a look-up may take before Viddl gives up on the site. yt-dlp's own
+#: socket timeout is 20 s, so this is the "it is not answering at all" bound.
+PROBE_TIMEOUT = 150
+
+#: How long a look-up's answer is remembered. Re-opening the same link — going
+#: back for another quality, or clicking Find qualities twice because the first
+#: press looked like nothing happened — must not ask the site all over again.
+#: Five minutes: long enough to cover that, short enough to notice a change.
+PROBE_CACHE_SECONDS = 300
+
+#: At most this many links are remembered, so a long session cannot grow
+#: without bound. The oldest answer goes when a new one arrives.
+_PROBE_CACHE_MAX = 20
+
+#: A stop is felt this often while a look-up runs. The user pressed a button;
+#: they mean now, not whenever yt-dlp happens to finish.
+_CANCEL_POLL_SECONDS = 0.1
+
+
+class ProbeCancelled(Exception):
+    """The user stopped the look-up. Not a failure: nothing to explain."""
+
 
 def _is_intermediate(path: Path) -> bool:
     """True for a stream that only exists to be merged into the real file."""
@@ -124,20 +146,184 @@ def _fmt_eta(seconds: Optional[float]) -> str:
     return human_duration(seconds)
 
 
-def _seconds_text(seconds: float) -> str:
+def seconds_text(seconds: float) -> str:
     """"4s", not "4.0s" — this is read in passing, not studied."""
     if abs(seconds - round(seconds)) < 1e-9:
         return f"{int(round(seconds))}s"
     return f"{seconds:.1f}s"
 
 
-def probe_video(engine: Engine, url: str, timeout: int = 150) -> MediaInfo:
-    """Ask yt-dlp what is behind a link. Raises ``ToolError`` on failure."""
+def stop_process_tree(process: subprocess.Popen, force: bool = False) -> None:
+    """Ask every process a run started to stop, not only the one Viddl holds.
+
+    On POSIX the child is given a session of its own (``start_new_session``), so
+    its group holds yt-dlp and anything yt-dlp started — ffmpeg, while merging.
+    Windows has no process groups to signal, so ``taskkill /T`` walks the tree
+    instead, which is the same guarantee by another route.
+    """
+    if is_windows():
+        command = ["taskkill", "/PID", str(process.pid), "/T"]
+        if force:
+            command.insert(1, "/F")
+        try:
+            subprocess.run(command, capture_output=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL if force else signal.SIGTERM)
+    except OSError:
+        # No group of its own (started by someone else, or already gone):
+        # fall back to the process itself.
+        try:
+            process.kill() if force else process.terminate()
+        except OSError:
+            pass
+
+
+@dataclass
+class _ProbeAnswer:
+    """A look-up that has already been paid for, and when."""
+
+    info: MediaInfo
+    at: float
+
+
+#: Answers to look-ups, in memory only: nothing is written to disk, and quitting
+#: Viddl forgets all of it.
+_PROBE_CACHE: Dict[str, _ProbeAnswer] = {}
+_PROBE_CACHE_LOCK = threading.Lock()
+
+
+def clear_probe_cache() -> None:
+    """Forget every remembered look-up, so the next one asks the site again."""
+    with _PROBE_CACHE_LOCK:
+        _PROBE_CACHE.clear()
+
+
+def _probe_key(url: str) -> str:
+    """What an answer depends on: the link, and the options the user added.
+
+    Cookies and the like change what a site hands back, so they are part of the
+    key: the same link with a signed-in option is a different question.
+    """
+    return "|".join((url, *appdata.ytdlp_arguments()))
+
+
+def _remembered_probe(key: str) -> Optional[MediaInfo]:
+    """The answer to this look-up if it is still fresh, else ``None``."""
+    now = time.monotonic()
+    with _PROBE_CACHE_LOCK:
+        answer = _PROBE_CACHE.get(key)
+        if answer is None:
+            return None
+        if now - answer.at > PROBE_CACHE_SECONDS:
+            del _PROBE_CACHE[key]
+            return None
+        return answer.info
+
+
+def _remember_probe(key: str, info: MediaInfo) -> None:
+    """Keep an answer for a few minutes, dropping the oldest if need be."""
+    with _PROBE_CACHE_LOCK:
+        _PROBE_CACHE[key] = _ProbeAnswer(info, time.monotonic())
+        while len(_PROBE_CACHE) > _PROBE_CACHE_MAX:
+            oldest = min(_PROBE_CACHE, key=lambda held: _PROBE_CACHE[held].at)
+            del _PROBE_CACHE[oldest]
+
+
+def _run_lookup(
+    args: List[str],
+    timeout: int,
+    cancel: Optional[threading.Event],
+) -> Tuple[int, str, str]:
+    """Run a look-up that can be stopped while it runs.
+
+    ``subprocess.run`` cannot be interrupted, which is the whole problem with a
+    150-second probe: the screen would sit there with no way out. This starts
+    yt-dlp in a session of its own, waits in slices, and kills the tree when the
+    user asks it to stop — or when the site has said nothing for ``timeout``.
+    """
+    if cancel is not None and cancel.is_set():
+        # Stopped before it began: starting a process only to kill it would be
+        # work for nobody, and the site would be asked for a link the user has
+        # already decided not to wait for.
+        raise ProbeCancelled()
+    options: Dict[str, object] = {}
+    if is_windows():
+        options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        options["start_new_session"] = True
+    try:
+        process = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            errors="replace",
+            **options,
+        )
+    except OSError as exc:
+        raise ToolError(
+            "The video engine could not be started.",
+            f"Try running Viddl again. Details: {exc}",
+        ) from exc
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            stdout, stderr = process.communicate(timeout=_CANCEL_POLL_SECONDS)
+        except subprocess.TimeoutExpired:
+            if cancel is not None and cancel.is_set():
+                stop_process_tree(process, force=True)
+                process.communicate()
+                raise ProbeCancelled()
+            if time.monotonic() >= deadline:
+                stop_process_tree(process, force=True)
+                process.communicate()
+                raise ToolError(
+                    "The site took too long to answer.",
+                    "Check your connection, or try the link again in a moment.",
+                    raw=f"nothing heard from the site in {timeout} seconds",
+                    temporary=True,
+                )
+            continue
+        return process.returncode, stdout or "", stderr or ""
+
+
+def probe_video(
+    engine: Engine,
+    url: str,
+    timeout: int = PROBE_TIMEOUT,
+    cancel: Optional[threading.Event] = None,
+) -> MediaInfo:
+    """Ask yt-dlp what is behind a link. Raises ``ToolError`` on failure.
+
+    Two things make this survivable on a slow site. An answer that is only
+    minutes old is reused, so going back and forth between the link box and the
+    qualities screen does not re-ask the site, and the whole look-up can be
+    stopped through ``cancel`` — the process tree is killed, and
+    :class:`ProbeCancelled` is raised rather than a failure being reported for
+    something the user chose.
+    """
+    key = _probe_key(url)
+    remembered = _remembered_probe(key)
+    if remembered is not None:
+        return remembered
+
     tool = engine.ensure_ytdlp()
     args = tool.command(
         "--ignore-config",
         "--dump-single-json",
         "--no-playlist",
+        # A playlist link is still read as one video's worth of metadata: the
+        # first entry, fully extracted. Without this, a playlist of fifty items
+        # is fifty extractions — minutes of waiting, megabytes of JSON — for the
+        # one entry the app is willing to use, and a single unavailable video
+        # anywhere in the list fails the whole look-up.
+        "--playlist-end",
+        "1",
         "--no-warnings",
         "--no-progress",
         "--socket-timeout",
@@ -150,24 +336,12 @@ def probe_video(engine: Engine, url: str, timeout: int = 150) -> MediaInfo:
     args += appdata.ytdlp_arguments()
     # "--" ends the options: the link can never be read as one.
     args += ["--", url]
-    try:
-        completed = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        raise ToolError(
-            "The site took too long to answer.",
-            "Check your connection, or try the link again in a moment.",
-            raw=str(exc),
-            temporary=True,
-        ) from exc
-    except OSError as exc:
-        raise ToolError(
-            "The video engine could not be started.",
-            f"Try running Viddl again. Details: {exc}",
-        ) from exc
 
-    if completed.returncode != 0 or not (completed.stdout or "").strip():
-        raw = (completed.stderr or "") + "\n" + (completed.stdout or "")
-        friendly = explain(raw, completed.returncode)
+    returncode, stdout, stderr = _run_lookup(args, timeout, cancel)
+
+    if returncode != 0 or not (stdout or "").strip():
+        raw = (stderr or "") + "\n" + (stdout or "")
+        friendly = explain(raw, returncode)
         raise ToolError(
             friendly.message,
             friendly.hint,
@@ -176,7 +350,7 @@ def probe_video(engine: Engine, url: str, timeout: int = 150) -> MediaInfo:
         )
 
     try:
-        info = json.loads(completed.stdout)
+        info = json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise ToolError(
             "The site sent back something Viddl could not read.",
@@ -186,7 +360,12 @@ def probe_video(engine: Engine, url: str, timeout: int = 150) -> MediaInfo:
 
     if not isinstance(info, dict):
         raise ToolError("That link did not point to a single video.")
-    return parse_info(info)
+    parsed = parse_info(info)
+    # Only a look-up that worked is worth remembering: a failure is the thing
+    # most likely to be fixed by trying again, and caching it would take that
+    # away for five minutes.
+    _remember_probe(key, parsed)
+    return parsed
 
 
 class DownloadJob:
@@ -331,6 +510,12 @@ class DownloadJob:
             "--ignore-config",
             "--newline",
             "--no-playlist",
+            # One video, and the screen said so: "Only the first of N videos in
+            # this playlist." ``--no-playlist`` only covers a video link that
+            # carries a list; a playlist link of its own would be downloaded
+            # whole — six files for a link the menu described as one.
+            "--playlist-end",
+            "1",
             "--no-color",
             "--no-warnings",
             # Carry on from a ".part" file a previous attempt left. yt-dlp does
@@ -417,29 +602,11 @@ class DownloadJob:
     def _signal_tree(self, process: subprocess.Popen, force: bool) -> None:
         """Ask every process the download started to stop.
 
-        On POSIX the child is a session of its own (``start_new_session``), so
-        its group holds yt-dlp and anything yt-dlp started.
+        The same job a look-up does when it is stopped, which is why it is one
+        function and not two: yt-dlp starts ffmpeg, and signalling the top of
+        that tree alone leaves the merge running.
         """
-        if is_windows():
-            # Windows has no process groups to signal; ``taskkill /T`` walks
-            # the tree, which is the same guarantee by another route.
-            command = ["taskkill", "/PID", str(process.pid), "/T"]
-            if force:
-                command.insert(1, "/F")
-            try:
-                subprocess.run(command, capture_output=True, timeout=15)
-            except (OSError, subprocess.SubprocessError):
-                pass
-            return
-        try:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL if force else signal.SIGTERM)
-        except OSError:
-            # No group of its own (started by someone else, or already gone):
-            # fall back to the process itself.
-            try:
-                process.kill() if force else process.terminate()
-            except OSError:
-                pass
+        stop_process_tree(process, force=force)
 
     def run(self) -> Path:
         """Download and return the finished file. Raises on failure.
@@ -655,7 +822,7 @@ class DownloadJob:
         and feeling the work start over would be untrue.
         """
         status = (
-            f"Retrying in {_seconds_text(wait)} "
+            f"Retrying in {seconds_text(wait)} "
             f"(attempt {attempt + 1} of {self.attempts})…"
         )
         self._emit(status=status, speed="", eta="", phase="retry")

@@ -172,6 +172,17 @@ video is private. Only the owner can download it."*, a mistyped link says
 *"That page could not be found (404)."*, and a missing ffmpeg tells you to press
 **Set up ffmpeg** rather than mentioning post-processing.
 
+**A link that takes a while to read.** Working out what a link offers means
+asking the site, and some sites are slow. The qualities screen counts the
+seconds while it waits, and after five of them it says so plainly — *"Still
+looking — some sites are slow to answer. Press “Stop looking” to give up."* —
+with a button that ends it there and then; the yt-dlp process is stopped, not
+left running out of sight. **Back** (or `Esc`) does the same. If you go back and
+open the same link again within a few minutes, the answer is remembered, so it
+appears at once instead of asking the site a second time. A link that offers a
+whole playlist is only read up to its first video, so a long one cannot turn
+into minutes of waiting and a menu that never arrives.
+
 A failure that might not have happened — the site rate-limiting you, a server
 having a bad minute, a connection that dropped — is tried again by itself: after
 4 seconds, then after 8, three attempts in all. The progress screen says so
@@ -225,7 +236,7 @@ of yt-dlp when you want to manage that yourself.
 | `viddl/tui/` | The terminal interface (Textual). Five screens: home, qualities, progress, stopped, done. |
 | `viddl/engine.py` | Finds yt-dlp and ffmpeg, or downloads its own copy into `~/.local/share/viddl/bin` — in pieces that survive an interruption, checked against a published checksum and only then unpacked. |
 | `viddl/formats.py` | Turns site metadata into the quality menu, with size estimates. |
-| `viddl/download.py` | Runs yt-dlp in a per-download working folder, reads its progress, and moves the finished file out under a name reserved before the move, so two windows cannot collide. A failure worth a second attempt is retried after a doubling wait; stopping it stops the whole tree yt-dlp started — the ffmpeg merge included — and keeps what was fetched so it can be resumed. |
+| `viddl/download.py` | Reads what a link offers — in a process of its own, so a slow site can be stopped and its answer is remembered for a few minutes — and runs yt-dlp in a per-download working folder, reads its progress, and moves the finished file out under a name reserved before the move, so two windows cannot collide. A failure worth a second attempt is retried after a doubling wait; stopping it stops the whole tree yt-dlp started — the ffmpeg merge included — and keeps what was fetched so it can be resumed. |
 | `viddl/errors.py` | Maps raw tool output onto plain-language explanations, and says whether the failure is one another attempt may fix. |
 | `viddl/protocol.py` | The `viddl://` hand-off and its per-OS registration. |
 | `viddl/browser_extension/` | The Chromium (Manifest V3) extension. |

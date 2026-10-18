@@ -9,7 +9,7 @@ statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **16 of 60** — S1–S6 in section 1, R1–R8 in section 2, D2–D3 in
+Progress so far: **17 of 60** — S1–S6 in section 1, R1–R9 in section 2, D2–D3 in
 section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -739,7 +739,64 @@ downloading large files — good), resume interrupted transfers with a Range
 request, and detect Rosetta availability on macOS or say plainly that the
 fallback needs it.
 
-### R9 — Probing is a single 150-second blocking call · **P2** · M
+### R9 — Probing is a single 150-second blocking call · **P2** · M · ✅ **Done**
+
+> **Fixed, all three ways the item asked for.** The look-up runs in a process of
+> its own, so it can be stopped: the qualities screen counts the seconds
+> (*"Looking up the link… 4s"*), and at five of them it says *"Still looking —
+> some sites are slow to answer. Press “Stop looking” to give up."* with a
+> button that becomes visible at the same moment. Stopping kills the whole
+> process tree — the same helper a cancelled download uses — and raises
+> `ProbeCancelled`, so the user sees the link box again rather than a failure
+> they did not have; **Back** and `Esc` stop it too, and so does leaving the
+> screen, because a 150-second process nobody is watching is exactly what the
+> item was about.
+>
+> **Answers are remembered for five minutes**, keyed by the link *and* the
+> options that change what a site hands back (cookies and the like), capped at
+> twenty links so a long session cannot grow. Only a look-up that worked is
+> kept: a failure is the thing most likely to be fixed by trying again, and
+> caching it would take that away.
+>
+> **Playlists no longer cost more than the app can use.** The probe now passes
+> `--playlist-end 1` alongside `--no-playlist`, and `parse_info` takes the total
+> from the playlist's own `playlist_count` rather than from the entries it was
+> handed, so the note still names the real number. `--flat-playlist` was
+> considered and **not** used, and the reason is worth keeping: a flat entry has
+> no formats, which is the one thing the quality menu is made of — the menu
+> would come back as a single row of "mp4, size unknown".
+>
+> Following that through found a second, worse one on the **download** side: the
+> screen said *"Only the first of 13 videos in this playlist"* and the command
+> Viddl built said nothing of the kind. Built the way it was, a playlist link
+> asked yt-dlp for **six items** (measured with the real engine:
+> `--no-playlist --simulate --print '%(id)s'` prints 6; with `--playlist-end 1`
+> it prints 1) while the README promised a playlist link "downloads its first
+> video". The download command carries the same flag now, so the app's own words
+> are true and the two halves agree.
+>
+> **Measured, with the real yt-dlp 2026.08.19 and real processes.** A real
+> 13-video playlist link: **12.9 s and then `rc=1`** before — the old code read
+> every entry, 2.85 MB of JSON, and the *whole look-up failed* because one video
+> in the list is unavailable, so the user got nothing at all — against **3.6 s,
+> 638 KB, eleven quality rows and `note='Only the first of 13 videos in this
+> playlist.'`** after. The same playlist asked for again: **0.0 s**; a single
+> video: 2.5 s, then 0.0 s. Against a server that accepts the connection and
+> says nothing, a real `Engine` look-up stopped on request after **1.6 s**
+> (cancel asked for at 1.5 s, the poll slice is 0.1 s) with **no yt-dlp process
+> left behind**. And the real app, driven with the real engine against that same
+> silent server, printed `status='Looking up the link… 2s'` and `'…4s'` with the
+> button hidden, then at five seconds the hint with `stop-visible=True`, and
+> clicking it landed back on the home screen. 14 tests added (507 → 521), and the
+> ones that matter start real processes: the cancel test stops a real script and
+> then checks that the file it would have written is not there.
+>
+> Two things this turned up that were not the item's point but were wrong:
+> pressing **Back** while a look-up was running popped the qualities screen *and
+> then* the screen behind it when the stopped worker reported back, leaving the
+> app on an empty screen — the stopped worker now only pops if its own screen is
+> still the top one — and a cached answer would otherwise have leaked between
+> tests, so the suite clears the cache around every test.
 
 `probe_video()` runs `--dump-single-json` with a 150 s timeout and no cache. On a
 slow site the qualities screen simply sits there; clicking a second link

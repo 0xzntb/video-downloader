@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import inspect
 import logging
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,7 +33,13 @@ from textual.widgets import Button, Footer, Input, ProgressBar, Static
 from .. import APP_TITLE, __version__
 from .. import appdata
 from .. import engine as engine_mod
-from ..download import DownloadCancelled, DownloadJob, Progress, probe_video
+from ..download import (
+    DownloadCancelled,
+    DownloadJob,
+    ProbeCancelled,
+    Progress,
+    probe_video,
+)
 from ..engine import Engine, ToolError
 from ..formats import MediaInfo, MediaOption
 from ..util import human_size, safe_video_link, shorten
@@ -40,13 +48,21 @@ from .widgets import ChoiceList
 _ARP = "·"
 LOGGER = logging.getLogger("viddl")
 
+#: How long a look-up runs before the screen says so out loud and offers a way
+#: out (R9). Five seconds is the point at which a screen that has not changed
+#: looks stuck rather than busy.
+_PROBE_HINT_SECONDS = 5.0
+
+#: How often the elapsed seconds on screen are refreshed.
+_PROBE_TICK_SECONDS = 0.5
+
 
 @dataclass
 class Services:
     """Everything the UI needs from the outside world, swappable for tests."""
 
     engine: Engine
-    probe: Callable[[Engine, str], MediaInfo] = probe_video
+    probe: Callable[..., MediaInfo] = probe_video
     make_job: Callable[..., DownloadJob] = DownloadJob
     downloads_dir: Callable[[], Path] = appdata.downloads_dir
 
@@ -515,20 +531,77 @@ class OptionsScreen(Screen):
             with Horizontal(classes="buttons"):
                 yield Button("Download", variant="primary", id="download")
                 yield Button("Set up ffmpeg", id="get-ffmpeg")
+                yield Button("Stop looking", id="stop-probe")
                 yield Button("Back", id="back")
             yield Static("", id="options-note")
         yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#get-ffmpeg", Button).add_class("hidden")
+        self.query_one("#stop-probe", Button).add_class("hidden")
         self.query_one("#download", Button).disabled = True
+        self._stopped = False
+        self._hinted = False
+        self._started_at = time.monotonic()
+        self._cancel = threading.Event()
+        self._ticker = self.set_interval(_PROBE_TICK_SECONDS, self.show_elapsed)
         self.load_info(self.app.state.url)
 
+    def on_unmount(self) -> None:
+        """Leaving the screen ends the look-up: nothing is left running behind."""
+        self.stop_looking()
+
     # -- loading ------------------------------------------------------------
+    def show_elapsed(self) -> None:
+        """Say how long the link has been taking, and offer a way out.
+
+        A look-up can legitimately take a minute on a slow site, so the screen
+        must not look frozen while it does. After a few seconds it stops just
+        counting and says plainly that this is normal, with a button — because
+        the alternative is a 150-second wait with no way to call it off.
+        """
+        if self._stopped or not self.is_mounted:
+            return
+        elapsed = time.monotonic() - self._started_at
+        # Whole seconds: this is a clock the user is waiting on, and "2.0s" for
+        # something 2.04 s old reads like a stopwatch that has jammed.
+        self.query_one("#options-status", Static).update(
+            f"Looking up the link… {int(elapsed)}s"
+        )
+        if elapsed < _PROBE_HINT_SECONDS or self._hinted:
+            return
+        self._hinted = True
+        self.query_one("#stop-probe", Button).remove_class("hidden")
+        self.query_one("#options-note", Static).update(
+            _plain(
+                "Still looking — some sites are slow to answer. "
+                "Press “Stop looking” to give up."
+            )
+        )
+
+    def stop_looking(self) -> None:
+        """Ask the look-up to stop, at once: the yt-dlp process is killed."""
+        self._stopped = True
+        self._cancel.set()
+        ticker = getattr(self, "_ticker", None)
+        if ticker is not None:
+            ticker.stop()
+
+    def action_stop_probe(self) -> None:
+        if self._stopped:
+            return
+        self.stop_looking()
+        self.query_one("#options-status", Static).update("Stopping…")
+
     @work(thread=True, exclusive=True, group="probe")
     def load_info(self, url: str) -> None:
         try:
-            info = self.app.services.probe(self.app.services.engine, url)
+            info = self.app.services.probe(
+                self.app.services.engine, url, cancel=self._cancel
+            )
+        except ProbeCancelled:
+            self.app._post(self.show_stopped)
+            return
         except ToolError as exc:
             self.app._post(self.show_error, exc)
             return
@@ -537,7 +610,23 @@ class OptionsScreen(Screen):
             return
         self.app._post(self.show_info, info)
 
+    def show_stopped(self) -> None:
+        """Back to the link box, with the link still in it.
+
+        Only if this screen is still the one on top: Back already leaves by
+        itself, and popping a second time would take the home screen with it —
+        leaving the app on an empty screen with nothing to type in.
+        """
+        if not self.is_mounted or self.app.screen is not self:
+            return
+        self.app.pop_screen()
+        self.app.notify("Stopped looking up that link.", timeout=4)
+
     def show_error(self, error: ToolError) -> None:
+        if not self.is_mounted:
+            return
+        self.stop_looking()
+        self.query_one("#stop-probe", Button).add_class("hidden")
         status = self.query_one("#options-status", Static)
         status.update(_plain(error.message))
         self.app.state.info = None
@@ -548,6 +637,10 @@ class OptionsScreen(Screen):
         self.notify(_plain(error.message), severity="error", timeout=10)
 
     def show_info(self, info: MediaInfo) -> None:
+        if not self.is_mounted:
+            return
+        self.stop_looking()
+        self.query_one("#stop-probe", Button).add_class("hidden")
         self.app.state.info = info
         heading = self.query_one("#options-heading", Static)
         status = self.query_one("#options-status", Static)
@@ -667,6 +760,8 @@ class OptionsScreen(Screen):
             self.action_go_back()
         elif button_id == "get-ffmpeg":
             self.setup_ffmpeg()
+        elif button_id == "stop-probe":
+            self.action_stop_probe()
 
     def action_download(self) -> None:
         table = self.query_one("#choices", ChoiceList)
@@ -677,6 +772,10 @@ class OptionsScreen(Screen):
         self.app.start_download(option)
 
     def action_go_back(self) -> None:
+        # Going back while the link is being looked up is also a way of saying
+        # "not this one": the look-up is stopped rather than left to run for
+        # another two minutes in the background.
+        self.stop_looking()
         self.app.pop_screen()
 
     @work(thread=True, exclusive=True, group="ffmpeg")

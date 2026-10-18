@@ -12,12 +12,13 @@ import asyncio
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
 import pytest
 
-from viddl.download import DownloadCancelled, Progress
+from viddl.download import DownloadCancelled, ProbeCancelled, Progress
 from viddl.engine import Tool, ToolError
 from viddl.formats import MediaInfo, parse_info
 from viddl.protocol import build_scheme_url
@@ -259,7 +260,7 @@ def make_services(tmp_path: Path, engine=None, info=None, job_class=FakeJob) -> 
     info = info if info is not None else parse_info(INFO_JSON)
     return Services(
         engine=engine or FakeEngine(),
-        probe=lambda eng, url: info,
+        probe=lambda eng, url, cancel=None: info,
         make_job=job_class,
         downloads_dir=lambda: tmp_path / "Downloads",
     )
@@ -270,6 +271,36 @@ async def settle(pilot, rounds: int = 6) -> None:
     for _ in range(rounds):
         await pilot.pause()
         await asyncio.sleep(0.01)
+
+
+async def wait_for_screen(pilot, kind, timeout: float = 5.0) -> bool:
+    """Wait for a screen to be the visible one.
+
+    A pop is not instantaneous: for a moment the app is between screens, and
+    asking which one it is there answers with Textual's placeholder.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if isinstance(pilot.app.screen, kind):
+            return True
+        await pilot.pause()
+        await asyncio.sleep(0.01)
+    return isinstance(pilot.app.screen, kind)
+
+
+async def wait_for(pilot, event: threading.Event, timeout: float = 5.0) -> bool:
+    """Wait for a worker's event, keeping the app's own loop running.
+
+    ``Event.wait`` in an async test blocks the event loop, and the loop is what
+    lets a screen finish mounting and start its worker in the first place.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if event.is_set():
+            return True
+        await pilot.pause()
+        await asyncio.sleep(0.01)
+    return event.is_set()
 
 
 def shown(screen, selector: str) -> str:
@@ -449,7 +480,7 @@ async def test_audio_flag_starts_on_the_mp3_options(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_bad_link_explains_itself(tmp_path):
-    def explode(engine, url):
+    def explode(engine, url, cancel=None):
         raise ToolError("That video is private.", "Only the owner can download it.")
 
     services = make_services(tmp_path)
@@ -798,7 +829,7 @@ async def test_an_option_shaped_link_is_refused_before_any_probe(tmp_path):
     """Typing a flag at the app must not turn into a flag for yt-dlp."""
     probed = []
     services = make_services(tmp_path)
-    services.probe = lambda engine, url: probed.append(url) or parse_info(INFO_JSON)
+    services.probe = lambda engine, url, cancel=None: probed.append(url) or parse_info(INFO_JSON)
     app = ViddlApp(services=services)
 
     async with app.run_test(size=(100, 32)) as pilot:
@@ -817,7 +848,7 @@ async def test_an_option_shaped_link_is_refused_before_any_probe(tmp_path):
 async def test_a_hand_off_carrying_an_option_is_refused(tmp_path):
     probed = []
     services = make_services(tmp_path)
-    services.probe = lambda engine, url: probed.append(url) or parse_info(INFO_JSON)
+    services.probe = lambda engine, url, cancel=None: probed.append(url) or parse_info(INFO_JSON)
     app = ViddlApp(services=services)
 
     async with app.run_test(size=(100, 32)) as pilot:
@@ -837,7 +868,7 @@ async def test_an_option_shaped_starting_link_never_reaches_the_probe(tmp_path):
     """A link arriving on the command line is still a link from outside."""
     probed = []
     services = make_services(tmp_path)
-    services.probe = lambda engine, url: probed.append(url) or parse_info(INFO_JSON)
+    services.probe = lambda engine, url, cancel=None: probed.append(url) or parse_info(INFO_JSON)
     app = ViddlApp(initial_url="--exec=calc.exe", services=services)
 
     async with app.run_test(size=(100, 32)) as pilot:
@@ -925,6 +956,135 @@ async def test_the_ffmpeg_offer_keeps_quiet_when_the_size_is_unknown(tmp_path):
         assert "needs ffmpeg" in note
         assert "about" not in note
         assert "MB" not in note
+
+
+class SlowProbe:
+    """A look-up that takes as long as the test needs, and can be stopped."""
+
+    def __init__(self, info: MediaInfo):
+        self.info = info
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.cancel_seen = threading.Event()
+        self.calls = 0
+
+    def __call__(self, engine, url, cancel=None):
+        self.calls += 1
+        self.started.set()
+        while not self.release.is_set():
+            if cancel is not None and cancel.is_set():
+                # What the real probe does: the process is killed, and the user
+                # is not shown a failure for something they chose.
+                self.cancel_seen.set()
+                raise ProbeCancelled()
+            time.sleep(0.02)
+        return self.info
+
+
+@pytest.mark.asyncio
+async def test_the_look_up_counts_the_seconds_while_it_runs(tmp_path):
+    """A screen that has not changed for a minute must not look frozen."""
+    probe = SlowProbe(parse_info(INFO_JSON))
+    services = make_services(tmp_path)
+    services.probe = probe
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        assert await wait_for(pilot, probe.started)
+        await asyncio.sleep(1.2)
+        await pilot.pause()
+
+        status = shown(app.screen, "#options-status")
+        assert status.startswith("Looking up the link…")
+        assert status.endswith("s"), f"no elapsed time on screen: {status!r}"
+        # Under the five seconds where it stops just counting.
+        assert app.screen.query_one("#stop-probe").has_class("hidden")
+
+        probe.release.set()
+        await settle(pilot, rounds=40)
+        assert "Saves to" in shown(app.screen, "#options-note")
+
+
+@pytest.mark.asyncio
+async def test_a_look_up_that_drags_on_says_so_and_offers_a_way_out(tmp_path):
+    """The 150-second call used to be unbreakable, and silent about it."""
+    probe = SlowProbe(parse_info(INFO_JSON))
+    services = make_services(tmp_path)
+    services.probe = probe
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        assert await wait_for(pilot, probe.started)
+        await pilot.pause()
+
+        # Six seconds in: what the ticker would have drawn by then.
+        app.screen._started_at -= 6
+        app.screen.show_elapsed()
+        await pilot.pause()
+
+        assert not app.screen.query_one("#stop-probe").has_class("hidden")
+        note = shown(app.screen, "#options-note")
+        assert "Still looking" in note
+        assert "Stop looking" in note
+        # Still one line of an 86-column panel.
+        assert len(note) <= 84
+
+        probe.release.set()
+        await settle(pilot, rounds=40)
+
+
+@pytest.mark.asyncio
+async def test_stopping_a_look_up_goes_back_to_the_link_box(tmp_path):
+    probe = SlowProbe(parse_info(INFO_JSON))
+    services = make_services(tmp_path)
+    services.probe = probe
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        assert await wait_for(pilot, probe.started)
+        await pilot.pause()
+        app.screen._started_at -= 6
+        app.screen.show_elapsed()
+        await pilot.pause()
+
+        with captured_notifications(app) as noted:
+            await pilot.click("#stop-probe")
+            for _ in range(60):
+                await pilot.pause()
+                await asyncio.sleep(0.01)
+                if isinstance(app.screen, HomeScreen):
+                    break
+
+        assert await wait_for(pilot, probe.cancel_seen), "the look-up was left running"
+        assert await wait_for_screen(pilot, HomeScreen)
+        assert any("Stopped looking" in message for message in noted.messages)
+
+
+@pytest.mark.asyncio
+async def test_going_back_while_looking_stops_the_look_up(tmp_path):
+    """Escape is also a way of saying "not this one"."""
+    probe = SlowProbe(parse_info(INFO_JSON))
+    services = make_services(tmp_path)
+    services.probe = probe
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        assert await wait_for(pilot, probe.started)
+        await pilot.pause()
+        await pilot.press("escape")
+
+        assert await wait_for(pilot, probe.cancel_seen), "a stopped look-up ran on"
+        assert await wait_for_screen(pilot, HomeScreen), "it did not go back"
+
+
+@pytest.mark.asyncio
+async def test_a_quick_look_up_never_mentions_waiting(tmp_path):
+    """The hint is for a slow site, not a decoration on every link."""
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        assert app.screen.query_one("#stop-probe").has_class("hidden")
+        assert "Still looking" not in shown(app.screen, "#options-note")
 
 
 @pytest.mark.asyncio
