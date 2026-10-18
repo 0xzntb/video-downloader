@@ -9,7 +9,7 @@ statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **15 of 60** — S1–S6 in section 1, R1–R7 in section 2, D2–D3 in
+Progress so far: **16 of 60** — S1–S6 in section 1, R1–R8 in section 2, D2–D3 in
 section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -672,7 +672,60 @@ swallows a *`chmod`* that fails (**S3**), and that one is intentional — a
 filesystem without permissions (a FAT stick, an exotic mount) is not a reason to
 refuse to run. Only being unable to create the folder is worth reporting.
 
-### R8 — The ffmpeg download is large and unresumable · **P2** · M
+### R8 — The ffmpeg download is large and unresumable · **P2** · M · ✅ **Done**
+
+> **Fixed.** A dropped transfer is now a pause. Each attempt sends
+> `Range: bytes=<have>-` for whatever is already in the part-file, and three
+> attempts are made with a growing wait between them, so a connection that
+> drops twice still finishes. A server that will not continue — it ignores the
+> range, or the file has changed under it (a `416`) — cannot be glued onto the
+> half already held, so the part is thrown away and that one download starts
+> again; the checksum is what decides the result either way.
+>
+> **The part-file is no longer allowed to be a temporary one.** It used to live
+> in a `TemporaryDirectory`, which is gone by the next run, so the resume could
+> only ever work inside a single attempt. It now sits in Viddl's own `bin/`
+> folder, named after the URL it belongs to, so the next run finds it — and two
+> mirrors of the same program can never be spliced into one file, because each
+> has its own. A run killed **after** the download but before unpacking leaves a
+> complete archive behind, and that is reused rather than fetched again (it is
+> hashed against the published checksum first, so only the right bytes count).
+> Once ffmpeg is in place, archives and parts left by failed attempts are
+> removed: a 150 MB half-file is not something to leave lying around.
+>
+> Two more things the item asked for: the size is now **shown before the
+> click** — the qualities screen asks the mirror with a `HEAD` request and says
+> *"The download is about 149.2 MB"* beside the button, and the install line
+> repeats it; and on Apple silicon the Intel fallback is only tried when
+> Rosetta 2 can actually run it, with the way to get it (`softwareupdate
+> --install-rosetta`) in the error when it cannot.
+>
+> **Measured against the real 156,424,004-byte BtbN bundle, with real
+> processes.** One run was killed 1 s in, leaving 42,729,472 bytes in
+> `ffmpeg-download-f9d04321.tar-xz.part`; the **next process** reported its first
+> progress callback at 42,729,472 of 156,424,004 — a server that ignored the
+> Range would have started it at 0 — fetched the remaining 113.7 MB, unpacked
+> it, verified it and installed `ffmpeg N-127617` that runs (`-version` exit 0),
+> leaving only `ffmpeg` and `ffmpeg.sha256` in `bin/`. A second measurement
+> killed the run **during unpacking**, after the 149 MB had landed: the next run
+> showed *no progress callback at all* — zero bytes downloaded — and installed
+> from the archive already on disk. Against a localhost server the exact
+> sequence was checked request by request: `GET bytes=4000-`, a mirror that
+> ignores the range and gets a clean restart, a `416` that throws the stale part
+> away, and a connection dropped mid-body retried as `GET bytes=2000-`. 23 tests
+> added (484 → 507).
+>
+> What changes for the user, said plainly: up to a mirror's worth of bytes can
+> sit in `bin/` after a failed attempt until a later install succeeds or the
+> folder is cleaned — that is the price of being able to continue, and it is
+> bounded by one file per mirror. A rewrite of the release mid-download still
+> means starting over, because two different builds cannot be joined; the
+> checksum is what makes that safe rather than silent. And two Viddl windows
+> setting ffmpeg up at the same instant now write into the same part-file
+> instead of two temporary folders of their own; the hash refuses whatever
+> comes out of that, so the failure is "install it again", not a bad binary —
+> the claim-file trick from **R6** is what this would need to be tidy, and
+> installing ffmpeg is a one-time act by one person.
 
 ~100–156 MB from a mirror list pinned in the code, with `_TIMEOUT = 30` and no
 resume, and on macOS arm64 the first mirror is native while the fallback is

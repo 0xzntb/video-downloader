@@ -8,6 +8,7 @@ copy into its own folder, so nothing else on the machine is touched.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import os
 import platform
 import re
@@ -16,18 +17,20 @@ import subprocess
 import sys
 import tarfile
 import threading
-import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from . import __version__
 from . import appdata
 from .errors import explain
+from .util import human_size
 
 StatusCallback = Callable[[str], None]
 ProgressCallback = Callable[[int, Optional[int]], None]
@@ -37,6 +40,10 @@ _YTDLP_BASE = "https://github.com/yt-dlp/yt-dlp/releases/latest/download"
 _TIMEOUT = 30
 _PROBE_TIMEOUT = 25
 _SHA_CHUNK = 1024 * 1024
+
+#: How long to wait before trying a dropped transfer again; it grows with each
+#: attempt, so a network that is down for a moment is not hammered.
+_RETRY_PAUSE_SECONDS = 1.5
 
 #: How old yt-dlp may get before Viddl mentions it. Releases come most weeks, and
 #: a site that stopped working is usually fixed by the next one — so a month is
@@ -289,37 +296,191 @@ def record_checksum(path: Path, digest: str) -> None:
         pass
 
 
+class _StalePartial(Exception):
+    """The server will not continue from the half-file Viddl already has."""
+
+
+def _size_of(headers) -> Optional[int]:
+    """The length a response says it will send, if it says."""
+    total = headers.get("Content-Length")
+    return int(total) if total and total.isdigit() else None
+
+
+def download_size(url: str, timeout: int = 10) -> Optional[int]:
+    """How many bytes ``url`` would send, without downloading any of them.
+
+    A ``HEAD`` request, so the answer costs a round trip rather than 150 MB.
+    ``None`` is an honest answer too: a mirror that will not say how big it is,
+    or a network that will not answer, means the prompt says nothing rather
+    than a made-up number.
+    """
+    request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": _UA})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return _size_of(response.headers)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+
+
+#: Answers already paid for: the qualities screen asks on every arrow key, and
+#: GitHub does not need to be asked twice.
+_SIZE_HINTS: Dict[str, Optional[int]] = {}
+_SIZE_LOCK = threading.Lock()
+
+
+def _size_hint(url: str, timeout: int = 10) -> Optional[int]:
+    """``download_size``, remembered — including the times it could not tell."""
+    with _SIZE_LOCK:
+        if url in _SIZE_HINTS:
+            return _SIZE_HINTS[url]
+    size = download_size(url, timeout=timeout)
+    with _SIZE_LOCK:
+        _SIZE_HINTS[url] = size
+    return size
+
+
+@lru_cache(maxsize=1)
+def _rosetta_available() -> bool:
+    """Whether this Mac can run an Intel build (Rosetta 2 is installed).
+
+    ``arch -x86_64`` is how Apple's own tools ask, and a Mac without Rosetta
+    answers with an error. Only ever called for the Intel fallback on Apple
+    silicon: nothing else needs translating.
+    """
+    try:
+        completed = subprocess.run(
+            ["arch", "-x86_64", "/usr/bin/true"],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
+def _fetch(url: str, tmp_path: Path, on_progress, timeout: int) -> None:
+    """Stream ``url`` into ``tmp_path``, continuing a partial file if there is one.
+
+    The ``Range`` request is what makes a 150 MB download survivable on a bad
+    connection: what arrived last time is kept, and only the rest is asked for.
+    A server that ignores the range (or one whose file has changed under it)
+    cannot be continued from, which is what :class:`_StalePartial` means — the
+    caller throws the part away and starts again rather than gluing two
+    different files together.
+    """
+    already = tmp_path.stat().st_size if tmp_path.exists() else 0
+    headers = {"User-Agent": _UA}
+    if already:
+        headers["Range"] = f"bytes={already}-"
+    request = urllib.request.Request(url, headers=headers)
+
+    try:
+        response = urllib.request.urlopen(request, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 416 and already:
+            # The half-file is at least as long as the server's: either it is
+            # already whole (the checksum will say) or the build was replaced.
+            raise _StalePartial() from exc
+        raise
+
+    with response:
+        continued = getattr(response, "status", 200) == 206
+        done = already if continued else 0
+        length = _size_of(response.headers)
+        total = done + length if (continued and length is not None) else length
+        if on_progress:
+            # Say the total up front: a bar that only learns its size once the
+            # first chunk lands looks stuck when the connection is slow.
+            on_progress(done, total)
+        with open(tmp_path, "ab" if continued else "wb") as handle:
+            while True:
+                chunk = response.read(256 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                done += len(chunk)
+                if on_progress:
+                    on_progress(done, total)
+
+    if total is not None and done != total:
+        # A connection that stops early ends the body without an error, so the
+        # short file is noticed here rather than renamed into place and run.
+        raise http.client.IncompleteRead(b"", total - done)
+
+
 def download_to(
     url: str,
     dest: Path,
     on_progress: Optional[ProgressCallback] = None,
     timeout: int = _TIMEOUT,
     expected_sha256: Optional[str] = None,
+    part_path: Optional[Path] = None,
 ) -> Path:
     """Stream ``url`` to ``dest`` atomically, reporting progress as it goes.
 
     When ``expected_sha256`` is given the bytes only reach ``dest`` if they match
     it. A download that fails its check is deleted where it stands and reported,
     so an unverified program can never be picked up and run by mistake.
+
+    A transfer that stops early keeps its ``.part`` file. That is the whole
+    point of the range request: the next attempt fetches only the rest instead
+    of starting a 150 MB download over — and three attempts are allowed, so a
+    connection that drops twice still finishes.
+
+    ``part_path`` names that half-file. The default sits beside ``dest``, which
+    is right for a URL downloaded to one place; a caller that may try several
+    URLs for the same destination passes a name of its own, so bytes from one
+    mirror are never continued onto another's.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": _UA})
-    tmp_path = dest.with_name(dest.name + ".part")
+    tmp_path = part_path or dest.with_name(dest.name + ".part")
+    #: Whether this failure leaves something worth continuing from. A bad
+    #: transfer does; a checksum mismatch or an unreadable folder does not.
+    keep_part = False
 
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            total = response.headers.get("Content-Length")
-            total_bytes = int(total) if total and total.isdigit() else None
-            done = 0
-            with open(tmp_path, "wb") as handle:
-                while True:
-                    chunk = response.read(256 * 1024)
-                    if not chunk:
-                        break
-                    handle.write(chunk)
-                    done += len(chunk)
-                    if on_progress:
-                        on_progress(done, total_bytes)
+        for attempt in range(1, 4):
+            try:
+                _fetch(url, tmp_path, on_progress, timeout)
+                break
+            except _StalePartial as exc:
+                # Not resumable: the bytes we hold cannot be joined to this
+                # download. Start again — once, twice at most.
+                tmp_path.unlink(missing_ok=True)
+                if attempt >= 3:
+                    raise ToolError(
+                        "The download could not be continued.",
+                        "The copy on the server has changed since it started. Try again later.",
+                        raw=str(exc),
+                    ) from exc
+            except urllib.error.HTTPError as exc:
+                tmp_path.unlink(missing_ok=True)
+                raise ToolError(
+                    f"Could not download from the internet (error {exc.code}).",
+                    "If you are behind a company or school network, it may be "
+                    "blocking the download.",
+                    raw=str(exc),
+                ) from exc
+            except (
+                urllib.error.URLError,
+                http.client.HTTPException,  # a body that stops early
+                TimeoutError,
+                OSError,
+            ) as exc:
+                # The bytes already fetched stay in the ``.part`` file: the next
+                # attempt asks for the rest with a Range request, which is what
+                # makes a dropped 150 MB transfer a pause rather than a restart.
+                if attempt >= 3:
+                    # The part is the point of the next attempt, so this one
+                    # failure must not clean it up on the way out.
+                    keep_part = True
+                    raise ToolError(
+                        "Could not reach the internet.",
+                        "Check your connection and try again — what has been "
+                        "downloaded so far is kept, so it carries on from there.",
+                        raw=str(exc),
+                    ) from exc
+                time.sleep(attempt * _RETRY_PAUSE_SECONDS)
         if tmp_path.stat().st_size == 0:
             raise ToolError(
                 "The download came back empty.",
@@ -338,29 +499,35 @@ def download_to(
                 )
         tmp_path.replace(dest)
     except ToolError:
-        tmp_path.unlink(missing_ok=True)
+        # The checksum and empty-file cases delete their own part, and a
+        # half-download that a later attempt can resume is kept on purpose.
+        if not keep_part:
+            tmp_path.unlink(missing_ok=True)
         raise
-    except urllib.error.HTTPError as exc:
-        tmp_path.unlink(missing_ok=True)
-        raise ToolError(
-            f"Could not download from the internet (error {exc.code}).",
-            "If you are behind a company or school network, it may be blocking the download.",
-            raw=str(exc),
-        ) from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        tmp_path.unlink(missing_ok=True)
-        raise ToolError(
-            "Could not reach the internet.",
-            "Check your connection and try again.",
-            raw=str(exc),
-        ) from exc
     return dest
+
+
+def _already_there(dest: Path, expected: str) -> bool:
+    """Whether ``dest`` is already the checked file this source publishes.
+
+    A crash between the download finishing and the archive being unpacked leaves
+    a complete 150 MB bundle in the app folder. Re-reading it costs a second of
+    hashing and saves the whole download.
+    """
+    try:
+        if not dest.is_file():
+            return False
+        return sha256_of(dest) == expected.lower()
+    except OSError:
+        return False
 
 
 def _verified_download(
     source: Dict[str, object],
     dest: Path,
     on_progress: Optional[ProgressCallback] = None,
+    part_path: Optional[Path] = None,
+    reuse_existing: bool = False,
 ) -> Path:
     """Download something Viddl will run, but only if its hash can be checked.
 
@@ -369,6 +536,9 @@ def _verified_download(
     same release ships), and the bytes that arrive must match it. A source that
     fails any rule is refused — Viddl does not run a downloaded program it could
     not check.
+
+    ``reuse_existing`` is for a destination that an interrupted run may have
+    finished: an archive that already hashes correctly is not fetched again.
     """
     url = str(source["url"])
     if not url.lower().startswith("https://"):
@@ -381,7 +551,10 @@ def _verified_download(
     pinned = source.get("sha256")
     if pinned:
         # A pinned hash is exact: a mismatch means the wrong bytes, full stop.
-        return download_to(url, dest, on_progress, expected_sha256=str(pinned))
+        expected = str(pinned)
+        if reuse_existing and _already_there(dest, expected):
+            return dest
+        return download_to(url, dest, on_progress, expected_sha256=expected, part_path=part_path)
 
     # With a checksums list there is one innocent way to fail: the release is
     # rebuilt while the (large) file is downloading, so the list describes the
@@ -396,12 +569,34 @@ def _verified_download(
                 "Installing it with your system's package manager works just as well.",
                 raw=url,
             )
+        if reuse_existing and _already_there(dest, expected):
+            return dest
         try:
-            return download_to(url, dest, on_progress, expected_sha256=expected)
+            return download_to(url, dest, on_progress, expected_sha256=expected, part_path=part_path)
         except ChecksumMismatch:
             attempts += 1
             if attempts >= 2:
                 raise
+
+
+def _mirror_tag(url: str) -> str:
+    """A short, stable name for one download that a part-file can be filed under.
+
+    Two mirrors of the same program are two different files, so the half of one
+    must never be continued onto the other. A hash of the URL says which is
+    which, and stays the same between runs, which is what lets an interrupted
+    download be found again.
+    """
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
+
+
+def _forget_download_leftovers(folder: Path) -> None:
+    """Remove archives and part-files an earlier, failed attempt left behind."""
+    for leftover in list(folder.glob("ffmpeg-download-*")) + list(folder.glob("ffmpeg*.part")):
+        try:
+            leftover.unlink()
+        except OSError:
+            pass
 
 
 def _make_runnable(path: Path) -> None:
@@ -703,21 +898,31 @@ class Engine:
                 }
             ]
         if is_macos():
-            arch = "arm64" if machine in ("arm64", "aarch64") else "x64"
-            return [
+            arm = machine in ("arm64", "aarch64")
+            native = "arm64" if arm else "x64"
+            sources = [
                 {
-                    "url": f"{_EUGENEWARE_BASE}/ffmpeg-darwin-{arch}",
+                    "url": f"{_EUGENEWARE_BASE}/ffmpeg-darwin-{native}",
                     "archive": None,
                     "pattern": None,
-                    "sha256": _EUGENEWARE_PINS[f"ffmpeg-darwin-{arch}"],
-                },
-                {
-                    "url": f"{_EUGENEWARE_BASE}/ffmpeg-darwin-x64",
-                    "archive": None,
-                    "pattern": None,
-                    "sha256": _EUGENEWARE_PINS["ffmpeg-darwin-x64"],
-                },
+                    "sha256": _EUGENEWARE_PINS[f"ffmpeg-darwin-{native}"],
+                }
             ]
+            if arm:
+                # On Apple silicon the only other build is an Intel one, which
+                # needs Rosetta 2 to run. Marked rather than dropped: whether it
+                # can work is a question for install time, and the answer is
+                # worth saying out loud (see ``install_ffmpeg``).
+                sources.append(
+                    {
+                        "url": f"{_EUGENEWARE_BASE}/ffmpeg-darwin-x64",
+                        "archive": None,
+                        "pattern": None,
+                        "sha256": _EUGENEWARE_PINS["ffmpeg-darwin-x64"],
+                        "needs_rosetta": True,
+                    }
+                )
+            return sources
         return [
             {
                 "url": f"{_BTBN_BASE}/ffmpeg-master-latest-linux64-gpl.tar.xz",
@@ -733,6 +938,17 @@ class Engine:
             },
         ]
 
+    def ffmpeg_size_hint(self) -> Optional[int]:
+        """Bytes the first ffmpeg download would be, or ``None`` if unknown.
+
+        Asked before the user commits to it: 150 MB is a decision, and the
+        qualities screen should not ask for it with a shrug.
+        """
+        sources = self.ffmpeg_sources()
+        if not sources:
+            return None
+        return _size_hint(str(sources[0]["url"]))
+
     def install_ffmpeg(
         self,
         on_status: Optional[StatusCallback] = None,
@@ -741,24 +957,51 @@ class Engine:
         dest = self.ffmpeg_path
         dest.parent.mkdir(parents=True, exist_ok=True)
         errors: List[str] = []
+        rosetta_needed = False
 
         for index, source in enumerate(self.ffmpeg_sources()):
+            if source.get("needs_rosetta") and not _rosetta_available():
+                # Skipped, and said so: an Intel build on a Mac without Rosetta
+                # fails to start with a message nobody can act on.
+                rosetta_needed = True
+                errors.append(
+                    f"{source['url']}: needs Rosetta 2, which is not installed"
+                )
+                continue
             if on_status:
-                label = "Downloading ffmpeg (about 40–80 MB, one time)…"
+                size = _size_hint(str(source["url"]))
+                label = "Downloading ffmpeg (one time)…"
+                if size:
+                    label = f"Downloading ffmpeg ({human_size(size)}, one time)…"
                 if index:
                     label = f"Trying another download mirror for ffmpeg ({index + 1})…"
                 on_status(label)
+            tag = _mirror_tag(str(source["url"]))
             archive: Optional[Path] = None
             try:
                 if source["archive"] is None:
-                    _verified_download(source, dest, on_progress)
+                    _verified_download(
+                        source, dest, on_progress, dest.parent / f"ffmpeg-{tag}.part"
+                    )
                 else:
-                    with tempfile.TemporaryDirectory(prefix="viddl-ffmpeg-") as tmp:
-                        archive = Path(tmp) / f"ffmpeg-download.{source['archive'].replace('.', '-')}"
-                        # The checksums list covers the bundle, not the program
-                        # inside it: check the archive, then unpack it.
-                        _verified_download(source, archive, on_progress)
-                        _extract_member(archive, source["pattern"], dest)
+                    # In Viddl's own folder, not a temporary one: a part-file
+                    # here is what lets a dropped 150 MB download resume, and a
+                    # temporary folder is gone by the next run. Named per
+                    # mirror, so one mirror's half is never glued to another's.
+                    archive = dest.parent / (
+                        f"ffmpeg-download-{tag}.{str(source['archive']).replace('.', '-')}"
+                    )
+                    # The checksums list covers the bundle, not the program
+                    # inside it: check the archive, then unpack it.
+                    _verified_download(
+                        source,
+                        archive,
+                        on_progress,
+                        archive.with_name(archive.name + ".part"),
+                        reuse_existing=True,
+                    )
+                    _extract_member(archive, source["pattern"], dest)
+                    archive.unlink(missing_ok=True)
                 _make_runnable(dest)
                 ok, output = _run_probe([str(dest)], "-version")
                 if ok:
@@ -767,6 +1010,10 @@ class Engine:
                     if match:
                         version = match.group(1)
                     record_checksum(dest, sha256_of(dest))
+                    # Whatever the failed attempts left is no longer needed, and
+                    # a 150 MB half-file is not something to leave in the app
+                    # folder once the program is in place.
+                    _forget_download_leftovers(dest.parent)
                     tool = Tool("ffmpeg", [str(dest)], "viddl", version=version, path=dest)
                     self._ffmpeg = tool
                     return tool
@@ -777,17 +1024,18 @@ class Engine:
                 # Mirrors sometimes answer with an HTML error page instead of an
                 # archive; that must move on to the next mirror, not crash.
                 errors.append(f"{source['url']}: {exc}")
-            finally:
-                if archive is not None:
-                    archive.unlink(missing_ok=True)
 
-        raise ToolError(
-            "ffmpeg could not be downloaded automatically.",
+        hint = (
             "You can install it the usual way for your system "
             "(for example “sudo apt install ffmpeg”, “brew install ffmpeg”, "
-            "or winget install Gyan.FFmpeg) and Viddl will find it.",
-            raw="\n".join(errors),
+            "or winget install Gyan.FFmpeg) and Viddl will find it."
         )
+        if rosetta_needed:
+            hint += (
+                "\nOn Apple silicon the other download is an Intel build: run "
+                "“softwareupdate --install-rosetta” to make it usable."
+            )
+        raise ToolError("ffmpeg could not be downloaded automatically.", hint, raw="\n".join(errors))
 
     def installed_ffmpeg(self) -> Optional[Tool]:
         """The copy in Viddl's own folder, whether or not it is the one in use."""

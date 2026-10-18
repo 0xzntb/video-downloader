@@ -68,6 +68,10 @@ class State:
     # was already installed, and the folder may only be un-writable for now.
     folder_problem: str = ""
     ffmpeg_available: bool = False
+    # How big the one-time ffmpeg download would be, once the mirror has been
+    # asked (R8). ``None`` means "not known" — never "zero".
+    ffmpeg_size: Optional[int] = None
+    ffmpeg_size_asked: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -599,10 +603,7 @@ class OptionsScreen(Screen):
 
         if option.needs_ffmpeg and not state.ffmpeg_available:
             button.remove_class("hidden")
-            note.update(
-                "This option needs ffmpeg to join or convert the file. "
-                "Click “Set up ffmpeg” once and Viddl keeps it for good."
-            )
+            note.update(_plain(self.ffmpeg_prompt(state)))
         else:
             button.add_class("hidden")
             info = state.info
@@ -616,6 +617,39 @@ class OptionsScreen(Screen):
             else:
                 folder = self.app.services.downloads_dir()
                 note.update(_plain(f"Saves to {folder}  ·  {option.size_text}"))
+
+    def ffmpeg_prompt(self, state: State) -> str:
+        """What setting ffmpeg up costs, before the user agrees to it.
+
+        150 MB is a decision, so the size is asked for as soon as the button
+        appears — and the asking is in a worker, because the answer needs the
+        network. Until it arrives the sentence stays true without a number.
+        """
+        text = (
+            "This option needs ffmpeg to join or convert the file. "
+            "Click “Set up ffmpeg” once and Viddl keeps it for good."
+        )
+        if state.ffmpeg_size:
+            return f"{text} The download is about {human_size(state.ffmpeg_size)}."
+        if not state.ffmpeg_size_asked:
+            state.ffmpeg_size_asked = True
+            self.ask_how_big_ffmpeg_is()
+        return text
+
+    @work(thread=True, exclusive=True, group="ffmpeg-size")
+    def ask_how_big_ffmpeg_is(self) -> None:
+        """Ask the mirror how big ffmpeg is, without downloading any of it."""
+        try:
+            size = self.app.services.engine.ffmpeg_size_hint()
+        except Exception:  # pragma: no cover - a nicety, never a failure
+            size = None
+        self.app._post(self.show_ffmpeg_size, size)
+
+    def show_ffmpeg_size(self, size: Optional[int]) -> None:
+        self.app.state.ffmpeg_size = size
+        if not self.is_mounted:
+            return
+        self.refresh_note()
 
     def on_choice_list_highlighted(self, message: ChoiceList.Highlighted) -> None:
         self.refresh_note()

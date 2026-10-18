@@ -64,10 +64,24 @@ and the app looks after its own dependencies:
   several exist it uses the **newest** one, whichever folder it is in, so a copy
   Viddl fetched months ago cannot shadow a newer one you installed since.
 * **ffmpeg** is only fetched when you actually need it (MP3, or a quality that
-  has to be merged), and it asks before downloading anything large. If you
-  already have ffmpeg, that is used — unless you have asked Viddl to fetch its
-  own, which is then the one it uses (and what `viddl --update-ffmpeg`
-  replaces).
+  has to be merged), and it asks before downloading anything large — the
+  qualities screen says how big it is first (*"The download is about 149.2 MB"*),
+  so the number is on screen before you click. If you already have ffmpeg, that
+  is used — unless you have asked Viddl to fetch its own, which is then the one
+  it uses (and what `viddl --update-ffmpeg` replaces).
+
+That ffmpeg download is a big one, so a connection that drops is a pause rather
+than a restart: Viddl keeps what arrived, asks the server for the rest, and
+carries on from there — even in a later session, since the half-file lives in
+Viddl's own folder rather than somewhere temporary. Close the app mid-download
+and run it again and it picks up where it stopped; if it was killed after the
+download finished but before unpacking, the archive it already has is used
+instead of fetched again. Nothing half-finished ever ends up where it is run
+from: the bytes are checked against the published checksum first, and a part that
+cannot be continued is thrown away rather than joined to the wrong file. On
+Apple silicon, if Rosetta 2 is not installed, the Intel fallback is skipped —
+saying *"run `softwareupdate --install-rosetta`"* — rather than failing with a
+message nobody can act on.
 
 Nothing is installed system-wide and no configuration files are created.
 
@@ -209,7 +223,7 @@ of yt-dlp when you want to manage that yourself.
 | Piece | What it does |
 | --- | --- |
 | `viddl/tui/` | The terminal interface (Textual). Five screens: home, qualities, progress, stopped, done. |
-| `viddl/engine.py` | Finds yt-dlp and ffmpeg, or downloads its own copy into `~/.local/share/viddl/bin`. |
+| `viddl/engine.py` | Finds yt-dlp and ffmpeg, or downloads its own copy into `~/.local/share/viddl/bin` — in pieces that survive an interruption, checked against a published checksum and only then unpacked. |
 | `viddl/formats.py` | Turns site metadata into the quality menu, with size estimates. |
 | `viddl/download.py` | Runs yt-dlp in a per-download working folder, reads its progress, and moves the finished file out under a name reserved before the move, so two windows cannot collide. A failure worth a second attempt is retried after a doubling wait; stopping it stops the whole tree yt-dlp started — the ffmpeg merge included — and keeps what was fetched so it can be resumed. |
 | `viddl/errors.py` | Maps raw tool output onto plain-language explanations, and says whether the failure is one another attempt may fix. |
@@ -282,7 +296,9 @@ python3 -m venv .venv
 ```
 
 The suite covers the quality menu and its size estimates, engine discovery and
-installation (including a mirror returning an HTML error page), the download
+installation (including a mirror returning an HTML error page, and a resuming
+download driven against a real server on localhost — a `Range` request is a
+conversation, so a stand-in would only test the stand-in), the download
 runner and its progress parsing, error translation, `viddl://` parsing and
 registration, and the whole interface driven through Textual's test pilot — with
 clicks, arrow keys and the cancel path. The extension is checked too: its

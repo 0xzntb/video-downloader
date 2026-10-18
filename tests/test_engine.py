@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import date
 import hashlib
+import http.server
 import io
 import os
 import stat
+import subprocess
 import sys
 import tarfile
 import threading
@@ -62,7 +64,9 @@ def as_download(body):
     stand-in has to accept it; the interesting part of a test stays in ``body``.
     """
 
-    def download(url, dest, on_progress=None, timeout=30, expected_sha256=None):
+    def download(
+        url, dest, on_progress=None, timeout=30, expected_sha256=None, part_path=None
+    ):
         return body(url, dest, on_progress)
 
     return download
@@ -855,6 +859,131 @@ def test_platform_helpers_follow_sys_platform(monkeypatch):
     assert not engine_mod.is_windows() and not engine_mod.is_macos()
 
 
+def test_apple_silicon_offers_its_own_build_and_the_intel_one(monkeypatch):
+    """The Intel build runs under Rosetta; on Apple silicon it is the fallback."""
+    monkeypatch.setattr(engine_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(engine_mod.platform, "machine", lambda: "arm64")
+
+    sources = Engine().ffmpeg_sources()
+
+    assert "darwin-arm64" in sources[0]["url"]
+    assert not sources[0].get("needs_rosetta")
+    assert "darwin-x64" in sources[1]["url"]
+    assert sources[1]["needs_rosetta"] is True
+
+
+def test_an_intel_mac_is_not_offered_the_same_build_twice(monkeypatch):
+    monkeypatch.setattr(engine_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(engine_mod.platform, "machine", lambda: "x86_64")
+
+    sources = Engine().ffmpeg_sources()
+
+    assert len(sources) == 1
+    assert "darwin-x64" in sources[0]["url"]
+
+
+def test_a_mac_without_rosetta_is_told_how_to_get_it(tmp_path, monkeypatch):
+    """An Intel build on Apple silicon fails to start; say so before trying."""
+    monkeypatch.setattr(engine_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(engine_mod.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(engine_mod, "_rosetta_available", lambda: False)
+    tried: list = []
+
+    def body(url, dest, on_progress=None, **kwargs):
+        tried.append(url)
+        raise ToolError("mirror is down")
+
+    monkeypatch.setattr(engine_mod, "download_to", body)
+    with pytest.raises(ToolError) as caught:
+        Engine(home=tmp_path / "app").install_ffmpeg()
+
+    assert len(tried) == 1 and "darwin-arm64" in tried[0], "it tried the Intel build"
+    assert "install-rosetta" in (caught.value.hint or "")
+    # The reason is in the details, not silently swapped for "mirror is down".
+    assert "needs Rosetta 2" in (caught.value.raw or "")
+
+
+def test_rosetta_is_asked_about_by_running_arch(monkeypatch):
+    """The check is Apple's own: ``arch`` exits non-zero without the translator."""
+    engine_mod._rosetta_available.cache_clear()
+    ran: list = []
+
+    def without(command, **kwargs):
+        ran.append(command)
+        return subprocess.CompletedProcess(command, 1)
+
+    monkeypatch.setattr(engine_mod.subprocess, "run", without)
+    assert engine_mod._rosetta_available() is False
+    assert ran == [["arch", "-x86_64", "/usr/bin/true"]]
+
+    engine_mod._rosetta_available.cache_clear()
+    monkeypatch.setattr(
+        engine_mod.subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(command, 0)
+    )
+    assert engine_mod._rosetta_available() is True
+    engine_mod._rosetta_available.cache_clear()
+
+
+def test_rosetta_that_cannot_be_asked_is_taken_as_absent(monkeypatch):
+    engine_mod._rosetta_available.cache_clear()
+
+    def boom(command, **kwargs):
+        raise FileNotFoundError("no arch here")
+
+    monkeypatch.setattr(engine_mod.subprocess, "run", boom)
+
+    assert engine_mod._rosetta_available() is False
+    engine_mod._rosetta_available.cache_clear()
+
+
+def test_the_installer_says_how_big_the_download_is(tmp_path, monkeypatch):
+    """The size goes in the line the user is watching, not only in the note."""
+    monkeypatch.setattr(engine_mod, "_size_hint", lambda url, timeout=10: 152 * 1024 * 1024)
+
+    def body(url, dest, on_progress=None, **kwargs):
+        write_executable(Path(dest), "#!/bin/sh\necho 'ffmpeg version 7.0-fake'\n")
+        return Path(dest)
+
+    monkeypatch.setattr(engine_mod, "download_to", body)
+    messages: list = []
+    Engine(home=tmp_path / "app").install_ffmpeg(on_status=messages.append)
+
+    assert any("152.0 MB" in message for message in messages)
+
+
+def test_the_installer_offers_the_size_of_the_first_mirror(tmp_path, monkeypatch):
+    """The prompt quotes the download it would actually make, or nothing."""
+    engine = Engine(home=tmp_path / "app")
+    asked: list = []
+    monkeypatch.setattr(
+        engine_mod, "_size_hint", lambda url, timeout=10: asked.append(url) or 1234
+    )
+
+    assert engine.ffmpeg_size_hint() == 1234
+    assert asked == [engine.ffmpeg_sources()[0]["url"]]
+
+    _patched_sources(monkeypatch, engine, [])
+    assert engine.ffmpeg_size_hint() is None, "nothing to download is not a size"
+
+
+def test_a_mac_with_rosetta_does_try_the_intel_build(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(engine_mod.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(engine_mod, "_rosetta_available", lambda: True)
+    tried: list = []
+
+    def body(url, dest, on_progress=None, **kwargs):
+        tried.append(url)
+        write_executable(Path(dest), "#!/bin/sh\necho 'ffmpeg version 7.0-fake'\n")
+        return Path(dest)
+
+    monkeypatch.setattr(engine_mod, "download_to", body)
+    tool = Engine(home=tmp_path / "app").install_ffmpeg()
+
+    assert len(tried) == 1 and "darwin-arm64" in tried[0]
+    assert "7.0-fake" in tool.version
+
+
 def test_last_error_hint_is_a_shortcut_to_the_explainer():
     hint = engine_mod.last_error_hint("ERROR: Video unavailable")
     assert hint
@@ -1121,6 +1250,87 @@ def test_a_pinned_mismatch_is_taken_at_face_value(tmp_path, monkeypatch):
     assert not (tmp_path / "tool").exists()
 
 
+def test_an_archive_a_crash_already_finished_is_not_downloaded_again(tmp_path, monkeypatch):
+    """A run killed between download and unpack leaves 150 MB worth keeping."""
+    payload = b"#!/bin/sh\necho 'ffmpeg version 7.3-fake'\n"
+    archive_bytes = io.BytesIO()
+    with tarfile.open(fileobj=archive_bytes, mode="w:xz") as tf:
+        info = tarfile.TarInfo("ffmpeg-build/bin/ffmpeg")
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+    bundle = archive_bytes.getvalue()
+    patch_checksums(monkeypatch, "ffmpeg.tar.xz", digest=hashlib.sha256(bundle).hexdigest())
+
+    def must_not_download(url, dest, on_progress=None, **kwargs):
+        raise AssertionError("a complete archive was downloaded all over again")
+
+    monkeypatch.setattr(engine_mod, "download_to", must_not_download)
+    engine = Engine(home=tmp_path / "app")
+    url = "https://mirror/ffmpeg.tar.xz"
+    tag = engine_mod._mirror_tag(url)
+    engine.bin_dir.mkdir(parents=True, exist_ok=True)
+    (engine.bin_dir / f"ffmpeg-download-{tag}.tar-xz").write_bytes(bundle)
+    _patched_sources(
+        monkeypatch,
+        engine,
+        [
+            {
+                "url": url,
+                "archive": "tar.xz",
+                "pattern": r"bin/ffmpeg$",
+                "sums_url": "https://mirror/checksums.sha256",
+            }
+        ],
+    )
+
+    tool = engine.install_ffmpeg()
+
+    assert "7.3-fake" in tool.version
+    assert not list(engine.bin_dir.glob("ffmpeg-download-*"))
+
+
+def test_an_unfinished_archive_is_not_mistaken_for_a_complete_one(tmp_path, monkeypatch):
+    """Only bytes that hash right are reused; anything else is fetched."""
+    genuine = b"the real bundle"
+    patch_checksums(monkeypatch, "ffmpeg.tar.xz", digest=hashlib.sha256(genuine).hexdigest())
+
+    def body(url, dest, on_progress=None, **kwargs):
+        Path(dest).write_bytes(genuine)
+        return Path(dest)
+
+    monkeypatch.setattr(engine_mod, "download_to", body)
+    engine = Engine(home=tmp_path / "app")
+    url = "https://mirror/ffmpeg.tar.xz"
+    tag = engine_mod._mirror_tag(url)
+    engine.bin_dir.mkdir(parents=True, exist_ok=True)
+    (engine.bin_dir / f"ffmpeg-download-{tag}.tar-xz").write_bytes(b"half a bundle")
+    _patched_sources(
+        monkeypatch,
+        engine,
+        [
+            {
+                "url": url,
+                "archive": "tar.xz",
+                "pattern": r"bin/ffmpeg$",
+                "sums_url": "https://mirror/checksums.sha256",
+            }
+        ],
+    )
+
+    download_calls: list = []
+    real = engine_mod.download_to
+
+    def counting(url, dest, on_progress=None, **kwargs):
+        download_calls.append(url)
+        return real(url, dest, on_progress, **kwargs)
+
+    monkeypatch.setattr(engine_mod, "download_to", counting)
+    with pytest.raises(ToolError):
+        engine.install_ffmpeg()
+
+    assert download_calls == [url], "a half archive was treated as complete"
+
+
 def test_an_archive_that_fails_its_checksum_is_never_unpacked(tmp_path, monkeypatch):
     serving(monkeypatch, b"<html>502 Bad Gateway</html>")
     patch_checksums(monkeypatch, "ffmpeg-master-latest-linux64-gpl.tar.xz")
@@ -1257,3 +1467,279 @@ def test_the_installed_hash_is_recorded_and_a_swap_is_noticed(tmp_path, monkeypa
     # Something replaces the binary behind Viddl's back.
     write_executable(engine.ytdlp_path, "#!/usr/bin/env python3\nprint('2000.01.01')\n")
     assert "changed since it was installed" in "\n".join(engine.report())
+
+
+# ---------------------------------------------------------------------------
+# finishing a download that was interrupted (R8)
+#
+# A 150 MB ffmpeg build used to start again from zero whenever the connection
+# dropped. These tests use a real socket on localhost, because a Range request
+# is a conversation with a server and a stand-in would only test the stand-in.
+# ---------------------------------------------------------------------------
+
+
+class RangeServer:
+    """A local HTTP server that can honour, ignore or refuse Range requests."""
+
+    def __init__(self, payload: bytes, honour_range=True, drop_after=None, drop_each=False):
+        self.payload = payload
+        self.honour_range = honour_range
+        self.drop_after = drop_after
+        self.drop_each = drop_each
+        self.requests: list = []
+        owner = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):
+                pass
+
+            def do_HEAD(self):
+                owner.requests.append(("HEAD", self.headers.get("Range")))
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(owner.payload)))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+
+            def do_GET(self):
+                header = self.headers.get("Range")
+                owner.requests.append(("GET", header))
+                start = 0
+                if header and header.startswith("bytes="):
+                    start = int(header.split("=", 1)[1].split("-", 1)[0] or 0)
+                    if not owner.honour_range:
+                        start = 0
+                    elif start >= len(owner.payload):
+                        self.send_response(416)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                body = owner.payload[start:]
+                self.send_response(206 if start else 200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Accept-Ranges", "bytes")
+                if start:
+                    self.send_header(
+                        "Content-Range", f"bytes {start}-{len(owner.payload) - 1}/{len(owner.payload)}"
+                    )
+                self.end_headers()
+                if owner.drop_after is not None and (owner.drop_each or start == 0):
+                    # Send part of it and hang up, like a connection that died.
+                    self.wfile.write(body[: owner.drop_after])
+                    self.wfile.flush()
+                    self.close_connection = True
+                    return
+                self.wfile.write(body)
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/ffmpeg.tar.xz"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.fixture
+def ranges(monkeypatch):
+    """Servers to close afterwards, and no real waiting between attempts."""
+    monkeypatch.setattr(engine_mod, "_RETRY_PAUSE_SECONDS", 0)
+    made: list = []
+    yield made
+    for server in made:
+        server.close()
+
+
+def serve_ranges(ranges, payload: bytes, **kwargs) -> RangeServer:
+    server = RangeServer(payload, **kwargs)
+    ranges.append(server)
+    return server
+
+
+def test_an_interrupted_download_carries_on_from_where_it_stopped(tmp_path, ranges):
+    server = serve_ranges(ranges, b"abcdefghij" * 1000)
+    dest = tmp_path / "ffmpeg"
+    part = tmp_path / "ffmpeg.part"
+    part.write_bytes(server.payload[:4000])
+    seen: list = []
+
+    download_to(server.url, dest, on_progress=lambda done, total: seen.append((done, total)))
+
+    assert dest.read_bytes() == server.payload
+    assert server.requests == [("GET", "bytes=4000-")], "it did not ask for the rest"
+    # Progress counts the bytes already held, and the total is the whole file.
+    assert seen[0] == (4000, len(server.payload))
+
+
+def test_a_server_that_ignores_the_range_gets_a_clean_start(tmp_path, ranges):
+    """Appending a whole file to half of one would corrupt it; it starts over."""
+    server = serve_ranges(ranges, b"0123456789" * 100, honour_range=False)
+    dest = tmp_path / "ffmpeg"
+    (tmp_path / "ffmpeg.part").write_bytes(b"junk" * 100)
+
+    download_to(server.url, dest)
+
+    assert dest.read_bytes() == server.payload
+
+
+def test_a_part_older_than_the_download_is_thrown_away(tmp_path, ranges):
+    """A 416 means the half-file is not part of this file. Start again."""
+    server = serve_ranges(ranges, b"fresh" * 100)
+    dest = tmp_path / "ffmpeg"
+    (tmp_path / "ffmpeg.part").write_bytes(b"x" * 5000)  # longer than the file
+
+    download_to(server.url, dest)
+
+    assert dest.read_bytes() == server.payload
+    assert [header for _, header in server.requests] == ["bytes=5000-", None]
+
+
+def test_a_dropped_connection_is_picked_up_again_by_itself(tmp_path, ranges):
+    server = serve_ranges(ranges, b"z" * 5000, drop_after=2000)
+    dest = tmp_path / "ffmpeg"
+
+    download_to(server.url, dest)
+
+    assert dest.read_bytes() == server.payload
+    assert len(server.requests) == 2, "it did not try again"
+    assert server.requests[0] == ("GET", None)
+    assert server.requests[1] == ("GET", "bytes=2000-")
+
+
+def test_the_installer_files_its_half_download_where_the_next_run_finds_it(
+    tmp_path, monkeypatch
+):
+    """A rerun must hand the same part-file to the same mirror, or nothing resumes.
+
+    The download itself is the real one in the tests above; this is the installer
+    keeping its side of the bargain — a stable name, inside the app folder that
+    survives a crash, rather than a temporary directory that does not.
+    """
+    parts: list = []
+
+    def body(url, dest, on_progress=None, **kwargs):
+        part = Path(kwargs["part_path"])
+        parts.append(part)
+        if len(parts) == 1:
+            part.write_bytes(b"half of a large download")
+            raise ToolError("connection dropped")
+        write_executable(Path(dest), "#!/bin/sh\necho 'ffmpeg version 7.1-fake'\n")
+        return Path(dest)
+
+    monkeypatch.setattr(engine_mod, "download_to", body)
+    engine = Engine(home=tmp_path / "app")
+    source = mirror("https://mirror/ffmpeg")
+    _patched_sources(monkeypatch, engine, [source])
+
+    with pytest.raises(ToolError):
+        engine.install_ffmpeg()
+    kept = parts[0]
+    assert kept.parent == engine.bin_dir, "a temporary folder is gone by the next run"
+    assert kept.exists()
+
+    # The next run, the same link: the same half-file, which is what resumes.
+    tool = engine.install_ffmpeg()
+
+    assert parts[0] == parts[1] == kept
+    assert "7.1-fake" in tool.version
+    assert not kept.exists(), "150 MB of bytes nobody can use was left behind"
+
+
+def test_each_mirror_has_its_own_half_download(tmp_path, monkeypatch):
+    """Two mirrors are two files; one's half must never be glued to the other's."""
+    names: list = []
+
+    def body(url, dest, on_progress=None, **kwargs):
+        names.append(Path(kwargs["part_path"]).name)
+        if len(names) == 1:
+            raise ToolError("connection dropped")
+        write_executable(Path(dest), "#!/bin/sh\necho 'ffmpeg version 7.0-fake'\n")
+        return Path(dest)
+
+    monkeypatch.setattr(engine_mod, "download_to", body)
+    engine = Engine(home=tmp_path / "app")
+    _patched_sources(
+        monkeypatch,
+        engine,
+        [mirror("https://mirror-one/ffmpeg"), mirror("https://mirror-two/ffmpeg")],
+    )
+    # Something an earlier failed run left behind.
+    engine.bin_dir.mkdir(parents=True, exist_ok=True)
+    stale = engine.bin_dir / "ffmpeg-download-00000000.tar-xz"
+    stale.write_bytes(b"old")
+    stale_part = engine.bin_dir / "ffmpeg-00000000.part"
+    stale_part.write_bytes(b"old half")
+
+    engine.install_ffmpeg()
+
+    assert len(set(names)) == 2, "both mirrors shared one part-file"
+    assert not stale.exists() and not stale_part.exists(), (
+        "a 150 MB leftover survived a successful install"
+    )
+
+
+def test_a_download_that_keeps_dropping_says_what_is_kept(tmp_path, ranges):
+    server = serve_ranges(ranges, b"z" * 5000, drop_after=1500, drop_each=True)
+    dest = tmp_path / "ffmpeg"
+
+    with pytest.raises(ToolError) as caught:
+        download_to(server.url, dest)
+
+    assert "kept" in (caught.value.hint or "")
+    assert not dest.exists()
+    part = tmp_path / "ffmpeg.part"
+    assert part.is_file() and part.stat().st_size > 0, "the bytes it did get are gone"
+
+
+def test_a_part_that_can_never_be_continued_is_given_up_on(tmp_path, monkeypatch):
+    """A stale part is thrown away once and fetched again; not forever."""
+    def always_stale(url, tmp_path, on_progress, timeout):
+        raise engine_mod._StalePartial()
+
+    monkeypatch.setattr(engine_mod, "_fetch", always_stale)
+    monkeypatch.setattr(engine_mod, "_RETRY_PAUSE_SECONDS", 0)
+    dest = tmp_path / "ffmpeg"
+    (tmp_path / "ffmpeg.part").write_bytes(b"another build's bytes")
+
+    with pytest.raises(ToolError) as caught:
+        download_to("https://example.invalid/ffmpeg", dest)
+
+    assert "could not be continued" in caught.value.message
+    assert not dest.exists()
+    assert not (tmp_path / "ffmpeg.part").exists(), "bytes that cannot be used stayed"
+
+
+def test_the_size_is_asked_for_once_and_remembered(monkeypatch):
+    """The qualities screen asks on every arrow key; GitHub is not asked twice."""
+    calls: list = []
+
+    def size(url, timeout=10):
+        calls.append(url)
+        return None
+
+    monkeypatch.setattr(engine_mod, "download_size", size)
+    monkeypatch.setattr(engine_mod, "_SIZE_HINTS", {})
+
+    assert engine_mod._size_hint("https://x/ffmpeg") is None
+    assert engine_mod._size_hint("https://x/ffmpeg") is None
+
+    assert calls == ["https://x/ffmpeg"], "an unknown size was asked for again"
+
+
+def test_the_size_is_asked_for_without_downloading_anything(tmp_path, ranges):
+    payload = b"s" * 12345
+    server = serve_ranges(ranges, payload)
+
+    assert engine_mod.download_size(server.url) == len(payload)
+    assert server.requests == [("HEAD", None)]
+
+
+def test_an_unknown_size_is_none_rather_than_a_guess(tmp_path, monkeypatch):
+    def unreachable(request, timeout=None):
+        raise urllib.error.URLError("no route to host")
+
+    monkeypatch.setattr(engine_mod.urllib.request, "urlopen", unreachable)
+    assert engine_mod.download_size("https://example.invalid/file") is None

@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -83,6 +84,13 @@ class FakeEngine:
 
     def ffmpeg_location_args(self):
         return []
+
+    #: What ``ffmpeg_size_hint`` should answer; ``None`` means the mirror did not
+    #: say, which the screen has to survive without a number.
+    ffmpeg_size: Optional[int] = None
+
+    def ffmpeg_size_hint(self):
+        return self.ffmpeg_size
 
 
 class FakeJob:
@@ -890,6 +898,33 @@ async def test_a_quality_that_needs_ffmpeg_says_why(tmp_path):
         note = shown(app.screen, "#options-note")
         assert "needs ffmpeg" in note
         assert not app.screen.query_one("#get-ffmpeg").has_class("hidden")
+
+
+@pytest.mark.asyncio
+async def test_the_ffmpeg_offer_says_how_big_the_download_is(tmp_path):
+    """150 MB is a decision, so the size is on the screen before the click."""
+    engine = FakeEngine(ffmpeg=False)
+    engine.ffmpeg_size = 152 * 1024 * 1024
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path, engine=engine))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        note = shown(app.screen, "#options-note")
+        assert "needs ffmpeg" in note
+        assert "about 152.0 MB" in note
+
+
+@pytest.mark.asyncio
+async def test_the_ffmpeg_offer_keeps_quiet_when_the_size_is_unknown(tmp_path):
+    """A mirror that will not say how big it is gets no invented number."""
+    engine = FakeEngine(ffmpeg=False)
+    engine.ffmpeg_size = None
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path, engine=engine))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        note = shown(app.screen, "#options-note")
+        assert "needs ffmpeg" in note
+        assert "about" not in note
+        assert "MB" not in note
 
 
 @pytest.mark.asyncio
