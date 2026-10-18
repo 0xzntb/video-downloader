@@ -148,6 +148,16 @@ video is private. Only the owner can download it."*, a mistyped link says
 *"That page could not be found (404)."*, and a missing ffmpeg tells you to press
 **Set up ffmpeg** rather than mentioning post-processing.
 
+A failure that might not have happened — the site rate-limiting you, a server
+having a bad minute, a connection that dropped — is tried again by itself: after
+4 seconds, then after 8, three attempts in all. The progress screen says so
+(*"Retrying in 4s (attempt 2 of 3)…"*) rather than looking stuck, and the second
+attempt continues from the half-finished file instead of starting over. A
+failure that will not change on its own — private, removed, region-blocked, a
+full disk — is reported at once, because waiting for the same answer is just a
+longer way of saying no. If all three attempts fail, the message says how many
+times Viddl tried.
+
 If you need more detail:
 
 ```sh
@@ -183,8 +193,8 @@ of yt-dlp when you want to manage that yourself.
 | `viddl/tui/` | The terminal interface (Textual). Five screens: home, qualities, progress, stopped, done. |
 | `viddl/engine.py` | Finds yt-dlp and ffmpeg, or downloads its own copy into `~/.local/share/viddl/bin`. |
 | `viddl/formats.py` | Turns site metadata into the quality menu, with size estimates. |
-| `viddl/download.py` | Runs yt-dlp, reads its progress, and works out which file was written. Stopping it stops the whole tree yt-dlp started — the ffmpeg merge included — and keeps what was fetched so it can be resumed. |
-| `viddl/errors.py` | Maps raw tool output onto plain-language explanations. |
+| `viddl/download.py` | Runs yt-dlp, reads its progress, and works out which file was written. A failure worth a second attempt is retried after a doubling wait; stopping it stops the whole tree yt-dlp started — the ffmpeg merge included — and keeps what was fetched so it can be resumed. |
+| `viddl/errors.py` | Maps raw tool output onto plain-language explanations, and says whether the failure is one another attempt may fix. |
 | `viddl/protocol.py` | The `viddl://` hand-off and its per-OS registration. |
 | `viddl/browser_extension/` | The Chromium (Manifest V3) extension. |
 

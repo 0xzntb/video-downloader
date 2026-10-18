@@ -113,3 +113,74 @@ def test_rule_order_prefers_the_specific_explanation():
     # Mentions both "cookies" (bot check) and a generic failure.
     friendly = explain("ERROR: Sign in to confirm you're not a bot (cookies required)")
     assert "signed in" in friendly.message
+
+
+# ---------------------------------------------------------------------------
+# temporary, or permanent? (R5)
+#
+# The answer decides whether the download is tried again by itself, so a wrong
+# answer is expensive in both directions: retrying a private video wastes the
+# user's time, and calling a rate limit permanent hands them a failure that a
+# second attempt would have fixed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "ERROR: HTTP Error 429: Too Many Requests",
+        "ERROR: [youtube] x: 429 Client Error: Too Many Requests",
+        "ERROR: HTTP Error 503: Service Unavailable",
+        "ERROR: HTTP Error 502: Bad Gateway",
+        "ERROR: Unable to download webpage: HTTP Error 500: Internal Server Error",
+        "ERROR: The read operation timed out",
+        "ERROR: [youtube] x: Unable to download webpage: <urlopen error [Errno 111] Connection refused>",
+        "ERROR: Unable to download webpage: <urlopen error [Errno -3] Temporary failure in name resolution>",
+        "ERROR: Connection reset by peer",
+        "ERROR: HTTP Error 403: Forbidden",
+    ],
+)
+def test_failures_a_second_attempt_may_fix_are_temporary(raw):
+    assert explain(raw).temporary is True
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "ERROR: Private video. Sign in if you've been granted access",
+        "ERROR: Video unavailable",
+        "ERROR: The uploader has not made this video available in your country",
+        "ERROR: HTTP Error 404: Not Found",
+        "ERROR: Unsupported URL: https://example.invalid/x",
+        "ERROR: Requested format is not available",
+        "OSError: [Errno 28] No space left on device",
+        "ERROR: Permission denied: /downloads/x.mp4",
+        "ERROR: Postprocessing: ffmpeg not found",
+        "ERROR: [youtube] x: This video is members-only",
+        "ERROR: Interrupted by user",
+    ],
+)
+def test_failures_that_will_not_change_on_their_own_are_permanent(raw):
+    assert explain(raw).temporary is False
+
+
+def test_a_region_block_is_never_retried_as_a_network_moment():
+    friendly = explain(
+        "ERROR: [youtube] abc: The uploader has not made this video available in your country"
+    )
+    assert "not available" in friendly.message
+    assert friendly.temporary is False
+
+
+def test_an_unrecognised_error_is_retried_because_its_advice_says_so():
+    # The explanation already tells the user to try again. Retrying once on
+    # their behalf is the same advice, only sooner.
+    friendly = explain("ERROR: [generic] Some site said: trait is broken")
+    assert "Trying again" in (friendly.hint or "")
+    assert friendly.temporary is True
+
+
+def test_a_stopped_download_with_no_output_is_treated_as_temporary():
+    assert explain("", exit_code=1).temporary is True
+    # With no exit code and no output there is nothing to suggest a retry helps.
+    assert explain("").temporary is False

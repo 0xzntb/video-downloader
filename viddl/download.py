@@ -53,6 +53,19 @@ _PARTIAL_SUFFIXES = (".part", ".ytdl")
 #: yt-dlp answers a polite stop quickly; a wedged one never does.
 _STOP_GRACE_SECONDS = 5.0
 
+#: How many times one download is tried when the failure is the kind a second
+#: attempt may fix. Three goes: a rate limit or a dropped connection is usually
+#: gone by then, and a fourth would delay the bad news for nothing.
+DEFAULT_ATTEMPTS = 3
+
+#: The first wait after a temporary failure; each further wait doubles it, so a
+#: site having a bad minute is not hammered by the thing that is failing.
+RETRY_BASE_SECONDS = 4.0
+
+#: A wait is slept in slices this long, so a cancel is felt at once instead of
+#: whenever the wait happens to end. The user pressed stop; they mean now.
+_RETRY_SLICE_SECONDS = 0.1
+
 
 def _is_intermediate(path: Path) -> bool:
     """True for a stream that only exists to be merged into the real file."""
@@ -105,6 +118,13 @@ def _fmt_eta(seconds: Optional[float]) -> str:
     return human_duration(seconds)
 
 
+def _seconds_text(seconds: float) -> str:
+    """"4s", not "4.0s" — this is read in passing, not studied."""
+    if abs(seconds - round(seconds)) < 1e-9:
+        return f"{int(round(seconds))}s"
+    return f"{seconds:.1f}s"
+
+
 def probe_video(engine: Engine, url: str, timeout: int = 150) -> MediaInfo:
     """Ask yt-dlp what is behind a link. Raises ``ToolError`` on failure."""
     tool = engine.ensure_ytdlp()
@@ -131,6 +151,7 @@ def probe_video(engine: Engine, url: str, timeout: int = 150) -> MediaInfo:
             "The site took too long to answer.",
             "Check your connection, or try the link again in a moment.",
             raw=str(exc),
+            temporary=True,
         ) from exc
     except OSError as exc:
         raise ToolError(
@@ -141,7 +162,12 @@ def probe_video(engine: Engine, url: str, timeout: int = 150) -> MediaInfo:
     if completed.returncode != 0 or not (completed.stdout or "").strip():
         raw = (completed.stderr or "") + "\n" + (completed.stdout or "")
         friendly = explain(raw, completed.returncode)
-        raise ToolError(friendly.message, friendly.hint, raw=raw.strip())
+        raise ToolError(
+            friendly.message,
+            friendly.hint,
+            raw=raw.strip(),
+            temporary=friendly.temporary,
+        )
 
     try:
         info = json.loads(completed.stdout)
@@ -169,6 +195,8 @@ class DownloadJob:
         on_progress: Optional[Callable[[Progress], None]] = None,
         on_log: Optional[Callable[[str], None]] = None,
         keep_partial: bool = True,
+        attempts: int = DEFAULT_ATTEMPTS,
+        retry_delay: float = RETRY_BASE_SECONDS,
     ):
         self.engine = engine
         self.url = url
@@ -180,6 +208,11 @@ class DownloadJob:
         # possible, so it is the default. ``keep_partial=False`` is the old
         # tidy-up behaviour, for a caller that wants it.
         self.keep_partial = keep_partial
+        # Retrying is on by default, because a temporary failure that nobody
+        # retried is indistinguishable, from where the user sits, from the site
+        # being broken. Callers that want one go can ask for one.
+        self.attempts = max(1, int(attempts))
+        self.retry_delay = max(0.0, float(retry_delay))
 
         self._process: Optional[subprocess.Popen] = None
         self._escalation: Optional[threading.Timer] = None
@@ -307,7 +340,19 @@ class DownloadJob:
                 pass
 
     def run(self) -> Path:
-        """Download and return the finished file. Raises on failure."""
+        """Download and return the finished file. Raises on failure.
+
+        A failure that might just as easily not have happened — a rate limit, a
+        server having a bad minute, a connection that dropped — is tried again
+        after a doubling wait, because "it worked the second time" is a better
+        outcome than an accurate explanation of why it did not. Nothing else is
+        retried: a private video stays private, and trying again would only keep
+        the user waiting for the same answer.
+
+        What happened the first time is not thrown away. yt-dlp is asked to
+        continue, so a second attempt picks up from the ``.part`` file the first
+        one left rather than fetching the same bytes again.
+        """
         self.out_dir.mkdir(parents=True, exist_ok=True)
         before = self._snapshot()
         args = self.build_args()
@@ -317,6 +362,39 @@ class DownloadJob:
             raise DownloadCancelled()
         if self.on_log:
             self.on_log("$ " + " ".join(args))
+
+        for attempt in range(1, self.attempts + 1):
+            try:
+                return self._attempt(args, before)
+            except ToolError as exc:
+                if self._cancelled.is_set():
+                    # The attempt was failing as the stop arrived. The user
+                    # asked to stop, which is what this is — not a failure to
+                    # explain to them.
+                    raise DownloadCancelled() from exc
+                if not exc.temporary:
+                    # Permanent: the answer will not change, so say it now.
+                    raise
+                if attempt >= self.attempts:
+                    raise self._after_failure(exc, attempt) from exc
+                wait = self._retry_wait(attempt)
+                self._announce_retry(exc, attempt, wait)
+                if not self._wait(wait):
+                    raise DownloadCancelled() from exc
+        raise AssertionError("unreachable: every loop path returns or raises")  # pragma: no cover
+
+    # -- one attempt ---------------------------------------------------------
+    def _attempt(self, args: List[str], before: Dict[Path, float]) -> Path:
+        """Run the downloader once, exactly as a single-attempt run would."""
+        # Each attempt speaks for itself: lines from the attempt that failed are
+        # not evidence about this one, and carrying them over would both grow
+        # without bound and report the wrong reason if this one fails too.
+        self._lines.clear()
+        if self.progress.phase == "retry":
+            # The wait is over. Saying so matters: the screen decides whether to
+            # move the bar from the phase, so leaving it on "retry" would keep
+            # the download looking paused for as long as it took to report.
+            self._emit(status="Downloading…", speed="", eta="", phase="download")
 
         options: Dict[str, object] = {}
         if is_windows():
@@ -368,7 +446,14 @@ class DownloadJob:
         if code != 0:
             raw = "\n".join(self._lines[-60:])
             friendly = explain(raw, code)
-            raise ToolError(friendly.message, friendly.hint, raw=raw)
+            # ``temporary`` is what ``run`` decides from: it is the single
+            # place that says whether trying again is worth the wait.
+            raise ToolError(
+                friendly.message,
+                friendly.hint,
+                raw=raw,
+                temporary=friendly.temporary,
+            )
 
         finished = self._find_output(before)
         if finished is None:
@@ -382,6 +467,59 @@ class DownloadJob:
         return finished
 
     # -- internals ----------------------------------------------------------
+    def _retry_wait(self, attempt: int) -> float:
+        """How long to wait after ``attempt`` failed: the base, then doubled."""
+        return self.retry_delay * (2 ** (attempt - 1))
+
+    def _announce_retry(self, exc: ToolError, attempt: int, wait: float) -> None:
+        """Say, on the progress screen, that waiting is happening and why.
+
+        A silent pause looks like a hang; a pause with a reason looks like care.
+        The bar keeps the place it had reached, because the wait is not progress
+        and feeling the work start over would be untrue.
+        """
+        status = (
+            f"Retrying in {_seconds_text(wait)} "
+            f"(attempt {attempt + 1} of {self.attempts})…"
+        )
+        self._emit(status=status, speed="", eta="", phase="retry")
+        if self.on_log:
+            self.on_log(f"{exc.message} {status}")
+
+    def _wait(self, seconds: float) -> bool:
+        """Wait between attempts; False if the user stopped while waiting.
+
+        Slept in slices so the stop button is answered at once. A cancel that
+        arrives during the wait does not start another attempt, and leaves the
+        ``.part`` file alone exactly as stopping mid-download does.
+        """
+        deadline = time.monotonic() + seconds
+        while True:
+            if self._cancelled.is_set():
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            time.sleep(min(_RETRY_SLICE_SECONDS, remaining))
+
+    def _after_failure(self, exc: ToolError, attempt: int) -> ToolError:
+        """The error to show once trying again is no longer an option.
+
+        Saying how many times Viddl tried matters: "the site is busy" reads
+        differently when the user knows it was already asked three times, and
+        the next sensible step is to wait rather than press the button again.
+        """
+        if attempt <= 1:
+            # Tried once: there was no wait to explain, and "tried 1 times"
+            # would be a strange thing to read.
+            return exc
+        note = (
+            f"Viddl tried {attempt} times, waiting longer between each attempt, and "
+            "the site answered the same way every time."
+        )
+        hint = f"{exc.hint}\n{note}" if exc.hint else note
+        return ToolError(exc.message, hint, raw=exc.raw, temporary=exc.temporary)
+
     def _stop_watchdog(self) -> None:
         timer = self._escalation
         if timer is not None:

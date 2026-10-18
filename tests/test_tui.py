@@ -187,6 +187,33 @@ class ChattyJob(FakeJob):
         self.release.set()
 
 
+class RetryingJob(ChattyJob):
+    """Downloads, hits a temporary failure, and waits before trying again."""
+
+    def run(self):
+        if self.on_progress:
+            self.on_progress(
+                Progress(
+                    status="Downloading…",
+                    percent=42.0,
+                    speed="1.5 MB/s",
+                    eta="0:07",
+                    downloaded=1024,
+                    total=4096,
+                    phase="download",
+                )
+            )
+            self.on_progress(
+                Progress(
+                    status="Retrying in 4s (attempt 2 of 3)…",
+                    percent=42.0,
+                    phase="retry",
+                )
+            )
+        self.release.wait(timeout=10)
+        raise DownloadCancelled()
+
+
 class BrokenFfmpegEngine(FakeEngine):
     """ffmpeg is missing and fetching it fails."""
 
@@ -974,6 +1001,27 @@ async def test_the_progress_screen_reports_size_speed_and_time_left(tmp_path):
         await pilot.click("#cancel")
         await settle(pilot)
         assert job.cancelled is True
+        assert isinstance(app.screen, StoppedScreen)
+
+
+@pytest.mark.asyncio
+async def test_the_screen_says_when_it_is_waiting_to_try_again(tmp_path):
+    services = make_services(tmp_path, job_class=RetryingJob)
+    app = ViddlApp(initial_url=URL, services=services)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await wait_for_job(app, pilot)
+        await pilot.pause()
+
+        assert "Retrying in 4s (attempt 2 of 3)" in shown(app.screen, "#download-status")
+        # Waiting is not progress: the bar keeps the place the download reached,
+        # and the speed and time-left figures are cleared rather than frozen.
+        assert app.screen.query_one("#download-bar").progress == 42.0
+        assert shown(app.screen, "#download-detail") == ""
+
+        await pilot.click("#cancel")
+        await settle(pilot)
         assert isinstance(app.screen, StoppedScreen)
 
 

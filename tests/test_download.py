@@ -924,3 +924,214 @@ def test_a_stop_before_the_engine_starts_leaves_nothing_running(tmp_path, monkey
 
     with pytest.raises(DownloadCancelled):
         job.run()
+
+
+# ---------------------------------------------------------------------------
+# trying again (R5)
+#
+# A failure a second attempt may fix is tried again, with a doubling wait, and
+# the wait is visible. Everything else fails once — quickly — because retrying
+# a private video only makes the user wait for the same answer.
+# ---------------------------------------------------------------------------
+
+# Fails with a rate limit the first N times it is asked, then downloads. Counts
+# its own runs in a file, so the tests see how many attempts really happened.
+FLAKY_SCRIPT = """\
+import os, pathlib, sys
+args = sys.argv[1:]
+out = pathlib.Path(args[args.index("-P") + 1])
+tally = pathlib.Path(os.environ["FLAKY_TALLY"])
+runs = int(tally.read_text()) if tally.exists() else 0
+tally.write_text(str(runs + 1))
+if runs < int(os.environ.get("FLAKY_FAILURES", "1")):
+    print("ERROR: HTTP Error 429: Too Many Requests", flush=True)
+    sys.exit(1)
+target = out / "A Real Video [dQw4w9WgXcQ].mp4"
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_bytes(b"v" * 1024)
+print("[download] Destination: " + str(target), flush=True)
+sys.exit(0)
+"""
+
+# The same, but it leaves a half-finished file behind before failing — and the
+# second attempt records whether that file was still there to carry on from.
+RESUMED_SCRIPT = """\
+import os, pathlib, sys
+args = sys.argv[1:]
+out = pathlib.Path(args[args.index("-P") + 1])
+tally = pathlib.Path(os.environ["FLAKY_TALLY"])
+runs = int(tally.read_text()) if tally.exists() else 0
+tally.write_text(str(runs + 1))
+target = out / "Half A Video [abc].mp4"
+if runs == 0:
+    pathlib.Path(str(target) + ".part").write_bytes(b"half")
+    print("ERROR: Unable to download webpage: <urlopen error [Errno 111] Connection refused>",
+          flush=True)
+    sys.exit(1)
+pathlib.Path(os.environ["FLAKY_FLAG"]).write_text(
+    "kept" if pathlib.Path(str(target) + ".part").exists() else "gone"
+)
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_bytes(b"v")
+print("[download] Destination: " + str(target), flush=True)
+sys.exit(0)
+"""
+
+# A failure that will not change no matter how often it is asked.
+PERMANENT_SCRIPT = """\
+import os, pathlib, sys
+tally = pathlib.Path(os.environ["FLAKY_TALLY"])
+runs = int(tally.read_text()) if tally.exists() else 0
+tally.write_text(str(runs + 1))
+print("ERROR: Private video. Sign in if you've been granted access")
+sys.exit(1)
+"""
+
+
+def flaky_job(tmp_path, monkeypatch, body, **kwargs) -> DownloadJob:
+    """A job whose downloader counts its attempts, with no real waiting."""
+    monkeypatch.setenv("FLAKY_TALLY", str(tmp_path / "runs"))
+    kwargs.setdefault("retry_delay", 0)
+    return DownloadJob(
+        engine_for(tmp_path, "flaky.py", body),
+        "https://x.invalid/v",
+        video_option(),
+        tmp_path / "Downloads",
+        **kwargs,
+    )
+
+
+def test_a_rate_limit_is_tried_again_and_then_works(tmp_path, monkeypatch):
+    seen = []
+    logged = []
+    job = flaky_job(
+        tmp_path, monkeypatch, FLAKY_SCRIPT, on_progress=seen.append, on_log=logged.append
+    )
+
+    finished = job.run()
+
+    assert finished.is_file()
+    assert (tmp_path / "runs").read_text() == "2"
+    assert any(item.phase == "retry" for item in seen)
+    assert any("attempt 2 of 3" in item.status for item in seen)
+    assert seen[-1].phase == "done"
+    # Once the wait is over the screen must stop saying it is waiting — the
+    # second attempt looked paused for its whole duration without this.
+    retry_at = next(i for i, item in enumerate(seen) if item.phase == "retry")
+    assert seen[retry_at + 1].phase == "download"
+    # The log is what someone sends when they report a problem, so the retry and
+    # its reason have to be in it — not only on a screen that has since closed.
+    assert logged[0].startswith("$ ")
+    assert any("rate-limiting" in line and "Retrying in" in line for line in logged)
+
+
+def test_trying_again_waits_and_says_how_long_and_which_attempt(tmp_path, monkeypatch):
+    seen = []
+    job = flaky_job(tmp_path, monkeypatch, FLAKY_SCRIPT, retry_delay=0.2,
+                    on_progress=seen.append)
+
+    started = time.monotonic()
+    job.run()
+    elapsed = time.monotonic() - started
+
+    retry = next(item for item in seen if item.phase == "retry")
+    assert "Retrying in 0.2s" in retry.status
+    assert "(attempt 2 of 3)" in retry.status
+    assert elapsed >= 0.2
+
+
+def test_each_wait_is_longer_than_the_one_before(tmp_path):
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), tmp_path)
+    assert job.attempts == 3
+    assert [job._retry_wait(n) for n in (1, 2)] == [4.0, 8.0]
+
+
+def test_a_permanent_failure_is_reported_after_one_attempt(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLAKY_TALLY", str(tmp_path / "runs"))
+    job = DownloadJob(
+        engine_for(tmp_path, "permanent.py", PERMANENT_SCRIPT),
+        "https://x.invalid/v",
+        video_option(),
+        tmp_path / "Downloads",
+        retry_delay=0,
+    )
+
+    started = time.monotonic()
+    with pytest.raises(ToolError) as caught:
+        job.run()
+    elapsed = time.monotonic() - started
+
+    assert (tmp_path / "runs").read_text() == "1"
+    assert caught.value.temporary is False
+    assert "private" in caught.value.message
+    assert "tried" not in (caught.value.hint or "")
+    assert elapsed < 5
+
+
+def test_a_temporary_failure_that_keeps_failing_says_how_many_tries(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FLAKY_FAILURES", "99")
+    job = flaky_job(tmp_path, monkeypatch, FLAKY_SCRIPT)
+
+    with pytest.raises(ToolError) as caught:
+        job.run()
+
+    assert (tmp_path / "runs").read_text() == "3"
+    assert caught.value.temporary is True
+    assert "Viddl tried 3 times" in (caught.value.hint or "")
+    # The friendly explanation is still the one shown, not a retry report.
+    assert "rate-limiting" in caught.value.message
+
+
+def test_one_attempt_can_be_asked_for(tmp_path, monkeypatch):
+    job = flaky_job(tmp_path, monkeypatch, FLAKY_SCRIPT, attempts=1)
+
+    with pytest.raises(ToolError) as caught:
+        job.run()
+
+    assert (tmp_path / "runs").read_text() == "1"
+    assert "tried" not in (caught.value.hint or "")
+
+
+def test_a_retry_keeps_what_the_failed_attempt_fetched(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLAKY_FLAG", str(tmp_path / "flag"))
+    job = flaky_job(tmp_path, monkeypatch, RESUMED_SCRIPT)
+
+    finished = job.run()
+
+    assert finished.is_file()
+    assert (tmp_path / "flag").read_text() == "kept"
+
+
+def test_stopping_during_the_wait_ends_at_once_and_starts_nothing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FLAKY_FAILURES", "99")
+    job = flaky_job(tmp_path, monkeypatch, FLAKY_SCRIPT, retry_delay=30)
+    outcome = {}
+
+    def run():
+        try:
+            job.run()
+        except DownloadCancelled:
+            outcome["cancelled"] = True
+        except Exception as exc:  # pragma: no cover - defensive
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    deadline = time.monotonic() + 10
+    while job.progress.phase != "retry" and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert job.progress.phase == "retry", "the job never reached its wait"
+
+    started = time.monotonic()
+    job.cancel()
+    worker.join(timeout=10)
+    elapsed = time.monotonic() - started
+
+    assert outcome.get("cancelled") is True
+    assert outcome.get("error") is None
+    assert elapsed < 5, "a cancel waited for the retry delay instead of being felt"
+    assert (tmp_path / "runs").read_text() == "1", "a stopped job started another attempt"

@@ -83,13 +83,26 @@ class Tool:
 
 
 class ToolError(RuntimeError):
-    """Raised when a tool is missing or could not be installed."""
+    """Raised when a tool is missing or could not be installed.
 
-    def __init__(self, message: str, hint: Optional[str] = None, raw: str = ""):
+    ``temporary`` says whether the failure is the kind another attempt may fix.
+    A job that has already tried, and still failed, reports it here so the
+    caller can tell "the site was busy" apart from "that video is private"
+    without reading the raw output again.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        hint: Optional[str] = None,
+        raw: str = "",
+        temporary: bool = False,
+    ):
         super().__init__(message)
         self.message = message
         self.hint = hint
         self.raw = raw
+        self.temporary = temporary
 
     @property
     def friendly(self) -> str:

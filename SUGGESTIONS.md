@@ -9,7 +9,7 @@ statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **12 of 60** — S1–S6 in section 1, R1–R4 in section 2, D2–D3 in
+Progress so far: **13 of 60** — S1–S6 in section 1, R1–R5 in section 2, D2–D3 in
 section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -508,7 +508,52 @@ which its own copy wins and can shadow a newer system one.)
   the bundled copy. `Tool.version` already exists, so this is a small comparison.
 - Mention `VIDDL_YTDLP` as the escape hatch for users who keep their own.
 
-### R5 — No job-level retry, and no distinction between temporary and permanent · **P1** · M
+### R5 — No job-level retry, and no distinction between temporary and permanent · **P1** · M · ✅ **Done**
+
+> **Fixed.** Every explanation now carries a verdict — `FriendlyError.temporary`
+> — and it is written in the **same table** as the message (`viddl/errors.py`),
+> so an explanation that says "try again" and a retry policy that does not can no
+> longer drift apart. The verdict is carried on `ToolError` too, so the caller can
+> tell "the site was busy" from "that video is private" without reading raw
+> output again.
+>
+> `DownloadJob.run()` retries only the temporary kind: three attempts in all,
+> waiting **4 s then 8 s**, and each attempt continues from the `.part` file the
+> previous one left rather than starting over. The wait is visible —
+> *"Retrying in 4s (attempt 2 of 3)…"* — keeps the progress bar where the failed
+> attempt reached (a wait is not progress, and watching the bar reset feels like
+> losing the work), clears the now-meaningless speed and time-left figures, and is
+> written to the log with its reason. The wait is slept in 100 ms slices, so the
+> stop button is answered at once: cancelling during a wait starts no further
+> attempt. A permanent failure is reported **after one attempt**, and if all
+> three temporary attempts fail the message says how many times Viddl tried.
+>
+> Which is which, and why: 429, 5xx, `<urlopen error>`, DNS, refused/reset/timed
+> out/SSL, and 403 are temporary — a 403 is usually a per-request refusal (an
+> expired URL, a throttled client) that a fresh extraction fixes, while a real
+> region block has its own words and is caught as permanent. Private, removed,
+> region-blocked, members-only, ffmpeg missing, format gone, no space, permission
+> denied, disk I/O and invalid URLs are permanent. Unrecognised errors are
+> temporary, because their explanation already tells the user to try again —
+> retrying on their behalf is the same advice, sooner. A failure with no output at
+> all is temporary only when the process reported one.
+>
+> Measured with real yt-dlp 2026.08.19 against a local server that answers 429
+> twice and then serves the file: the shipped defaults waited 4 s and 8 s, the
+> server saw exactly three attempts, and the 4,096-byte file was saved in 16.8 s
+> with `phase=retry` events giving way to `download` as each attempt began. The
+> same server answering 404 produced **one** attempt in 1.6 s, `temporary=False`,
+> and no retry event. 33 tests added (431 → 464).
+>
+> What the first working version got wrong, caught by that real run: after a wait
+> the phase stayed `retry`, so the screen kept claiming to be waiting while the
+> second attempt was downloading (the bar only moves during `download`). Fixed at
+> the start of every attempt; the test now asserts the first event after a retry
+> is a download one.
+>
+> Not done here: the **probe** (`viddl --list-qualities`, and the quality menu) is
+> not retried — R9 is about that call taking 150 s, and retrying it three times
+> would treble it. Probe failures still say whether they were temporary.
 
 `errors.explain()` maps raw output to friendly text and `is_fatal_ytdlp_line()`
 exists, but a run either succeeds or raises. A 429, a flaky CDN or a momentary
