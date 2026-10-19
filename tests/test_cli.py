@@ -497,3 +497,14 @@ def test_a_log_file_that_cannot_be_written_is_not_fatal(monkeypatch, capsys):
     finally:
         for handler in saved:
             logger.addHandler(handler)
+
+def test_the_doctor_says_what_it_waits_for(capsys, monkeypatch):
+    """The wait is a number somebody set, so the doctor quotes it (R11)."""
+    monkeypatch.delenv("VIDDL_TIMEOUT", raising=False)
+
+    assert main(["--doctor"]) == 0
+    assert "Network:      built-in waits" in capsys.readouterr().out
+
+    monkeypatch.setenv("VIDDL_TIMEOUT", "45")
+    assert main(["--doctor"]) == 0
+    assert "Network:      waiting 45s per network request" in capsys.readouterr().out

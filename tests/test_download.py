@@ -1668,3 +1668,68 @@ def test_a_folder_that_cannot_be_written_in_says_so(tmp_path, monkeypatch):
 
     assert "make room" in caught.value.message
     assert "Permission denied" in (caught.value.hint or "")
+
+# ---------------------------------------------------------------------------
+# the waits yt-dlp is given follow VIDDL_TIMEOUT (R11)
+# ---------------------------------------------------------------------------
+
+
+def test_the_built_in_waits_are_used_until_one_is_asked_for(monkeypatch):
+    monkeypatch.delenv("VIDDL_TIMEOUT", raising=False)
+    assert download_mod.socket_timeout() == 20
+    assert download_mod.lookup_timeout() == 150
+
+    monkeypatch.setenv("VIDDL_TIMEOUT", "45")
+    assert download_mod.socket_timeout() == 45
+    assert download_mod.lookup_timeout() == 45 * 7.5, "one answer, not two"
+
+
+def test_yt_dlp_is_told_the_socket_wait_on_a_look_up(monkeypatch):
+    fake = fake_lookup(monkeypatch, stdout='{"title": "Fake Video"}')
+    monkeypatch.setenv("VIDDL_TIMEOUT", "45")
+
+    probe_video(FakeEngine(["/fake/yt-dlp"]), "https://x.invalid/socket-wait")
+
+    assert fake.args[fake.args.index("--socket-timeout") + 1] == "45"
+
+
+def test_a_download_is_told_the_socket_wait(tmp_path, monkeypatch):
+    job = DownloadJob(
+        FakeEngine(["/fake/yt-dlp"]), "https://x.invalid/v", video_option(), tmp_path
+    )
+    monkeypatch.setenv("VIDDL_TIMEOUT", "30")
+    args = job.build_args()
+    assert args[args.index("--socket-timeout") + 1] == "30"
+
+    monkeypatch.delenv("VIDDL_TIMEOUT")
+    args = job.build_args()
+    assert args[args.index("--socket-timeout") + 1] == "20"
+
+
+def test_the_look_up_bound_follows_the_socket_wait(monkeypatch):
+    """Giving up at 150 s while waiting 300 s a socket is two answers."""
+
+    class Quiet(FakeLookupProcess):
+        def communicate(self, timeout=None):
+            if timeout is None:
+                # The kill that ends a timed-out look-up collects it this way.
+                self.finished = True
+                return "", ""
+            raise subprocess.TimeoutExpired(cmd=self.argv, timeout=timeout)
+
+    monkeypatch.setattr(
+        download_mod.subprocess,
+        "Popen",
+        lambda args, **options: Quiet(args, "", "", 1, True),
+    )
+    # 0 s when the deadline is set, then 76 s: past ten socket waits (75 s),
+    # nowhere near the built-in 150 s bound.
+    ticks = iter([0.0, 0.0] + [76.0] * 50)
+    monkeypatch.setattr(download_mod.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setenv("VIDDL_TIMEOUT", "10")
+
+    with pytest.raises(ToolError) as caught:
+        probe_video(FakeEngine(["/fake/yt-dlp"]), "https://x.invalid/bound")
+
+    assert "too long" in caught.value.message
+    assert "75 seconds" in (caught.value.raw or "")

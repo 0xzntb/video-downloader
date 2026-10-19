@@ -263,7 +263,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         os.environ["VIDDL_DOWNLOAD_DIR"] = str(Path(args.download_dir).expanduser())
 
     if args.doctor:
-        for line in Engine().report():
+        # The report says which overrides are set; this line says what Viddl is
+        # actually waiting for, whether or not one is (R11).
+        for line in [*Engine().report(), appdata.timeout_note()]:
             print(line)
         return 0
 

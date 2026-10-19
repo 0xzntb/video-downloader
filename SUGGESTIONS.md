@@ -10,7 +10,7 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **19 of 60** — S1–S6 in section 1, R1–R10 in section 2, U4 in
+Progress so far: **20 of 60** — S1–S6 in section 1, R1–R11 in section 2, U4 in
 section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -912,7 +912,7 @@ characters and `·`/`…` throughout — a real risk of mojibake that no test co
 (**E1**), and add an ASCII/`--plain` rendering path (**U4**) with a test that the
 UI text survives `cp1252` encoding.
 
-### R11 — Timeouts and limits are constants · **P3** · S
+### R11 — Timeouts and limits are constants · **P3** · S · ✅ **Done**
 
 `_TIMEOUT = 30`, `_PROBE_TIMEOUT = 25`, `probe_video(timeout=150)`,
 `--socket-timeout 20`, `--trim-filenames 150`, `_MAX_ROWS = 9`, `_MIN_HEIGHT = 144`,
@@ -921,6 +921,40 @@ a fast one has no lever.
 
 **Do:** expose the network ones behind `VIDDL_TIMEOUT` / a config file (**F13**)
 and leave the presentation ones alone unless someone asks.
+
+> **Fixed, for the network waits, which is the half the item asked for.** The
+> presentation constants are untouched on purpose.
+>
+> **One variable, checked like the other five.** `VIDDL_TIMEOUT` takes a number
+> of seconds — `45`, `45s`, `1.5` — and is refused, with a reason, when it is not
+> one: empty, not a number, option-shaped (`--limit-rate`), carrying a control
+> character, `nan`/`inf`, under a second, or over an hour. A bad value is
+> ignored rather than half-applied, and `viddl --doctor` says so —
+> `VIDDL_TIMEOUT=0 (ignored — shorter than 1 second)`. A good one is quoted back
+> on a line the app did not have before: `Network:      waiting 45s per network
+> request (VIDDL_TIMEOUT)`, or `Network:      built-in waits (set VIDDL_TIMEOUT
+> to change them)`.
+>
+> **Unset keeps each wait where it was designed; set moves them together.**
+> Leaving the variable alone is not a fallback to one number: the defaults differ
+> on purpose, and the override replaces all of them, because they only make sense
+> as a set — 20 s on a yt-dlp socket (the look-up and the download alike), a whole
+> look-up bounded at seven and a half of those socket waits (150 s by default, so
+> 75 s when the socket wait is 10 s), 30 s for a checksum list, 10 s for a
+> mirror's size, 25 s for the check that a newly installed tool runs. Waiting
+> 300 s on a socket while giving up on the look-up at 150 s would be two answers
+> to one question.
+>
+> **26 new tests** (576 → 602), `pyflakes` clean, coverage 94% overall and 95% on
+> `appdata.py`. **Measured, not asserted:** a local server that never answers gave
+> up after **2.02 s / 4.00 s** with `VIDDL_TIMEOUT=2`/`4`, and after **10.01 s**
+> with it unset — the variable really is the socket wait. Real yt-dlp 2026.08.19,
+> through a wrapper that logs its command line, was given `--socket-timeout 7`
+> for a `VIDDL_TIMEOUT=7` look-up of *Me at the zoo*, which succeeded in 1.8 s.
+>
+> **Not done:** `--trim-filenames`, `_MAX_ROWS`, `_MIN_HEIGHT` and `MP3_BITRATES`
+> stay as they are, as the item says they should; **F13** (a config file) is still
+> open, so these settings are environment-only for now.
 
 ---
 

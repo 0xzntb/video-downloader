@@ -1759,3 +1759,62 @@ def test_an_unknown_size_is_none_rather_than_a_guess(tmp_path, monkeypatch):
 
     monkeypatch.setattr(engine_mod.urllib.request, "urlopen", unreachable)
     assert engine_mod.download_size("https://example.invalid/file") is None
+
+# ---------------------------------------------------------------------------
+# every HTTP wait follows VIDDL_TIMEOUT (R11)
+# ---------------------------------------------------------------------------
+
+
+def test_the_checksum_fetch_waits_as_long_as_asked(monkeypatch):
+    waits: list = []
+
+    def fake_urlopen(request, timeout=None):
+        waits.append(timeout)
+        return FakeResponse(b"hash  ffmpeg\n")
+
+    monkeypatch.setattr(engine_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("VIDDL_TIMEOUT", "45")
+
+    body = engine_mod._fetch_text("https://example.invalid/SHA2-256SUMS")
+    assert body == "hash  ffmpeg\n"
+    assert waits == [45.0]
+
+    monkeypatch.delenv("VIDDL_TIMEOUT")
+    engine_mod._fetch_text("https://example.invalid/SHA2-256SUMS")
+    assert waits == [45.0, 30], "unset keeps the wait it was designed with"
+
+
+def test_the_size_check_waits_as_long_as_asked(monkeypatch):
+    waits: list = []
+
+    def fake_urlopen(request, timeout=None):
+        waits.append(timeout)
+        return FakeResponse(b"")
+
+    monkeypatch.setattr(engine_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("VIDDL_TIMEOUT", "12")
+
+    assert engine_mod.download_size("https://example.invalid/ffmpeg") == 0
+    assert waits == [12.0]
+
+    monkeypatch.delenv("VIDDL_TIMEOUT")
+    engine_mod.download_size("https://example.invalid/ffmpeg")
+    assert waits == [12.0, 10]
+
+
+def test_the_check_that_a_new_tool_runs_waits_as_long_as_asked(monkeypatch):
+    waits: list = []
+
+    def run(command, **kwargs):
+        waits.append(kwargs.get("timeout"))
+        return subprocess.CompletedProcess(command, 0, "ffmpeg version 7.0", "")
+
+    monkeypatch.setattr(engine_mod.subprocess, "run", run)
+    monkeypatch.setenv("VIDDL_TIMEOUT", "40")
+
+    assert engine_mod._run_probe(["ffmpeg"], "-version") == (True, "ffmpeg version 7.0")
+    assert waits == [40.0]
+
+    monkeypatch.delenv("VIDDL_TIMEOUT")
+    engine_mod._run_probe(["ffmpeg"], "-version")
+    assert waits == [40.0, 25]

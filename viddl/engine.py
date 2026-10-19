@@ -39,6 +39,9 @@ _UA = f"Viddl/{__version__} (+https://github.com/freebuff/viddl)"
 _YTDLP_BASE = "https://github.com/yt-dlp/yt-dlp/releases/latest/download"
 _TIMEOUT = 30
 _PROBE_TIMEOUT = 25
+#: A ``HEAD`` request for a download size is a nicety, so it waits less than a
+#: real transfer would.
+_SIZE_HINT_TIMEOUT = 10
 _SHA_CHUNK = 1024 * 1024
 
 #: How long to wait before trying a dropped transfer again; it grows with each
@@ -202,8 +205,19 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _fetch_text(url: str, timeout: int = _TIMEOUT) -> str:
+def _network_timeout(default: float) -> float:
+    """How long to wait for the network: ``VIDDL_TIMEOUT``, or this default.
+
+    Read at call time rather than baked into a default argument, so the value
+    the person set is the value that is used (R11).
+    """
+    return appdata.network_timeout_seconds(default)
+
+
+def _fetch_text(url: str, timeout: Optional[float] = None) -> str:
     """Fetch a small text file — in practice, a list of checksums — over HTTPS."""
+    if timeout is None:
+        timeout = _network_timeout(_TIMEOUT)
     if not url.lower().startswith("https://"):
         raise ToolError(
             "Viddl only checks downloads over a secure connection.",
@@ -306,7 +320,7 @@ def _size_of(headers) -> Optional[int]:
     return int(total) if total and total.isdigit() else None
 
 
-def download_size(url: str, timeout: int = 10) -> Optional[int]:
+def download_size(url: str, timeout: Optional[float] = None) -> Optional[int]:
     """How many bytes ``url`` would send, without downloading any of them.
 
     A ``HEAD`` request, so the answer costs a round trip rather than 150 MB.
@@ -314,6 +328,8 @@ def download_size(url: str, timeout: int = 10) -> Optional[int]:
     or a network that will not answer, means the prompt says nothing rather
     than a made-up number.
     """
+    if timeout is None:
+        timeout = _network_timeout(_SIZE_HINT_TIMEOUT)
     request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": _UA})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -328,7 +344,7 @@ _SIZE_HINTS: Dict[str, Optional[int]] = {}
 _SIZE_LOCK = threading.Lock()
 
 
-def _size_hint(url: str, timeout: int = 10) -> Optional[int]:
+def _size_hint(url: str, timeout: Optional[float] = None) -> Optional[int]:
     """``download_size``, remembered — including the times it could not tell."""
     with _SIZE_LOCK:
         if url in _SIZE_HINTS:
@@ -412,7 +428,7 @@ def download_to(
     url: str,
     dest: Path,
     on_progress: Optional[ProgressCallback] = None,
-    timeout: int = _TIMEOUT,
+    timeout: Optional[float] = None,
     expected_sha256: Optional[str] = None,
     part_path: Optional[Path] = None,
 ) -> Path:
@@ -432,6 +448,8 @@ def download_to(
     URLs for the same destination passes a name of its own, so bytes from one
     mirror are never continued onto another's.
     """
+    if timeout is None:
+        timeout = _network_timeout(_TIMEOUT)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = part_path or dest.with_name(dest.name + ".part")
     #: Whether this failure leaves something worth continuing from. A bad
@@ -655,8 +673,10 @@ def _extract_member(archive: Path, pattern: str, dest: Path, mode: Optional[int]
             pass
 
 
-def _run_probe(prefix: List[str], *args: str, timeout: int = _PROBE_TIMEOUT):
+def _run_probe(prefix: List[str], *args: str, timeout: Optional[float] = None):
     """Run a program just to see whether it works. Returns (ok, output)."""
+    if timeout is None:
+        timeout = _network_timeout(_PROBE_TIMEOUT)
     try:
         completed = subprocess.run(
             [*prefix, *args],

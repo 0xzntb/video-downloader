@@ -72,9 +72,34 @@ _RETRY_SLICE_SECONDS = 0.1
 #: test and the claim in one step, which is what keeps two windows apart.
 _CLAIM_NAME = ".viddl-busy"
 
-#: How long a look-up may take before Viddl gives up on the site. yt-dlp's own
-#: socket timeout is 20 s, so this is the "it is not answering at all" bound.
+#: yt-dlp's own socket timeout, unless ``VIDDL_TIMEOUT`` says otherwise (R11).
+_SOCKET_TIMEOUT = 20
+
+#: How long a look-up may take before Viddl gives up on the site: seven and a
+#: half socket waits, so that the bound moves with ``VIDDL_TIMEOUT`` instead of
+#: being a number a person set a socket timeout beside and then forgot. The
+#: default deck keeps the 150 s this used to be (20 × 7.5).
 PROBE_TIMEOUT = 150
+_LOOKUP_PER_SOCKET = 7.5
+
+
+def socket_timeout() -> int:
+    """Seconds yt-dlp should wait on a socket, as ``VIDDL_TIMEOUT`` asks."""
+    return int(appdata.network_timeout_seconds(_SOCKET_TIMEOUT))
+
+
+def lookup_timeout() -> float:
+    """How long a whole look-up may take, before anything else is said.
+
+    With ``VIDDL_TIMEOUT`` unset this is :data:`PROBE_TIMEOUT` exactly. When it
+    is set the bound follows it, because the failure the bound exists for is
+    "the site said nothing within the wait Viddl uses" — giving up at 150 s
+    while waiting 300 s on each socket would be two answers to one question.
+    """
+    override = appdata.network_timeout()
+    if override is None:
+        return float(PROBE_TIMEOUT)
+    return override * _LOOKUP_PER_SOCKET
 
 #: How long a look-up's answer is remembered. Re-opening the same link — going
 #: back for another quality, or clicking Find qualities twice because the first
@@ -234,7 +259,7 @@ def _remember_probe(key: str, info: MediaInfo) -> None:
 
 def _run_lookup(
     args: List[str],
-    timeout: int,
+    timeout: float,
     cancel: Optional[threading.Event],
 ) -> Tuple[int, str, str]:
     """Run a look-up that can be stopped while it runs.
@@ -285,7 +310,7 @@ def _run_lookup(
                 raise ToolError(
                     "The site took too long to answer.",
                     "Check your connection, or try the link again in a moment.",
-                    raw=f"nothing heard from the site in {timeout} seconds",
+                    raw=f"nothing heard from the site in {timeout:g} seconds",
                     temporary=True,
                 )
             continue
@@ -295,7 +320,7 @@ def _run_lookup(
 def probe_video(
     engine: Engine,
     url: str,
-    timeout: int = PROBE_TIMEOUT,
+    timeout: Optional[float] = None,
     cancel: Optional[threading.Event] = None,
 ) -> MediaInfo:
     """Ask yt-dlp what is behind a link. Raises ``ToolError`` on failure.
@@ -306,7 +331,13 @@ def probe_video(
     stopped through ``cancel`` — the process tree is killed, and
     :class:`ProbeCancelled` is raised rather than a failure being reported for
     something the user chose.
+
+    ``timeout`` is the "the site is not answering at all" bound, and defaults to
+    :func:`lookup_timeout` so that ``VIDDL_TIMEOUT`` moves it with the socket
+    waits rather than leaving two unrelated numbers to disagree (R11).
     """
+    if timeout is None:
+        timeout = lookup_timeout()
     key = _probe_key(url)
     remembered = _remembered_probe(key)
     if remembered is not None:
@@ -327,7 +358,7 @@ def probe_video(
         "--no-warnings",
         "--no-progress",
         "--socket-timeout",
-        "20",
+        str(socket_timeout()),
         "--no-color",
     )
     # The same extra options as a download: a link that needs cookies to be read
@@ -529,7 +560,7 @@ class DownloadJob:
             "--fragment-retries",
             "5",
             "--socket-timeout",
-            "20",
+            str(socket_timeout()),
             "--concurrent-fragments",
             "4",
             "--progress",

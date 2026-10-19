@@ -296,9 +296,9 @@ defend against — is in [SECURITY.md](SECURITY.md).
 
 ## Environment variables
 
-Five variables change where Viddl looks, and one of them changes what it asks
-for. None are needed for normal use; they exist for tests, shared machines and
-unusual setups. `viddl --doctor` prints the ones that are set and what became of
+Five variables change where Viddl looks, one changes what it asks for, and one
+changes how long it waits for the network. None are needed for normal use; they
+exist for tests, shared machines, slow links and unusual setups. `viddl --doctor` prints the ones that are set and what became of
 each, so none of them is a secret.
 
 | Variable | What it does | Why you would use it |
@@ -308,6 +308,7 @@ each, so none of them is a secret.
 | `VIDDL_YTDLP` | The yt-dlp to run, instead of the one Viddl finds or downloads. | Use a build of your own, or the one your package manager installed. |
 | `VIDDL_FFMPEG` | The ffmpeg to use, instead of the one Viddl finds or downloads. | Same, for ffmpeg. |
 | `VIDDL_YTDLP_ARGS` | Extra options for yt-dlp, split like a shell splits them: `--limit-rate 2M --cookies-from-browser chrome`. | Slow a link down, use your browser's cookies for a site that asks you to sign in, or pass anything else yt-dlp understands. |
+| `VIDDL_TIMEOUT` | How many seconds to wait for the network, per request: `45` or `45s`, between 1 and 3600. | Give a slow link more patience, or make a site that never answers fail in seconds instead of minutes. |
 
 Each value is checked before it is used, and one that cannot be honoured is
 ignored rather than half-applied. A value that looks like an option
@@ -315,8 +316,18 @@ ignored rather than half-applied. A value that looks like an option
 folder that is really a file is refused, rather than failing later in a way
 nobody can explain; and a bare program name means your `PATH` — never the
 working directory, which is not something Viddl gets to choose when a browser
-starts it. `viddl --doctor` says which of the five are in use, which were
+starts it. `viddl --doctor` says which of the six are in use, which were
 ignored, and why.
+
+`VIDDL_TIMEOUT` moves every network wait together, because they only make sense
+as a set: yt-dlp's socket timeout (20 s by default), the longer bound on a whole
+look-up (seven and a half socket waits, 150 s), the few seconds allowed to read
+a checksum list or a mirror's size, and the check that a freshly downloaded
+ffmpeg actually runs. Left unset, each keeps the wait it was designed with; set,
+one number applies to all of them. It does not limit how long a *download* may
+take — a large file is allowed to take as long as it takes — and it does not
+change the pauses between retries. `--doctor` prints a `Network:` line either
+way, so the wait in effect is never a guess.
 
 `VIDDL_YTDLP_ARGS` is the deliberate way to ask for something unusual, because
 yt-dlp's own config file is not read at all: a line in `~/.config/yt-dlp/config`

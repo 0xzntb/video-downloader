@@ -238,7 +238,7 @@ def test_a_filesystem_without_permissions_does_not_stop_viddl(tmp_path, monkeypa
 
 @pytest.fixture
 def no_environment():
-    """Clear all four, so the platform defaults are what gets tested."""
+    """Clear every variable, so the platform defaults are what gets tested."""
     saved = {name: os.environ.pop(name, None) for name in appdata.ENVIRONMENT_VARIABLES}
     yield
     for name, value in saved.items():
@@ -253,7 +253,13 @@ def test_the_variables_are_the_ones_the_readme_lists(no_environment):
         "VIDDL_YTDLP",
         "VIDDL_FFMPEG",
         "VIDDL_YTDLP_ARGS",
+        "VIDDL_TIMEOUT",
     )
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(
+        encoding="utf-8"
+    )
+    for name in appdata.ENVIRONMENT_VARIABLES:
+        assert f"`{name}`" in readme, f"{name} is read but not documented"
 
 
 def test_a_folder_override_is_used_and_made_absolute(no_environment, tmp_path, monkeypatch):
@@ -609,3 +615,88 @@ def test_which_ignores_a_file_that_is_not_executable(tmp_path, monkeypatch):
 def test_which_returns_nothing_for_an_unknown_program(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     assert appdata.which("definitely-not-a-real-program-xyz") is None
+
+# ---------------------------------------------------------------------------
+# how long to wait for the network (R11)
+#
+# Every network wait was a constant, so a slow link could not be given more
+# patience and a fast failure could not be asked for. One variable now sets
+# them all, and it is checked like the others.
+# ---------------------------------------------------------------------------
+
+
+def test_no_timeout_means_the_built_in_waits(no_environment):
+    assert appdata.network_timeout() is None
+    assert appdata.network_timeout_problem() == ""
+
+
+def test_a_timeout_is_a_number_of_seconds(no_environment, monkeypatch):
+    monkeypatch.setenv("VIDDL_TIMEOUT", "45")
+    assert appdata.network_timeout() == 45.0
+    monkeypatch.setenv("VIDDL_TIMEOUT", "45s")
+    assert appdata.network_timeout() == 45.0
+    monkeypatch.setenv("VIDDL_TIMEOUT", " 1.5 ")
+    assert appdata.network_timeout() == 1.5
+
+
+def test_a_wait_with_no_override_keeps_its_own_default(no_environment, monkeypatch):
+    assert appdata.network_timeout_seconds(30) == 30
+    monkeypatch.setenv("VIDDL_TIMEOUT", "45")
+    assert appdata.network_timeout_seconds(30) == 45
+
+
+@pytest.mark.parametrize(
+    "value, reason",
+    [
+        ("", "empty"),
+        ("   ", "empty"),
+        ("--limit-rate", "looks like an option, not a number of seconds"),
+        ("30\n60", "contains a control character"),
+        ("fast", "not a number of seconds"),
+        ("30x", "not a number of seconds"),
+        ("0", "shorter than 1 second"),
+        ("0.5", "shorter than 1 second"),
+        ("-5", "looks like an option, not a number of seconds"),
+        ("nan", "not a real number of seconds"),
+        ("inf", "not a real number of seconds"),
+        ("7200", "longer than 3600 seconds"),
+    ],
+)
+def test_a_timeout_that_cannot_be_used_says_why(
+    no_environment, monkeypatch, value, reason
+):
+    monkeypatch.setenv("VIDDL_TIMEOUT", value)
+    assert appdata.network_timeout() is None
+    assert appdata.network_timeout_problem() == reason
+    assert appdata.network_timeout_seconds(30) == 30
+
+
+def test_the_timeout_is_not_mistaken_for_a_folder(no_environment, monkeypatch):
+    """The path check would have called a bare number "not a folder"."""
+    monkeypatch.setenv("VIDDL_TIMEOUT", "45")
+    assert appdata.overrides() == [appdata.Override("VIDDL_TIMEOUT", "45", "")]
+
+
+def test_the_report_shows_the_timeout_like_every_other_variable(
+    no_environment, monkeypatch
+):
+    monkeypatch.setenv("VIDDL_TIMEOUT", "45")
+    assert appdata.environment_report() == ["Environment:  VIDDL_TIMEOUT=45 (in use)"]
+
+    monkeypatch.setenv("VIDDL_TIMEOUT", "soon")
+    assert appdata.environment_report() == [
+        "Environment:  VIDDL_TIMEOUT=soon (ignored \u2014 not a number of seconds)"
+    ]
+
+
+def test_the_doctor_note_says_what_is_being_waited_for(no_environment, monkeypatch):
+    never_set = appdata.timeout_note()
+    assert "built-in waits" in never_set
+    assert "VIDDL_TIMEOUT" in never_set
+
+    monkeypatch.setenv("VIDDL_TIMEOUT", "45")
+    assert appdata.timeout_note() == (
+        "Network:      waiting 45s per network request (VIDDL_TIMEOUT)"
+    )
+    monkeypatch.setenv("VIDDL_TIMEOUT", "1.5")
+    assert "1.5s" in appdata.timeout_note()

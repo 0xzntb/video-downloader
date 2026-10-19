@@ -11,16 +11,20 @@ output folder; ``VIDDL_YTDLP`` and ``VIDDL_FFMPEG`` point at the two programs
 Viddl otherwise finds or fetches for itself, and ``VIDDL_YTDLP_ARGS`` adds
 extra yt-dlp options on purpose.
 
-All five are read through :func:`folder_override`, :func:`program_override` and
-:func:`ytdlp_arguments`, which check what they are given before it is used. An
-environment variable is not a command line: nobody sees it in the app, and in a
-shared checkout or a CI job it can be set by something other than the person
-using Viddl. So a value is treated as a request — one that can be refused, with
-the refusal visible in ``viddl --doctor`` — rather than as an instruction.
+The sixth, ``VIDDL_TIMEOUT``, decides how long Viddl waits for the network (R11).
+
+All six are read through :func:`folder_override`, :func:`program_override`,
+:func:`ytdlp_arguments` and :func:`network_timeout`, which check what they are
+given before it is used. An environment variable is not a command line: nobody
+sees it in the app, and in a shared checkout or a CI job it can be set by
+something other than the person using Viddl. So a value is treated as a request
+— one that can be refused, with the refusal visible in ``viddl --doctor`` —
+rather than as an instruction.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import shlex
 import shutil
@@ -32,19 +36,21 @@ from typing import List, Optional, Tuple
 
 from . import APP_NAME
 
-# The five variables Viddl reads, named once so the documentation, the doctor
+# The six variables Viddl reads, named once so the documentation, the doctor
 # output and the tests cannot drift from the code that reads them.
 ENV_HOME = "VIDDL_HOME"
 ENV_DOWNLOAD_DIR = "VIDDL_DOWNLOAD_DIR"
 ENV_YTDLP = "VIDDL_YTDLP"
 ENV_FFMPEG = "VIDDL_FFMPEG"
 ENV_YTDLP_ARGS = "VIDDL_YTDLP_ARGS"
+ENV_TIMEOUT = "VIDDL_TIMEOUT"
 ENVIRONMENT_VARIABLES = (
     ENV_HOME,
     ENV_DOWNLOAD_DIR,
     ENV_YTDLP,
     ENV_FFMPEG,
     ENV_YTDLP_ARGS,
+    ENV_TIMEOUT,
 )
 
 # Options Viddl builds for itself, by short and long name. A value that sets one
@@ -282,6 +288,74 @@ def ytdlp_arguments_problem() -> str:
     return _arguments(_asked(ENV_YTDLP_ARGS))[1]
 
 
+#: How long a single network wait may be asked for through ``VIDDL_TIMEOUT``.
+#: The lower bound is what keeps a slip of the keyboard — ``0``, a stray space —
+#: from turning every request into an instant failure; the upper one is an hour,
+#: past which the app would outlast the person waiting for it.
+_MIN_TIMEOUT_SECONDS = 1.0
+_MAX_TIMEOUT_SECONDS = 3600.0
+
+
+def _timeout_seconds(value: str) -> Tuple[Optional[float], str]:
+    """``"45"`` -> ``(45.0, "")``; anything else says why it cannot be used."""
+    text = value.strip()
+    if not text:
+        return None, "empty"
+    if text.startswith("-"):
+        return None, "looks like an option, not a number of seconds"
+    if any(character in text for character in "\x00\n\r"):
+        return None, "contains a control character"
+    if text[-1].lower() == "s":
+        # "30s" is how people write a duration; the number is what matters.
+        text = text[:-1].strip()
+    try:
+        seconds = float(text)
+    except ValueError:
+        return None, "not a number of seconds"
+    if not math.isfinite(seconds):
+        return None, "not a real number of seconds"
+    if seconds < _MIN_TIMEOUT_SECONDS:
+        return None, f"shorter than {_MIN_TIMEOUT_SECONDS:g} second"
+    if seconds > _MAX_TIMEOUT_SECONDS:
+        return None, f"longer than {_MAX_TIMEOUT_SECONDS:g} seconds"
+    return seconds, ""
+
+
+def network_timeout() -> Optional[float]:
+    """The wait ``VIDDL_TIMEOUT`` asks for, or ``None`` for Viddl's own waits.
+
+    ``None`` rather than a number, so every caller keeps the wait it was
+    designed with when the user has said nothing (R11): the app's defaults
+    differ on purpose — 30 s for a helper download, 20 s on a yt-dlp socket,
+    seven and a half of those for a whole look-up — and one variable cannot
+    express all of them.
+    """
+    if ENV_TIMEOUT not in os.environ:
+        return None
+    return _timeout_seconds(_asked(ENV_TIMEOUT))[0]
+
+
+def network_timeout_problem() -> str:
+    """Why ``VIDDL_TIMEOUT`` cannot be used, or ``""`` when it can (or is unset)."""
+    if ENV_TIMEOUT not in os.environ:
+        return ""
+    return _timeout_seconds(_asked(ENV_TIMEOUT))[1]
+
+
+def network_timeout_seconds(default: float) -> float:
+    """``VIDDL_TIMEOUT`` when it is set and usable, otherwise ``default``."""
+    seconds = network_timeout()
+    return default if seconds is None else seconds
+
+
+def timeout_note() -> str:
+    """One ``--doctor`` line saying what Viddl waits for (R11)."""
+    seconds = network_timeout()
+    if seconds is None:
+        return "Network:      built-in waits (set VIDDL_TIMEOUT to change them)"
+    return f"Network:      waiting {seconds:g}s per network request (VIDDL_TIMEOUT)"
+
+
 def overrides() -> List[Override]:
     """Every environment variable that is set, and what became of it.
 
@@ -295,12 +369,14 @@ def overrides() -> List[Override]:
         value = _asked(name)
         if name == ENV_YTDLP_ARGS:
             problem = ytdlp_arguments_problem()
+        elif name == ENV_TIMEOUT:
+            problem = network_timeout_problem()
         else:
             problem = _refuse(value)
         if not problem:
             if name in (ENV_YTDLP, ENV_FFMPEG):
                 problem = "" if program_override(name) else "not a program Viddl can run"
-            elif name != ENV_YTDLP_ARGS:
+            elif name not in (ENV_YTDLP_ARGS, ENV_TIMEOUT):
                 problem = "" if folder_override(name) else "not a folder"
         found.append(Override(name, value, problem))
     return found
