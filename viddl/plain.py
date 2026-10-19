@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable, Optional, TextIO
 
 from . import appdata
+from . import cookies as cookies_mod
 from .download import DownloadCancelled, DownloadJob, Progress, probe_video
 from .engine import Engine, ToolError
 from .formats import MediaInfo, MediaOption
@@ -288,6 +289,7 @@ def run_plain(
     audio: bool = False,
     quality: str = "",
     assume_yes: bool = False,
+    cookies: str = "",
     engine: Optional[Engine] = None,
     probe: Callable[..., MediaInfo] = probe_video,
     make_job: Callable[..., DownloadJob] = DownloadJob,
@@ -301,15 +303,21 @@ def run_plain(
     Everything a person reads goes to stderr; the saved path is the only thing
     on stdout, so ``path=$(viddl --plain --yes <link>)`` works. The exit codes
     match the rest of the CLI: 0 worked, 1 did not, 130 was stopped.
+
+    ``cookies`` names a browser whose own cookie store yt-dlp may read for this
+    one download (F1). The sentence saying so is printed before anything is
+    fetched, because a script's log should record what was asked of the site.
     """
     out = stdout or sys.stdout
     err = stderr or sys.stderr
     stdin = stdin or sys.stdin
     engine = engine or Engine()
 
+    if cookies:
+        _say(err, cookies_mod.active_note(cookies_mod.label_for(cookies)))
     _say(err, f"Looking up {url}")
     try:
-        info = probe(engine, url)
+        info = probe(engine, url, cookies=cookies)
     except ToolError as exc:
         _say(err, f"error: {exc.message}")
         if exc.hint:
@@ -352,7 +360,9 @@ def run_plain(
 
     job = None
     try:
-        job = make_job(engine, url, chosen, downloads_dir(), on_progress=on_progress)
+        job = make_job(
+            engine, url, chosen, downloads_dir(), on_progress=on_progress, cookies=cookies
+        )
         path = job.run()
     except KeyboardInterrupt:
         if job is not None:

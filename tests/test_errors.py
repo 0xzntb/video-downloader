@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from viddl.errors import explain
+from viddl.errors import SIGN_IN_MARK, explain
 
 
 @pytest.mark.parametrize(
@@ -184,3 +184,39 @@ def test_a_stopped_download_with_no_output_is_treated_as_temporary():
     assert explain("", exit_code=1).temporary is True
     # With no exit code and no output there is nothing to suggest a retry helps.
     assert explain("").temporary is False
+
+# ---------------------------------------------------------------------------
+# a cookie read that failed, and a site that wants cookies (F1)
+#
+# The two are different failures with the same word in them, and yt-dlp uses
+# "cookies" for both. The rule order is therefore part of the behaviour: the
+# read failure has to be named before the sign-in rule can swallow it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # The real wording from yt-dlp 2026.08.19, on a machine with no Chrome.
+        'ERROR: could not find chrome cookies database in "/home/me/.config/google-chrome"',
+        "ERROR: Could not copy Chrome cookie database. See https://github.com/yt-dlp/yt-dlp/issues/7271",
+        "ERROR: failed to decrypt with DPAPI",
+        "ERROR: unable to open cookies database",
+    ],
+)
+def test_a_cookie_read_that_failed_is_its_own_explanation(raw):
+    friendly = explain(raw)
+    assert "could not read your browser's cookies" in friendly.message
+    hint = (friendly.hint or "").lower()
+    assert "close the browser" in hint, "the likeliest reason is not named"
+    assert "sign in to the site" in hint
+
+
+def test_the_advice_for_a_sign_in_names_the_row_that_signs_in():
+    """The feature exists now, so the old "which Viddl does not do yet" is gone."""
+    friendly = explain("ERROR: Sign in to confirm you're not a bot")
+    assert SIGN_IN_MARK in (friendly.hint or "")
+    assert "does not do yet" not in (friendly.hint or "")
+    # The mark itself is what the screen looks for, so it has to be the words
+    # the interface actually uses.
+    assert SIGN_IN_MARK == "Sign in with my browser"

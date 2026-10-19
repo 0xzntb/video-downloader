@@ -105,6 +105,7 @@ Nothing is installed system-wide and no configuration files are created.
 | Start it | `viddl` |
 | Go straight to a link | `viddl https://www.youtube.com/watch?v=…` |
 | Start on the MP3 options | `viddl --audio <link>` |
+| Download something that needs a sign-in | Choose **Sign in with my browser** on the qualities screen, or `viddl --cookies-from-browser auto <link>` |
 | Use it in a script, an old console or over SSH | `viddl --plain --yes <link>` |
 | Pick the quality without a menu | `viddl --plain --quality 720 <link>` |
 | See what qualities a link has, without downloading | `viddl --list-qualities <link>` |
@@ -166,6 +167,44 @@ Pick any `Audio only · MP3` row. Viddl downloads the best audio stream the site
 offers and converts it with ffmpeg. Sizes are marked `~` because MP3 encoding is
 variable — the estimate is capped by the source quality, so it never promises
 more than you can get.
+
+## Sites that want you to sign in
+
+Instagram, Threads, and sometimes Vimeo or TikTok answer only to a signed-in
+session, and so do age-restricted or bot-checked videos. Viddl's qualities
+screen offers a **Sign in with my browser** row for these — one row per browser
+it finds on your computer (Chrome, Firefox, Edge, Brave and, on a Mac, Safari).
+Choosing it asks the site again, this time through the cookies that browser
+already has, and every later download on that screen uses them too. Choose the
+row again to stop.
+
+What that means, in full, because it is the only part of Viddl that touches an
+account's files:
+
+* **Viddl never reads a cookie itself, and never sees a password.** It tells
+yt-dlp to read the browser's own store, in place, and *only* the cookies for the
+site you are downloading.
+* **Nothing is copied, exported or saved.** No cookie file is written, no
+credential is stored, and the log never contains one. Choosing the row starts
+nothing by itself — it applies to the link on that screen and to downloads you
+start from it.
+* **It is per download, not per account.** Nothing is remembered next time you
+open Viddl; the app starts signed out every time.
+* **An open browser can hold the store locked.** If the read fails, Viddl says
+so and suggests closing the browser, signing in to the site first, or choosing a
+different browser — rather than showing yt-dlp's error.
+
+From the command line the same choice is `--cookies-from-browser`:
+
+```sh
+viddl --cookies-from-browser auto <link>      # whichever browser is installed
+viddl --plain --yes --cookies-from-browser firefox <link>
+viddl --list-qualities --cookies-from-browser chrome <link>
+```
+
+`auto` picks the first browser found; a name it does not know is refused before
+anything runs. `viddl --doctor` prints a `Cookies:` line naming the browsers it
+could see, which is the first thing to check if a sign-in did not help.
 
 ## The browser extension
 
@@ -382,8 +421,8 @@ Regenerate the extension icons with `python3 tools/make_icons.py`.
 * Instagram, Threads, and sometimes Vimeo or TikTok ask for a login on some
   networks (they are stricter with datacenter connections than with home ones).
   When that happens Viddl says *"The site wants you to be signed in to watch
-  this one"* rather than showing a stack trace. Signed-in downloads are not
-  supported yet, so those links need a different approach.
+  this one"* and points at the **Sign in with my browser** row, which is how you
+  get those links — see *Sites that want you to sign in* above.
 * Everything runs through yt-dlp's own extractors, which is why the same list of
   sites works here as there — and why a link that works one week can stop
   working the next until yt-dlp updates. That is what `viddl --update` is for;

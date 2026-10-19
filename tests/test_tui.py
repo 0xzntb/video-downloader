@@ -29,6 +29,7 @@ from viddl.tui.app import (
     OptionsScreen,
     ResultScreen,
     Services,
+    SignIn,
     StoppedScreen,
     ViddlApp,
     _open_folder,
@@ -98,10 +99,14 @@ class FakeEngine:
 class FakeJob:
     """Writes a real file so the result screen can show its size."""
 
-    def __init__(self, engine, url, option, out_dir, on_progress=None, on_log=None):
+    def __init__(
+        self, engine, url, option, out_dir, on_progress=None, on_log=None, cookies=""
+    ):
         self.option = option
         self.out_dir = Path(out_dir)
         self.on_progress = on_progress
+        # What the job would have asked the browser for (F1).
+        self.cookies = cookies
         self.cancelled = False
 
     def run(self):
@@ -257,13 +262,34 @@ class SlowFfmpegEngine(FakeEngine):
         return Tool("ffmpeg", ["/fake/ffmpeg"], "viddl", version="7.0")
 
 
-def make_services(tmp_path: Path, engine=None, info=None, job_class=FakeJob) -> Services:
+class StubProbe:
+    """The look-up the screen calls: fixed metadata, and what it was asked.
+
+    It accepts — and records — the cookie choice, because that is the one
+    declaration that changes the answer the site gives (F1).
+    """
+
+    def __init__(self, info: MediaInfo):
+        self.info = info
+        self.calls: list = []
+
+    def __call__(self, engine, url, cancel=None, cookies="", **kwargs):
+        self.calls.append({"url": url, "cookies": cookies})
+        return self.info
+
+
+def make_services(
+    tmp_path: Path, engine=None, info=None, job_class=FakeJob, browsers=()
+) -> Services:
     info = info if info is not None else parse_info(INFO_JSON)
     return Services(
         engine=engine or FakeEngine(),
-        probe=lambda eng, url, cancel=None: info,
+        probe=StubProbe(info),
         make_job=job_class,
         downloads_dir=lambda: tmp_path / "Downloads",
+        # No browser unless a test says so: what is installed on the machine
+        # running the suite must not change what the suite sees (F1).
+        browsers=lambda: list(browsers),
     )
 
 
@@ -481,7 +507,7 @@ async def test_audio_flag_starts_on_the_mp3_options(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_bad_link_explains_itself(tmp_path):
-    def explode(engine, url, cancel=None):
+    def explode(engine, url, cancel=None, cookies=""):
         raise ToolError("That video is private.", "Only the owner can download it.")
 
     services = make_services(tmp_path)
@@ -858,7 +884,9 @@ async def test_an_option_shaped_link_is_refused_before_any_probe(tmp_path):
     """Typing a flag at the app must not turn into a flag for yt-dlp."""
     probed = []
     services = make_services(tmp_path)
-    services.probe = lambda engine, url, cancel=None: probed.append(url) or parse_info(INFO_JSON)
+    services.probe = lambda engine, url, cancel=None, cookies="": (
+        probed.append(url) or parse_info(INFO_JSON)
+    )
     app = ViddlApp(services=services)
 
     async with app.run_test(size=(100, 32)) as pilot:
@@ -877,7 +905,9 @@ async def test_an_option_shaped_link_is_refused_before_any_probe(tmp_path):
 async def test_a_hand_off_carrying_an_option_is_refused(tmp_path):
     probed = []
     services = make_services(tmp_path)
-    services.probe = lambda engine, url, cancel=None: probed.append(url) or parse_info(INFO_JSON)
+    services.probe = lambda engine, url, cancel=None, cookies="": (
+        probed.append(url) or parse_info(INFO_JSON)
+    )
     app = ViddlApp(services=services)
 
     async with app.run_test(size=(100, 32)) as pilot:
@@ -897,7 +927,9 @@ async def test_an_option_shaped_starting_link_never_reaches_the_probe(tmp_path):
     """A link arriving on the command line is still a link from outside."""
     probed = []
     services = make_services(tmp_path)
-    services.probe = lambda engine, url, cancel=None: probed.append(url) or parse_info(INFO_JSON)
+    services.probe = lambda engine, url, cancel=None, cookies="": (
+        probed.append(url) or parse_info(INFO_JSON)
+    )
     app = ViddlApp(initial_url="--exec=calc.exe", services=services)
 
     async with app.run_test(size=(100, 32)) as pilot:
@@ -997,7 +1029,7 @@ class SlowProbe:
         self.cancel_seen = threading.Event()
         self.calls = 0
 
-    def __call__(self, engine, url, cancel=None):
+    def __call__(self, engine, url, cancel=None, cookies=""):
         self.calls += 1
         self.started.set()
         while not self.release.is_set():
@@ -1473,3 +1505,258 @@ def test_open_folder_explains_when_it_cannot(monkeypatch, tmp_path):
     problem = _open_folder(tmp_path)
     assert problem is not None
     assert "Could not open the folder" in problem
+
+# ---------------------------------------------------------------------------
+# signing in with the browser's cookies (F1)
+#
+# The row exists because some links answer only to a signed-in session. It is
+# not a quality, so what these tests hold is: it appears for the browsers that
+# are installed, choosing it re-asks the site rather than downloading, the
+# interface says what is being read, and the download then uses it.
+# ---------------------------------------------------------------------------
+
+
+def sign_in_rows_of(screen) -> list:
+    choices = screen.query_one("#choices", ChoiceList)
+    return [
+        choices.value_at(index)
+        for index in range(choices.row_count)
+        if isinstance(choices.value_at(index), SignIn)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_browser_that_is_installed_is_offered_as_a_row(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path, browsers=["chrome"]))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        choices = app.screen.query_one("#choices", ChoiceList)
+
+        assert choices.row_count == 6, "five qualities and one sign-in row"
+        row = choices.value_at(5)
+        assert isinstance(row, SignIn)
+        assert row.label == "Sign in with Chrome"
+        assert row.browser == "chrome"
+
+        choices.select_index(5)
+        await pilot.pause()
+        note = shown(app.screen, "#options-note")
+        # The whole sentence, because it is the only place this decision is
+        # explained: what is read, how much of it, and that nothing is kept.
+        assert "cookies it already has" in note
+        assert "for this download only" in note
+        assert "password is never read" in note
+        assert "nothing is saved" in note
+
+
+@pytest.mark.asyncio
+async def test_every_browser_found_gets_its_own_row(tmp_path):
+    """Which session to read is the user's decision, not a guess."""
+    services = make_services(tmp_path, browsers=["chrome", "firefox", "safari"])
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        labels = [row.label for row in sign_in_rows_of(app.screen)]
+
+        assert labels == [
+            "Sign in with Chrome",
+            "Sign in with Firefox",
+            "Sign in with Safari",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_no_browser_means_no_sign_in_row(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        assert app.screen.query_one("#choices", ChoiceList).row_count == 5
+        assert sign_in_rows_of(app.screen) == []
+
+
+@pytest.mark.asyncio
+async def test_choosing_the_row_re_asks_the_site_signed_in(tmp_path):
+    probe = StubProbe(parse_info(INFO_JSON))
+    services = make_services(tmp_path, browsers=["chrome"])
+    services.probe = probe
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        choices = app.screen.query_one("#choices", ChoiceList)
+        choices.select_index(5)
+        await pilot.press("enter")
+        await settle(pilot)
+
+        assert app.state.cookies_browser == "chrome"
+        assert [call["cookies"] for call in probe.calls] == ["", "chrome"]
+        # The state is visible: the row says what it is doing, and so does the
+        # heading — a download reading an account's cookies must not look like
+        # one that is not.
+        assert choices.value_at(5).label == "Signing in with Chrome"
+        assert "signed in with Chrome" in shown(app.screen, "#options-heading")
+
+        choices.select_index(5)
+        await pilot.pause()
+        assert "Using Chrome's cookies" in shown(app.screen, "#options-note")
+
+
+@pytest.mark.asyncio
+async def test_the_cookies_can_be_turned_off_again(tmp_path):
+    probe = StubProbe(parse_info(INFO_JSON))
+    services = make_services(tmp_path, browsers=["chrome"])
+    services.probe = probe
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        choices = app.screen.query_one("#choices", ChoiceList)
+        for _ in range(2):
+            choices.select_index(5)
+            await pilot.press("enter")
+            await settle(pilot)
+
+        assert app.state.cookies_browser == ""
+        assert [call["cookies"] for call in probe.calls] == ["", "chrome", ""]
+        assert choices.value_at(5).label == "Sign in with Chrome"
+
+
+@pytest.mark.asyncio
+async def test_the_app_can_start_already_signed_in(tmp_path):
+    probe = StubProbe(parse_info(INFO_JSON))
+    services = make_services(tmp_path, browsers=["chrome"])
+    services.probe = probe
+    app = ViddlApp(initial_url=URL, cookies="chrome", services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        assert probe.calls[0]["cookies"] == "chrome"
+        assert app.screen.query_one("#choices", ChoiceList).value_at(5).label == (
+            "Signing in with Chrome"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_name_that_is_not_a_browser_is_not_used(tmp_path):
+    """A flag arriving on the command line must not become a cookie read."""
+    app = ViddlApp(
+        initial_url=URL, cookies="--exec=calc.exe", services=make_services(tmp_path)
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        assert app.state.cookies_browser == ""
+
+
+@pytest.mark.asyncio
+async def test_a_download_uses_the_browser_that_signed_it_in(tmp_path):
+    RecordingJob.started.clear()
+    services = make_services(tmp_path, browsers=["brave"], job_class=RecordingJob)
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        choices = app.screen.query_one("#choices", ChoiceList)
+        choices.select_index(5)
+        await pilot.press("enter")  # sign in
+        await settle(pilot)
+        await pilot.press("enter")  # take the first quality
+        await settle(pilot)
+
+        assert RecordingJob.started, "no download was started"
+        assert RecordingJob.started[0].cookies == "brave"
+
+
+@pytest.mark.asyncio
+async def test_the_download_button_does_not_download_the_sign_in_row(tmp_path):
+    """The row is a thing to click, not a thing to download."""
+    RecordingJob.started.clear()
+    services = make_services(tmp_path, browsers=["chrome"], job_class=RecordingJob)
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        app.screen.query_one("#choices", ChoiceList).select_index(5)
+        await pilot.pause()
+
+        with captured_notifications(app) as noted:
+            await pilot.click("#download")
+            await pilot.pause()
+
+        assert RecordingJob.started == []
+        assert any("Choose a quality" in message for message in noted.messages)
+
+class SignInThenWork:
+    """A look-up that fails the way a private video does, then succeeds.
+
+    This is the whole point of the feature: the anonymous look-up is refused by
+    the site, and the same link answers once a browser's cookies are read.
+    """
+
+    def __init__(self, info: MediaInfo):
+        self.info = info
+        self.calls: list = []
+
+    def __call__(self, engine, url, cancel=None, cookies="", **kwargs):
+        self.calls.append(cookies)
+        if not cookies:
+            raise ToolError(
+                "The site wants you to be signed in to watch this one.",
+                "Choose \u201cSign in with my browser\u201d and Viddl will read the "
+                "cookies that browser already has.",
+            )
+        return self.info
+
+
+@pytest.mark.asyncio
+async def test_a_link_that_needs_a_sign_in_offers_the_row_and_then_works(tmp_path):
+    """A hint that says \"choose the sign-in row\" needs a row to choose (F1)."""
+    probe = SignInThenWork(parse_info(INFO_JSON))
+    services = make_services(tmp_path, browsers=["firefox"])
+    services.probe = probe
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        # The look-up failed, and the way out is in the list rather than only
+        # in the sentence above it.
+        assert "signed in" in shown(app.screen, "#options-status")
+        choices = app.screen.query_one("#choices", ChoiceList)
+        assert choices.row_count == 1
+        assert choices.value_at(0).label == "Sign in with Firefox"
+
+        await pilot.press("enter")
+        await settle(pilot)
+
+        assert probe.calls == ["", "firefox"]
+        assert app.state.cookies_browser == "firefox"
+        # Same screen, now with the qualities the site only shows signed in.
+        assert app.screen.query_one("#choices", ChoiceList).row_count == 6
+        assert "signed in with Firefox" in shown(app.screen, "#options-heading")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_look_up_with_no_browser_offers_nothing_to_choose(tmp_path):
+    probe = SignInThenWork(parse_info(INFO_JSON))
+    services = make_services(tmp_path)
+    services.probe = probe
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        assert isinstance(app.screen, OptionsScreen)
+        assert app.screen.query_one("#choices", ChoiceList).row_count == 0
+        # Advice that points at a row this computer cannot offer is replaced
+        # with what is actually missing.
+        note = shown(app.screen, "#options-note")
+        assert "needs a browser on this computer" in note
+        assert "Sign in with my browser" not in note

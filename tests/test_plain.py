@@ -94,10 +94,14 @@ class FakeJob:
 
     made: list = []
 
-    def __init__(self, engine, url, option, out_dir, on_progress=None, on_log=None):
+    def __init__(
+        self, engine, url, option, out_dir, on_progress=None, on_log=None, cookies=""
+    ):
         self.option = option
         self.out_dir = Path(out_dir)
         self.on_progress = on_progress
+        # The browser the download was told to read, if any (F1).
+        self.cookies = cookies
         self.cancelled = False
         self.force_cancelled = False
         FakeJob.made.append(self)
@@ -169,7 +173,7 @@ def run(url=URL, *, info=None, job_class=FakeJob, probe=None, engine=None, **kwa
     if probe is None:
         info = info if info is not None else media()
 
-        def probe(engine, link):
+        def probe(engine, link, cookies=""):
             return info
 
     code = plain.run_plain(
@@ -339,7 +343,7 @@ def test_audio_only_works_from_the_command_line():
 
 
 def test_a_failed_look_up_is_a_sentence_not_a_traceback():
-    def probe(engine, link):
+    def probe(engine, link, cookies=""):
         raise ToolError("That video is private.", "Only the owner can download it.")
 
     code, out, err = run(probe=probe)
@@ -496,7 +500,13 @@ def test_the_cli_hands_the_choices_to_the_plain_path(monkeypatch):
     monkeypatch.setattr(plain, "run_plain", fake_run_plain)
 
     assert cli.main(["--plain", "--yes", "--quality", "720", URL]) == 0
-    assert seen == {"url": URL, "audio": False, "quality": "720", "assume_yes": True}
+    assert seen == {
+        "url": URL,
+        "audio": False,
+        "quality": "720",
+        "assume_yes": True,
+        "cookies": "",
+    }
 
 
 def test_the_cli_passes_audio_through(monkeypatch):
@@ -505,3 +515,39 @@ def test_the_cli_passes_audio_through(monkeypatch):
 
     assert cli.main(["--plain", "--audio", "--yes", URL]) == 0
     assert seen["audio"] is True
+
+def test_plain_says_what_reading_cookies_means(tmp_path):
+    """The sentence goes out before the download, where a log can keep it."""
+    seen: dict = {}
+
+    def probe(engine, link, cookies=""):
+        seen["probe"] = cookies
+        return media()
+
+    code, out, err = run(assume_yes=True, probe=probe, cookies="chrome")
+
+    assert code == 0
+    assert seen["probe"] == "chrome"
+    assert FakeJob.made[0].cookies == "chrome"
+    assert "Using Chrome's cookies" in err
+    assert "for this download only" in err
+    assert "Nothing was stored" in err
+    assert err.isascii()
+    # Standard output stays the path and nothing else: a script reads it.
+    assert "cookie" not in out.lower()
+    assert out.strip().endswith(".mp4")
+
+
+def test_without_a_cookie_choice_nothing_is_claimed():
+    code, out, err = run(assume_yes=True)
+    assert code == 0
+    assert "cookies" not in err.lower()
+    assert FakeJob.made[0].cookies == ""
+
+
+def test_the_cookie_choice_reaches_the_plain_path(monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(plain, "run_plain", lambda url, **kwargs: seen.update(kwargs) or 0)
+
+    assert cli.main(["--cookies-from-browser", "chrome", "--plain", "--yes", URL]) == 0
+    assert seen["cookies"] == "chrome"

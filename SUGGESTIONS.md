@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **20 of 60** — S1–S6 in section 1, R1–R11 in section 2, U4 in
-section 4, D2–D3 in section 6.
+Progress so far: **21 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1 in
+section 3, U4 in section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
 down keeps a secret, and a web page can no longer start it *doing* anything —
@@ -960,7 +960,7 @@ and leave the presentation ones alone unless someone asks.
 
 ## 3. Functionality
 
-### F1 — Cookies from the browser · **P1** · M
+### F1 — Cookies from the browser · **P1** · M · ✅ **Done**
 
 The README lists Instagram, Threads, and sometimes Vimeo/TikTok as needing a
 signed-in session and says "signed-in downloads are not supported yet". yt-dlp
@@ -973,6 +973,77 @@ from what is installed). Must never store credentials: rely on yt-dlp reading th
 browser's cookie store. Add a clear note that this reads local browser cookies
 for that site only — it is a trust-sensitive feature, so say so in the UI, not
 just the README.
+
+> **Fixed — and the README no longer lists signed-in sites as a dead end.**
+>
+> **A row per browser that is installed.** `viddl/cookies.py` knows the five
+> browsers yt-dlp accepts (Chrome, Firefox, Edge, Brave, Safari) and where each
+> keeps its data on Windows, macOS and Linux; the qualities screen offers a
+> `Sign in with Chrome` row for every one it finds there. Choosing it re-runs the
+> look-up with `--cookies-from-browser <browser>`, and every download started
+> afterwards carries the same argument; choosing it again turns it off. Safari
+> exists only on macOS, and a folder that is not there is not offered — but the
+> table keeps it, because "not installed" is worth saying rather than ignoring.
+>
+> **The state is visible, not implied.** The row reads `Signing in with Chrome`
+> while it is on, the heading under the video title says `signed in with Chrome`,
+> and a notification says which browser is being read. A download that acts as an
+> account must never look like one that does not.
+>
+> **What is read is said in the interface, before the click** — which is what the
+> item asked for, so it is the row's own note: *"Viddl will ask Chrome for the
+> cookies it already has for this site, and use them for this download only. Your
+> password is never read and nothing is saved."* While it is on the note becomes
+> the same promise in the present tense, ending *"Choose the row again to turn it
+> off."* `--plain` prints that sentence to stderr before it downloads anything, so
+> a script's log records what was asked of the site. `SECURITY.md` gained the
+> matching line on both sides: a web page cannot set the choice, and the reader is
+> told what it costs.
+>
+> **Nothing is stored, and nothing else can get in.** Viddl reads no cookie
+> itself, asks for no password and writes no cookie file: it passes a browser's
+> *name* to yt-dlp, which reads the store in place. That name is checked against
+> the closed list in `cookies.BROWSER_KEYS` at the last step before the command
+> line, so `--exec=calc.exe`, `netscape`, `cookies.txt` and `chrome; rm -rf /` all
+> become *no arguments at all* — held by
+> `test_a_name_that_is_not_a_browser_never_reaches_a_command_line`. A `viddl://`
+> hand-off cannot turn it on: the choice is a click on the qualities screen or a
+> validated flag. A signed-in look-up is also a different entry in the remembered
+> answers (`probe_key`), so one viewer's session cannot serve the next anonymous
+> look-up.
+>
+> **Failures are explained rather than echoed.** yt-dlp's real wording —
+> `ERROR: could not find chrome cookies database in …`, taken from yt-dlp
+> 2026.08.19 — becomes *"Viddl could not read your browser's cookies."* with the
+> three things worth trying: sign in there first, close the browser, or pick a
+> different browser. The older "the site wants you to be signed in" rule now
+> points at the new row instead of saying the feature does not exist.
+>
+> **CLI and doctor.** `--cookies-from-browser auto|chrome|firefox|edge|brave|safari`
+> works with the app, with `--plain` and with `--list-qualities`; `auto` takes the
+> first browser found and is refused, with advice, when there is none. Safari on
+> Windows or Linux is refused before anything runs. `viddl --doctor` gained a
+> `Cookies:` line naming what it could see, or saying none was found.
+>
+> **The row is where the dead end is, not only where the menu is.** A link that
+> answers only to a signed-in session fails the look-up, so the sign-in rows are
+> offered on the failure screen too — the advice would otherwise point at a row
+> that is not on screen. On a computer with no browser at all, that advice is
+> replaced with what is actually missing rather than left pointing at nothing.
+>
+> **56 new tests** (602 → 658; 24 of them in `tests/test_cookies.py` over browser
+> detection, the closed list, the notes, the refusals and the advice), `pyflakes`
+> clean, coverage 95% overall and 99% on `cookies.py`.
+>
+> **Measured with real yt-dlp 2026.08.19, and one thing not measured.** An
+> anonymous look-up still works (1.7 s); `cookies="chrome"` reaches yt-dlp — seen
+> in the recorded argv — and fails in 0.5 s with the translated sentence, before
+> any extraction; the same with an empty Chrome profile, so the translation is not
+> tuned to one string. The three CLI refusals were run for real. **The positive
+> path was not observed:** no browser is installed in this environment and no
+> signed-in account exists here, so "a real session unlocks a private video" rests
+> on yt-dlp's own documented behaviour and on the argument reaching it intact —
+> not on a download this repository performed.
 
 ### F2 — Playlists · **P1** · M
 

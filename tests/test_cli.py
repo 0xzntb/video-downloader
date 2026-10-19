@@ -294,7 +294,9 @@ def test_list_qualities_prints_the_menu(monkeypatch, capsys):
             MediaOption(key="360", label="360p", size_bytes=9_000_000),
         ],
     )
-    monkeypatch.setattr("viddl.download.probe_video", lambda engine, url: info)
+    monkeypatch.setattr(
+        "viddl.download.probe_video", lambda engine, url, cookies="": info
+    )
     assert main(["--list-qualities", URL]) == 0
     out = capsys.readouterr().out
     assert "A Very Real Video" in out
@@ -305,7 +307,9 @@ def test_list_qualities_prints_the_menu(monkeypatch, capsys):
 
 def test_list_qualities_omits_an_unknown_uploader(monkeypatch, capsys):
     info = MediaInfo(url=URL, title="Untitled upload", uploader="")
-    monkeypatch.setattr("viddl.download.probe_video", lambda engine, url: info)
+    monkeypatch.setattr(
+        "viddl.download.probe_video", lambda engine, url, cookies="": info
+    )
     assert main(["--list-qualities", URL]) == 0
     assert capsys.readouterr().out.startswith("Untitled upload")
 
@@ -316,7 +320,7 @@ def test_list_qualities_rejects_a_sentence(capsys):
 
 
 def test_list_qualities_explains_a_failed_probe(monkeypatch, capsys):
-    def boom(engine, url):
+    def boom(engine, url, cookies=""):
         raise ToolError(
             "The video engine could not be started.",
             "Try running Viddl again.",
@@ -355,7 +359,7 @@ def _capture_run(monkeypatch) -> dict:
     seen: dict = {}
     monkeypatch.setattr(
         "viddl.tui.app.run",
-        lambda *, url, audio: seen.update(url=url, audio=audio),
+        lambda *, url, audio, cookies="": seen.update(url=url, audio=audio),
     )
     return seen
 
@@ -466,7 +470,7 @@ def test_a_scheme_shaped_argument_is_refused(monkeypatch, capsys):
 
 
 def test_no_real_terminal_is_explained(monkeypatch, capsys):
-    def no_terminal(*, url, audio):
+    def no_terminal(*, url, audio, cookies=""):
         raise OSError("Inappropriate ioctl for device")
 
     monkeypatch.setattr("viddl.tui.app.run", no_terminal)
@@ -508,3 +512,60 @@ def test_the_doctor_says_what_it_waits_for(capsys, monkeypatch):
     monkeypatch.setenv("VIDDL_TIMEOUT", "45")
     assert main(["--doctor"]) == 0
     assert "Network:      waiting 45s per network request" in capsys.readouterr().out
+
+# ---------------------------------------------------------------------------
+# --cookies-from-browser (F1)
+# ---------------------------------------------------------------------------
+
+
+def _capture_cookies(monkeypatch) -> dict:
+    """Record only the cookie choice, so the older comparisons stay exact."""
+    seen: dict = {}
+    monkeypatch.setattr(
+        "viddl.tui.app.run",
+        lambda *, url, audio, cookies="": seen.update(cookies=cookies),
+    )
+    return seen
+
+
+def test_the_cookie_choice_reaches_the_app(monkeypatch):
+    seen = _capture_cookies(monkeypatch)
+
+    assert main(["--cookies-from-browser", "firefox", URL]) == 0
+
+    assert seen == {"cookies": "firefox"}
+
+
+def test_auto_takes_the_browser_that_is_installed(monkeypatch):
+    monkeypatch.setattr(
+        "viddl.cookies.installed_keys", lambda **kwargs: ["brave"]
+    )
+    seen = _capture_cookies(monkeypatch)
+
+    assert main(["--cookies-from-browser", "auto", URL]) == 0
+
+    assert seen == {"cookies": "brave"}
+
+
+def test_auto_with_nothing_installed_is_refused(monkeypatch, capsys):
+    monkeypatch.setattr("viddl.cookies.installed_keys", lambda **kwargs: [])
+
+    assert main(["--cookies-from-browser", "auto", URL]) == 1
+
+    err = capsys.readouterr().err
+    assert "No browser was found" in err
+    assert "Sign in to the site in a browser first" in err
+
+
+def test_an_unknown_browser_is_refused_before_anything_runs(capsys):
+    assert main(["--cookies-from-browser", "netscape", "--plain", "--yes", URL]) == 1
+
+    err = capsys.readouterr().err
+    assert "not a browser Viddl knows" in err
+    for key in ("chrome", "firefox", "edge", "brave", "safari"):
+        assert key in err
+
+
+def test_the_doctor_says_which_browsers_could_sign_in(capsys):
+    assert main(["--doctor"]) == 0
+    assert "Cookies:" in capsys.readouterr().out

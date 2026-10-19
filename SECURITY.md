@@ -41,6 +41,7 @@ and cannot achieve, and where each guarantee is enforced.
 | Get a second hand-off acted on straight away | Hand-offs closer together than a few seconds are collapsed into one: the app still opens, without a link. Bursts are what a page in a loop looks like. |
 | Slip something into the log | Every log line, tracebacks included, is passed through `util.redact()`, which removes credentials and signature parameters from links. |
 | Read what Viddl installed or logged | The app's own folder and the folder holding yt-dlp and ffmpeg are `0700`, the log is `0600`, and the downloaded programs themselves are `0700`. |
+| Read your browser's cookies | The cookie choice is made on the qualities screen, by a person, and only for the link on that screen; a `viddl://` hand-off cannot set it. The name it accepts is checked against a closed list of browsers before it reaches a command line, so nothing else can be smuggled in as one. |
 | Have unverified bytes run | Every download is checked against a published SHA-256 (yt-dlp's `SHA2-256SUMS`, the ffmpeg builds' `checksums.sha256`, or a hash pinned in the source) *before* it is written to its final path. A mismatch is refused and deleted. A mirror that publishes only an MD5 is not used at all. |
 
 Read from the other side, that is the promise: a link from a web page is only
@@ -74,6 +75,15 @@ in it that you can ignore.
   does, `--exec` included. The checks stop a *forgotten* or *mistyped* setting
   from quietly moving files or changing the quality that was chosen; they are
   not a sandbox. Do not run Viddl with an environment someone else controls.
+* **Your browser's cookies, when you ask for them.** The **Sign in with my
+  browser** row tells yt-dlp to read the cookie store the browser already has,
+  for the site being downloaded, so a download can act as your signed-in
+  session. Viddl itself never reads a cookie, never sees a password, copies
+  nothing and writes nothing down, and the choice lasts for that screen and no
+  longer. What it means in exchange is that yt-dlp is trusted with a session for
+  that site while the download runs, so the row is only for sites you are
+  willing to sign in to. Anything already running as you can read those cookies
+  whether or not Viddl exists; the feature does not widen that.
 * **Windows and macOS registration** are implemented but exercised only through
   simulated platform branches in tests; the running app's behaviour on those
   systems is not verified here.

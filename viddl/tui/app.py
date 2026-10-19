@@ -32,7 +32,9 @@ from textual.widgets import Button, Footer, Input, ProgressBar, Static
 
 from .. import APP_TITLE, __version__
 from .. import appdata
+from .. import cookies as cookies_mod
 from .. import engine as engine_mod
+from .. import errors
 from ..download import (
     DownloadCancelled,
     DownloadJob,
@@ -65,6 +67,10 @@ class Services:
     probe: Callable[..., MediaInfo] = probe_video
     make_job: Callable[..., DownloadJob] = DownloadJob
     downloads_dir: Callable[[], Path] = appdata.downloads_dir
+    #: Which browsers are on this computer, asked when the qualities screen is
+    #: drawn (F1). Swappable, so a test says what is installed instead of
+    #: depending on the machine running it.
+    browsers: Callable[[], List[str]] = cookies_mod.installed_keys
 
 
 @dataclass
@@ -83,6 +89,9 @@ class State:
     # warning rather than a stop: downloads can still work with an engine that
     # was already installed, and the folder may only be un-writable for now.
     folder_problem: str = ""
+    #: The browser whose cookies the look-up and download may read (F1). Empty
+    #: means none: nothing is read from a browser unless it was asked for.
+    cookies_browser: str = ""
     ffmpeg_available: bool = False
     # How big the one-time ffmpeg download would be, once the mirror has been
     # asked (R8). ``None`` means "not known" — never "zero".
@@ -93,6 +102,22 @@ class State:
 # ---------------------------------------------------------------------------
 # small helpers
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SignIn:
+    """A row that signs a download in, rather than downloading something (F1).
+
+    The qualities list holds these beside the qualities because that is where
+    the decision belongs — the row is what turns an unusable link into a usable
+    one — but a row is not a quality: choosing it re-asks the site with the
+    browser's cookies instead of starting a download.
+    """
+
+    browser: str
+    label: str
+    #: True for the row that turns cookies off again.
+    stopping: bool = False
 
 
 def _plain(value: Any) -> str:
@@ -291,13 +316,20 @@ class ViddlApp(App):
         self,
         initial_url: str = "",
         prefer_audio: bool = False,
+        cookies: str = "",
         services: Optional[Services] = None,
     ) -> None:
         super().__init__()
         self.services = services or Services(engine=Engine())
         # A link arriving from the command line or a browser hand-off is still
         # a link from outside: it is checked here as well as at the CLI.
-        self.state = State(url=safe_video_link(initial_url) or "", prefer_audio=prefer_audio)
+        self.state = State(
+            url=safe_video_link(initial_url) or "",
+            prefer_audio=prefer_audio,
+            # Checked against the closed list on the way in, so the value that
+            # reaches a command line cannot be something else (F1).
+            cookies_browser=cookies_mod.default_for(cookies),
+        )
         problem = appdata.ensure_dirs()
         if problem is not None:
             self.state.folder_problem = problem.line
@@ -538,12 +570,25 @@ class OptionsScreen(Screen):
 
     def on_mount(self) -> None:
         self.query_one("#get-ffmpeg", Button).add_class("hidden")
-        self.query_one("#stop-probe", Button).add_class("hidden")
-        self.query_one("#download", Button).disabled = True
+        self._start_looking()
+
+    def _start_looking(self) -> None:
+        """Begin a look-up: a fresh stop button and a fresh clock (R9, F1).
+
+        Called when the screen mounts and again when the cookie choice changes,
+        because a look-up that has already finished left its stop event set —
+        reusing that one would report the new question as a cancellation.
+        """
         self._stopped = False
         self._hinted = False
-        self._started_at = time.monotonic()
         self._cancel = threading.Event()
+        self._started_at = time.monotonic()
+        self.query_one("#download", Button).disabled = True
+        self.query_one("#stop-probe", Button).add_class("hidden")
+        self.query_one("#options-status", Static).update("Looking up the link…")
+        ticker = getattr(self, "_ticker", None)
+        if ticker is not None:
+            ticker.stop()
         self._ticker = self.set_interval(_PROBE_TICK_SECONDS, self.show_elapsed)
         self.load_info(self.app.state.url)
 
@@ -597,7 +642,10 @@ class OptionsScreen(Screen):
     def load_info(self, url: str) -> None:
         try:
             info = self.app.services.probe(
-                self.app.services.engine, url, cancel=self._cancel
+                self.app.services.engine,
+                url,
+                cancel=self._cancel,
+                cookies=self.app.state.cookies_browser,
             )
         except ProbeCancelled:
             self.app._post(self.show_stopped)
@@ -632,8 +680,24 @@ class OptionsScreen(Screen):
         self.app.state.info = None
         self.query_one("#options-heading", Static).update("That link did not work")
         note = self.query_one("#options-note", Static)
-        note.update(_plain(error.hint or "Press Escape to try another link."))
+        # A link that answers only to a signed-in session fails exactly here, so
+        # the row that fixes it is offered here too: advice that says "choose the
+        # sign-in row" with no row to choose is not advice (F1).
+        rows = self.sign_in_rows()
+        hint = error.hint or "Press Escape to try another link."
+        if not rows and errors.SIGN_IN_MARK in hint:
+            # No browser was found, so there is no row: say what is actually
+            # missing instead of pointing at a choice that is not on screen.
+            hint = (
+                "Reading a sign-in needs a browser on this computer, and none "
+                "was found. Press Escape to try another link."
+            )
+        note.update(_plain(hint))
         self.query_one("#download", Button).disabled = True
+        if rows:
+            table = self.query_one("#choices", ChoiceList)
+            table.set_choices(rows)
+            table.focus()
         self.notify(_plain(error.message), severity="error", timeout=10)
 
     def show_info(self, info: MediaInfo) -> None:
@@ -650,6 +714,12 @@ class OptionsScreen(Screen):
         sub_bits = [info.uploader, info.extractor]
         if info.is_live:
             sub_bits.append("LIVE")
+        if self.app.state.cookies_browser:
+            # A download that reads an account's cookies must never look like
+            # one that does not (F1).
+            sub_bits.append(
+                f"signed in with {cookies_mod.label_for(self.app.state.cookies_browser)}"
+            )
         sub = "  ·  ".join(bit for bit in sub_bits if bit)
         if info.duration:
             from ..util import human_duration
@@ -661,6 +731,7 @@ class OptionsScreen(Screen):
         choices: List[Tuple[str, str, str, Any]] = [
             (opt.label, opt.size_text, opt.detail, opt) for opt in info.options
         ]
+        choices.extend(self.sign_in_rows())
         table = self.query_one("#choices", ChoiceList)
         table.set_choices(choices)
         table.focus()
@@ -682,6 +753,40 @@ class OptionsScreen(Screen):
                     break
         self.refresh_note()
 
+    def sign_in_rows(self) -> List[Tuple[str, str, str, Any]]:
+        """The rows that turn browser cookies on or off (F1).
+
+        One row per browser found on this computer, because which session to
+        read is the user's decision: somebody signed in to a site in Firefox
+        and not in Chrome needs the second row. Once cookies are in use there
+        is one row instead, and it turns them off again.
+        """
+        browser = self.app.state.cookies_browser
+        if browser:
+            label = f"Signing in with {cookies_mod.label_for(browser)}"
+            return [(label, "", "choose to stop", SignIn(browser=browser, label=label, stopping=True))]
+        rows: List[Tuple[str, str, str, Any]] = []
+        for key in self.app.services.browsers():
+            label = f"Sign in with {cookies_mod.label_for(key)}"
+            rows.append((label, "", "cookies for this site", SignIn(browser=key, label=label)))
+        return rows
+
+    def choose_sign_in(self, row: SignIn) -> None:
+        """Re-ask the site with, or without, the browser's cookies (F1).
+
+        The look-up is run again rather than reused: a signed-in session can
+        hand back qualities an anonymous one never sees, and the remembered
+        answer is keyed on the cookie choice, so the two cannot be confused.
+        """
+        state = self.app.state
+        state.cookies_browser = "" if row.stopping else row.browser
+        label = cookies_mod.label_for(row.browser)
+        if row.stopping:
+            self.app.notify(f"Back to downloading without {label}'s cookies.", timeout=4)
+        else:
+            self.app.notify(f"Reading {label}'s cookies for this site.", timeout=6)
+        self._start_looking()
+
     # -- interaction --------------------------------------------------------
     def refresh_note(self) -> None:
         table = self.query_one("#choices", ChoiceList)
@@ -692,6 +797,20 @@ class OptionsScreen(Screen):
 
         if option is None:
             button.add_class("hidden")
+            return
+
+        if isinstance(option, SignIn):
+            # The row is the one place a person is told what handing over an
+            # account's cookies means, so it says it before the click (F1).
+            button.add_class("hidden")
+            label = cookies_mod.label_for(option.browser)
+            note.update(
+                _plain(
+                    cookies_mod.active_note(label)
+                    if option.stopping
+                    else cookies_mod.note(label)
+                )
+            )
             return
 
         if option.needs_ffmpeg and not state.ffmpeg_available:
@@ -749,7 +868,9 @@ class OptionsScreen(Screen):
 
     def on_choice_list_selected(self, message: ChoiceList.Selected) -> None:
         message.stop()
-        if isinstance(message.value, MediaOption):
+        if isinstance(message.value, SignIn):
+            self.choose_sign_in(message.value)
+        elif isinstance(message.value, MediaOption):
             self.app.start_download(message.value)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -766,7 +887,8 @@ class OptionsScreen(Screen):
     def action_download(self) -> None:
         table = self.query_one("#choices", ChoiceList)
         option: Optional[MediaOption] = table.highlighted_value
-        if option is None:
+        if not isinstance(option, MediaOption):
+            # The sign-in row is a thing to click, not a thing to download.
             self.notify("Choose a quality first.", severity="warning")
             return
         self.app.start_download(option)
@@ -860,6 +982,7 @@ class DownloadScreen(Screen):
                 option,
                 out_dir,
                 on_progress=lambda progress: app._post(self.on_progress, progress),
+                cookies=app.state.cookies_browser,
             )
             app.state.job = job
             path = job.run()
@@ -1132,7 +1255,14 @@ class ResultScreen(Screen):
                 self.app.action_quit_app()
 
 
-def run(url: str = "", audio: bool = False, services: Optional[Services] = None) -> None:
+def run(
+    url: str = "",
+    audio: bool = False,
+    cookies: str = "",
+    services: Optional[Services] = None,
+) -> None:
     """Start the terminal app."""
-    app = ViddlApp(initial_url=url, prefer_audio=audio, services=services)
+    app = ViddlApp(
+        initial_url=url, prefer_audio=audio, cookies=cookies, services=services
+    )
     app.run()

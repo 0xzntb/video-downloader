@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from . import appdata
+from .cookies import cookies_args
 from .engine import Engine, ToolError, is_windows
 from .errors import explain
 from .formats import MediaInfo, MediaOption, parse_info
@@ -226,13 +227,14 @@ def clear_probe_cache() -> None:
         _PROBE_CACHE.clear()
 
 
-def _probe_key(url: str) -> str:
-    """What an answer depends on: the link, and the options the user added.
+def _probe_key(url: str, cookies: str = "") -> str:
+    """What an answer depends on: the link, the options the user added, cookies.
 
     Cookies and the like change what a site hands back, so they are part of the
-    key: the same link with a signed-in option is a different question.
+    key: the same link with a signed-in session is a different question, and
+    answering it with what an anonymous look-up saw would be wrong (F1).
     """
-    return "|".join((url, *appdata.ytdlp_arguments()))
+    return "|".join((url, cookies, *appdata.ytdlp_arguments()))
 
 
 def _remembered_probe(key: str) -> Optional[MediaInfo]:
@@ -322,6 +324,7 @@ def probe_video(
     url: str,
     timeout: Optional[float] = None,
     cancel: Optional[threading.Event] = None,
+    cookies: str = "",
 ) -> MediaInfo:
     """Ask yt-dlp what is behind a link. Raises ``ToolError`` on failure.
 
@@ -335,10 +338,15 @@ def probe_video(
     ``timeout`` is the "the site is not answering at all" bound, and defaults to
     :func:`lookup_timeout` so that ``VIDDL_TIMEOUT`` moves it with the socket
     waits rather than leaving two unrelated numbers to disagree (R11).
+
+    ``cookies`` names a browser whose own cookie store yt-dlp may read (F1),
+    which is what lets a look-up see the qualities of a video that only answers
+    a signed-in session. It changes the answer, so it is part of the key the
+    answer is remembered under.
     """
     if timeout is None:
         timeout = lookup_timeout()
-    key = _probe_key(url)
+    key = _probe_key(url, cookies)
     remembered = _remembered_probe(key)
     if remembered is not None:
         return remembered
@@ -364,6 +372,7 @@ def probe_video(
     # The same extra options as a download: a link that needs cookies to be read
     # would otherwise show an empty quality menu, which is a worse failure than
     # a probe that fails with a reason.
+    args += cookies_args(cookies)
     args += appdata.ytdlp_arguments()
     # "--" ends the options: the link can never be read as one.
     args += ["--", url]
@@ -413,11 +422,16 @@ class DownloadJob:
         keep_partial: bool = True,
         attempts: int = DEFAULT_ATTEMPTS,
         retry_delay: float = RETRY_BASE_SECONDS,
+        cookies: str = "",
     ):
         self.engine = engine
         self.url = url
         self.option = option
         self.out_dir = Path(out_dir)
+        # The browser whose cookies this download may use (F1). Empty — the
+        # default — means the download runs as nobody in particular, which is
+        # how every download ran before the choice existed.
+        self.cookies = cookies
         self.on_progress = on_progress
         self.on_log = on_log
         # Keeping what a stopped download fetched is what makes resuming
@@ -583,6 +597,10 @@ class DownloadJob:
             self.option.format_selector,
         ]
         args += list(self.option.extra_args)
+        # The browser's own cookies, when the person asked for a signed-in
+        # download (F1). Read in place by yt-dlp: nothing is copied, and
+        # nothing is written down.
+        args += cookies_args(self.cookies)
         # Options the user asked for by name (R3). They come last, so that where
         # they and Viddl's own settings disagree theirs win — the few that would
         # make the app lose track of the file it is watching for are refused

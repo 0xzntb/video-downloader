@@ -35,6 +35,12 @@ class FriendlyError:
         return self.message
 
 
+#: The words the qualities screen uses for the cookie row (F1). The rule below
+#: names it, and the app looks for it: on a computer with no browser there is no
+#: row to choose, so the advice has to change rather than point at nothing.
+SIGN_IN_MARK = "Sign in with my browser"
+
+
 class _Rule(NamedTuple):
     """One explanation, and whether the failure behind it is worth retrying."""
 
@@ -48,11 +54,27 @@ class _Rule(NamedTuple):
 # what a mixed message is *called*, which is why the specific says come first.
 _RULES: list[_Rule] = [
     _Rule(
+        # A cookie read that failed, rather than a site asking for cookies. It
+        # comes first because yt-dlp names "cookies" in both, and the sign-in
+        # rule below would otherwise swallow this one (F1).
+        r"could not (copy|read|open|find).{0,40}cookie|"
+        r"unable to (open|read|find).{0,30}cookie|"
+        r"cookie.{0,30}(database|store|file).{0,40}(locked|missing|not found|in use)|"
+        r"failed to (decrypt|extract).{0,40}(cookie|dpapi|keyring|keychain)|"
+        r"(dpapi|keyring|keychain).{0,40}(fail|error|denied)|"
+        r"no such file or directory.{0,40}cookie",
+        "Viddl could not read your browser's cookies.",
+        "Sign in to the site in that browser first, then close the browser and try again — "
+        "an open browser can hold the store locked. A different browser works too: "
+        "choose “Sign in with my browser” on the qualities screen.",
+    ),
+    _Rule(
         r"sign in to confirm|not a bot|confirm your age|age-restricted|"
         r"cookies|login required|requested content is not available",
         "The site wants you to be signed in to watch this one.",
-        "Age-restricted or bot-checked videos need a browser login, which Viddl does not do yet. "
-        "Try another link.",
+        "Age-restricted, bot-checked and members-only videos answer to a signed-in "
+        f"session. Choose “{SIGN_IN_MARK}” and Viddl will read the cookies that "
+        "browser already has.",
     ),
     _Rule(
         r"private video|this video is private",

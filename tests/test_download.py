@@ -358,9 +358,13 @@ def test_only_so_many_links_are_remembered(tmp_path):
 
     assert len(download_mod._PROBE_CACHE) == download_mod._PROBE_CACHE_MAX
     # The newest is kept and the oldest is gone, so it is the answer that is
-    # least likely to be asked for next that is dropped.
-    assert "https://x.invalid/v0" not in download_mod._PROBE_CACHE
-    assert f"https://x.invalid/v{download_mod._PROBE_CACHE_MAX + 4}" in download_mod._PROBE_CACHE
+    # least likely to be asked for next that is dropped. The key carries the
+    # cookie choice as well as the link (F1), which is what the lookup uses.
+    assert download_mod._probe_key("https://x.invalid/v0") not in download_mod._PROBE_CACHE
+    newest = download_mod._probe_key(
+        f"https://x.invalid/v{download_mod._PROBE_CACHE_MAX + 4}"
+    )
+    assert newest in download_mod._PROBE_CACHE
 
 
 def test_the_probe_only_asks_for_the_first_video_of_a_playlist(monkeypatch):
@@ -1733,3 +1737,86 @@ def test_the_look_up_bound_follows_the_socket_wait(monkeypatch):
 
     assert "too long" in caught.value.message
     assert "75 seconds" in (caught.value.raw or "")
+
+# ---------------------------------------------------------------------------
+# cookies from the browser (F1)
+#
+# A site that answers only to a signed-in session — age-restricted, bot-checked,
+# Instagram — needs yt-dlp to read the cookies the browser already has. What
+# matters in these tests is that the choice reaches both commands, and that
+# anything other than a browser name reaches neither.
+# ---------------------------------------------------------------------------
+
+
+def test_a_look_up_can_read_a_browsers_cookies(monkeypatch):
+    fake = fake_lookup(monkeypatch, stdout='{"title": "Fake Video"}')
+
+    probe_video(
+        FakeEngine(["/fake/yt-dlp"]), "https://x.invalid/signed-in", cookies="chrome"
+    )
+
+    args = fake.args
+    assert args[args.index("--cookies-from-browser") + 1] == "chrome"
+    assert args[-2:] == ["--", "https://x.invalid/signed-in"]
+
+
+def test_a_download_can_read_a_browsers_cookies(tmp_path):
+    job = DownloadJob(
+        FakeEngine(["/fake/yt-dlp"]),
+        "https://x.invalid/v",
+        video_option(),
+        tmp_path,
+        cookies="firefox",
+    )
+
+    args = job.build_args()
+
+    assert args[args.index("--cookies-from-browser") + 1] == "firefox"
+    assert args[-2:] == ["--", "https://x.invalid/v"]
+
+
+def test_without_a_choice_no_cookie_option_is_there(tmp_path, monkeypatch):
+    """The default is the old behaviour: nobody signed in."""
+    fake = fake_lookup(monkeypatch, stdout='{"title": "Fake Video"}')
+    probe_video(FakeEngine(["/fake/yt-dlp"]), "https://x.invalid/anon")
+    assert "--cookies-from-browser" not in fake.args
+
+    job = DownloadJob(
+        FakeEngine(["/fake/yt-dlp"]), "https://x.invalid/v", video_option(), tmp_path
+    )
+    assert "--cookies-from-browser" not in job.build_args()
+
+
+@pytest.mark.parametrize(
+    "value", ["--exec=calc.exe", "netscape", "chrome; rm -rf /", "cookies.txt"]
+)
+def test_a_name_that_is_not_a_browser_never_reaches_a_command_line(
+    tmp_path, monkeypatch, value
+):
+    """This is the last step before the command line, so the list is closed."""
+    fake = fake_lookup(monkeypatch, stdout='{"title": "Fake Video"}')
+    probe_video(
+        FakeEngine(["/fake/yt-dlp"]), f"https://x.invalid/odd/{value}", cookies=value
+    )
+    assert "--cookies-from-browser" not in fake.args
+
+    job = DownloadJob(
+        FakeEngine(["/fake/yt-dlp"]),
+        "https://x.invalid/v",
+        video_option(),
+        tmp_path,
+        cookies=value,
+    )
+    assert "--cookies-from-browser" not in job.build_args()
+
+
+def test_a_signed_in_look_up_is_a_different_question(tmp_path):
+    """Otherwise a private video's menu would be served to an anonymous one."""
+    engine = engine_for(tmp_path, "fake_info.py", INFO_SCRIPT)
+    url = "https://x.invalid/chrome-only"
+
+    probe_video(engine, url)
+    probe_video(engine, url, cookies="chrome")
+
+    assert download_mod._probe_key(url) in download_mod._PROBE_CACHE
+    assert download_mod._probe_key(url, "chrome") in download_mod._PROBE_CACHE

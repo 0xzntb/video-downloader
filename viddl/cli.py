@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from . import APP_TITLE, __version__
-from . import appdata, logfile
+from . import appdata, cookies as cookies_mod, logfile
 from .engine import Engine, Tool, ToolError
 from .formats import format_rows
 from . import protocol
@@ -100,6 +100,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes",
         action="store_true",
         help="with --plain: download without asking first (for scripts)",
+    )
+    parser.add_argument(
+        "--cookies-from-browser",
+        metavar="BROWSER",
+        help=(
+            "let the download use the cookies your browser already has, for a "
+            "site that asks you to sign in: chrome, firefox, edge, brave, "
+            "safari, or auto for whichever is installed"
+        ),
     )
     parser.add_argument(
         "--doctor",
@@ -262,10 +271,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.download_dir:
         os.environ["VIDDL_DOWNLOAD_DIR"] = str(Path(args.download_dir).expanduser())
 
+    # One browser name, checked before it reaches a command line (F1). What
+    # comes back is a key from the closed list, or nothing at all.
+    cookies = ""
+    if args.cookies_from_browser:
+        problem = cookies_mod.problem_with(args.cookies_from_browser)
+        if problem:
+            return _fail(problem, cookies_mod.hint_for(args.cookies_from_browser))
+        cookies = cookies_mod.default_for(args.cookies_from_browser)
+        if not cookies:
+            return _fail(
+                "No browser was found to read cookies from.",
+                "Sign in to the site in a browser first, then name it: "
+                "--cookies-from-browser firefox.",
+            )
+
     if args.doctor:
-        # The report says which overrides are set; this line says what Viddl is
-        # actually waiting for, whether or not one is (R11).
-        for line in [*Engine().report(), appdata.timeout_note()]:
+        # The report says which overrides are set, what Viddl is actually
+        # waiting for whether or not one is (R11), and which browsers it could
+        # read a sign-in from (F1).
+        for line in [*Engine().report(), appdata.timeout_note(), cookies_mod.doctor_note()]:
             print(line)
         return 0
 
@@ -303,7 +328,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         from .download import probe_video
 
         try:
-            info = probe_video(Engine(), url)
+            info = probe_video(Engine(), url, cookies=cookies)
         except ToolError as exc:
             return _fail(exc.message, exc.hint)
         print(info.heading)
@@ -367,6 +392,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 audio=audio,
                 quality=args.quality or "",
                 assume_yes=bool(args.yes),
+                cookies=cookies,
             )
         except KeyboardInterrupt:  # pragma: no cover - interactive
             return 130
@@ -374,7 +400,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     from .tui.app import run
 
     try:
-        run(url=url, audio=audio)
+        run(url=url, audio=audio, cookies=cookies)
     except KeyboardInterrupt:  # pragma: no cover - interactive
         return 130
     except OSError as exc:
