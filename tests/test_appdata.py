@@ -19,6 +19,12 @@ needs_posix_permissions = pytest.mark.skipif(
     sys.platform.startswith("win"), reason="Windows governs access with ACLs"
 )
 
+#: The XDG desktop conventions do not exist on Windows, which has its own
+#: known-folder locations tested beside these (R10).
+needs_posix_desktop = pytest.mark.skipif(
+    sys.platform.startswith("win"), reason="XDG desktop conventions are POSIX"
+)
+
 
 def mode_of(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
@@ -49,11 +55,13 @@ def test_data_dir_honours_the_environment_override(tmp_path, monkeypatch):
     assert appdata.data_dir() == tmp_path / "custom"
 
 
+@needs_posix_desktop
 def test_data_dir_follows_xdg_on_linux(no_overrides, tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     assert appdata.data_dir() == tmp_path / "xdg" / "viddl"
 
 
+@needs_posix_desktop
 def test_data_dir_defaults_to_local_share_without_xdg(no_overrides, monkeypatch):
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     assert appdata.data_dir() == Path.home() / ".local" / "share" / "viddl"
@@ -494,6 +502,7 @@ def test_downloads_dir_honours_the_override(tmp_path, monkeypatch):
     assert (tmp_path / "Elsewhere").is_dir()
 
 
+@needs_posix_desktop
 def test_downloads_dir_reads_the_desktop_settings_file(no_overrides, tmp_path, monkeypatch):
     config = Path(os.environ["XDG_CONFIG_HOME"]) / "user-dirs.dirs"
     config.parent.mkdir(parents=True, exist_ok=True)
@@ -508,6 +517,7 @@ def test_downloads_dir_reads_the_desktop_settings_file(no_overrides, tmp_path, m
     assert folder.is_dir()
 
 
+@needs_posix_desktop
 def test_downloads_dir_accepts_a_literal_path_in_the_settings_file(
     no_overrides, tmp_path, monkeypatch
 ):
@@ -518,6 +528,7 @@ def test_downloads_dir_accepts_a_literal_path_in_the_settings_file(
     assert appdata.downloads_dir() == target
 
 
+@needs_posix_desktop
 def test_downloads_dir_ignores_a_settings_file_without_the_line(
     no_overrides, tmp_path, monkeypatch
 ):
@@ -565,6 +576,7 @@ def test_the_fallback_downloads_folder_is_owner_only(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@needs_posix_permissions
 def test_which_uses_the_path_first(tmp_path, monkeypatch):
     shim = tmp_path / "bin"
     shim.mkdir()
@@ -585,6 +597,7 @@ def test_which_also_looks_where_gui_apps_do_not(tmp_path, monkeypatch):
     assert appdata.which("viddl-fake") == tool
 
 
+@needs_posix_permissions
 def test_which_ignores_a_file_that_is_not_executable(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     local_bin = Path.home() / ".local" / "bin"

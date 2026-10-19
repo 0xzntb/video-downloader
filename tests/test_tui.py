@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
+from textual.widgets import Button, Static
 
 from viddl.download import DownloadCancelled, ProbeCancelled, Progress
 from viddl.engine import Tool, ToolError
@@ -561,6 +562,34 @@ async def test_the_home_screen_says_when_the_engine_is_old(tmp_path):
         assert "days old" in line
         assert "viddl --update" in line
         assert len(line) <= 76
+
+
+@pytest.mark.asyncio
+async def test_what_the_screens_say_survives_a_cp1252_console(tmp_path):
+    """R10: a legacy Windows console may only know cp1252.
+
+    Viddl's own punctuation has to fit: a box-drawing or arrow character that
+    the console cannot encode would turn a screen into a traceback. (A video's
+    own title is the site's text, not ours, and modern terminals show it; the
+    ASCII-only path for old consoles is ``viddl --plain``.)
+    """
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        # A link given at startup is looked up by itself: no key press here, or
+        # the next Enter would pick the highlighted quality and start a job.
+        await settle(pilot)
+        assert isinstance(app.screen, OptionsScreen)
+
+        texts = [
+            str(widget.render())
+            for widget in app.screen.query(Static)
+        ]
+        texts += [str(button.label) for button in app.screen.query(Button)]
+        texts += [row.plain for row in app.screen.query(ChoiceRow)]
+        assert texts
+        for text in texts:
+            text.encode("cp1252")
 
 
 @pytest.mark.asyncio

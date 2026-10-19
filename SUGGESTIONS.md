@@ -8,9 +8,10 @@ the searchable evidence is in [Appendix A](#appendix-a--evidence).
 statement coverage (`viddl/`), `pyflakes` clean, no CI, no lockfile, single
 runtime dependency (`textual>=0.80`).
 
-Work is marked in place as it lands: ✅ **Done**, with the evidence that proved it.
-Progress so far: **17 of 60** — S1–S6 in section 1, R1–R9 in section 2, D2–D3 in
-section 6.
+Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
+it (◐ **partly done** says what landed and what did not).
+Progress so far: **19 of 60** — S1–S6 in section 1, R1–R10 in section 2, U4 in
+section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
 down keeps a secret, and a web page can no longer start it *doing* anything —
@@ -27,6 +28,7 @@ in `SECURITY.md`, which is what **D3** asked for.
 | **P3** | Nice to have. |
 | **S / M / L** | Rough effort: hours / a day or two / a week-ish. |
 | ✅ **Done** | Implemented and verified; the evidence sits with the item. |
+| ◐ **partly done** | Some of it landed; the item says what is still missing. |
 
 ---
 
@@ -35,7 +37,7 @@ in `SECURITY.md`, which is what **D3** asked for.
 | # | Item | Why it matters |
 | --- | --- | --- |
 | 1 | ✅ **S1** — stop option-shaped "links" reaching yt-dlp | Proven argument injection; a web page could trigger it — **done** |
-| 2 | **E1** — add CI | Nothing is checked on push today; the tests only run if someone runs them |
+| 2 | ◐ **E1** — add CI | The matrix (Linux/macOS/**Windows**) and `pyflakes` landed with **R10**; the coverage floor and the weekly extractor job are still missing |
 | 3 | **E2** — add a `LICENSE` file | README and `pyproject.toml` both claim MIT; no licence text ships |
 | 4 | ✅ **R1** + **R2** — resume interrupted downloads, and really stop them | A cancelled or dropped download started from zero, and a stop left ffmpeg writing — **both done** |
 | 5 | ✅ **R4** — `viddl --update` | Stale yt-dlp is *the* top cause of "this link stopped working" — **done** |
@@ -807,7 +809,99 @@ metadata than the app needs.
 option; cache probe results in memory for a few minutes; the app already passes
 `--no-playlist`, so also consider `--flat-playlist` tolerance where relevant.
 
-### R10 — Windows is ported but not exercised · **P2** · M
+### R10 — Windows is ported but not exercised · **P2** · M · ✅ **Done**
+
+> **Fixed, all three ways the item asked for.** The installer, the Windows CI
+> job and the ASCII path are all in place; the evidence follows.
+>
+> **An installer exists, and it is the same shape as the shell one.**
+> `install.ps1` finds `py -3` (then `python`), checks the version, builds a
+> private environment in `%LOCALAPPDATA%\viddl\venv`, installs the project,
+> copies the `viddl.cmd` shim into `%LOCALAPPDATA%\viddl\bin`, adds that folder
+> to the **user** `PATH`, and registers `viddl://` through the shim (so the
+> registry entry names the `.exe` inside the environment, not a bare `python`).
+> `-NoPath` and `-NoProtocol` skip the two machine-facing steps. `uninstall.ps1`
+> mirrors it — unregister, remove the launcher and the environment, take the
+> folder off `PATH` — and keeps the helpers unless `-Purge`, exactly as
+> `uninstall.sh` does.
+>
+> All four files are pure ASCII, because Windows PowerShell 5.1 reads a
+> BOM-less script as ANSI and a non-ASCII character in one would be mangled
+> before it ever ran.
+>
+> **CI runs the suite on Windows.** `.github/workflows/tests.yml` is a matrix of
+> Linux, macOS and Windows × Python 3.9, 3.12, 3.13 running `pytest -q` and
+> `pyflakes`, and a separate Windows job that runs **`install.ps1` for real**
+> (`-NoPath -NoProtocol`, a private `VIDDL_HOME`) and then runs the launcher it
+> wrote: `viddl --version`, `viddl --doctor`, `viddl --help`. The workflow YAML
+> was parsed, not eyeballed, and both PowerShell scripts were checked with
+> PowerShell 7.4.6's own parser.
+>
+> Getting the suite *able* to run there was the larger half. Every fake
+> yt-dlp/ffmpeg in it is a two-line shebang script, which Windows cannot
+> execute: `yt-dlp.exe` holding Python source is text to `CreateProcess`. A
+> test-only fixture now translates those invocations — Python scripts through
+> the interpreter running the tests, shell scripts through the bash that ships
+> with Git for Windows (present on the runners).
+>
+> The shims are named the way `Engine` looks for them (`yt-dlp.exe`,
+> `ffmpeg.exe`), which a handful of tests used not to be. The XDG/desktop and
+> POSIX-permission tests are skipped on Windows with the reason instead of
+> failing there, and the suite sets `USERPROFILE`/`APPDATA` so no test can touch
+> the real profile.
+>
+> **`--plain` is the ASCII path.** `viddl --plain` prints one line at a time:
+> the link's title, uploader and menu, then progress on a single overwritten
+> line, then **the saved path alone on stdout** — the app's own text passes
+> through a translation table (`·`->`-`, `…`->`...`, `—`->`-`, curly quotes to
+> straight, `→` to `->`) and then an NFKD fold, so `café` stays readable and a
+> title full of emoji becomes `?` instead of a `UnicodeEncodeError`. `--quality`
+> takes a height, `best` or `audio`; `--yes` answers both questions in advance
+> (including ffmpeg, below); without it a terminal is asked, and a script with
+> no terminal is refused rather than downloading something nobody agreed to.
+> `Ctrl+C` stops the download and keeps what was fetched, as in the app.
+>
+> **The console is no longer a way for output to crash.** `cli.main` sets
+> `errors=backslashreplace` on stdout/stderr, so a redirected Windows console on
+> a legacy code page cannot raise from the middle of `--doctor`: measured with
+> `PYTHONIOENCODING=cp437`, the em dash in an ignored-override line comes out as
+> `\u2014` and the command exits 0. A test scans **every string literal in
+> `viddl/`** for cp1252 encodability (the translation table itself is the one
+> exemption, since those characters exist there in order to be replaced), and
+> another drives the real Textual screens and encodes every `Static`, `Button`
+> and row's text to cp1252. The one literal that failed that scan was a real
+> bug: `yt-dlp 2099.05.05 → …` in `--update`'s output, now `->`.
+>
+> **Measured against real yt-dlp 2026.08.19 and a real download.** With the
+> plain path against *Me at the zoo*: the menu printed, `--quality 360` picked
+> the 240p row, and because ffmpeg was missing the run said so and fetched it
+> (149.2 MB) before continuing; the merge produced a 744,413-byte `mp4` that
+> **decodes** (`ffmpeg -i` plus a decode to null: 284 frames, 19.06 s, video and
+> audio), and **neither stdout nor stderr held a single non-ASCII byte**
+> (checked with `grep -P '[^\x00-\x7F]'`). Piped with no terminal and no
+> `--yes`, the same run exits **1** with *"ffmpeg is not set up and there is no
+> terminal to ask on"* and downloads nothing.
+>
+> Following that through found a bug that had nothing to do with Windows:
+> **real yt-dlp exits 0 when ffmpeg is missing**, having downloaded both streams
+> and skipped the merge, and `_find_output`'s last-resort branch then reported
+> the leftover **`.f140.m4a` audio fragment as the finished download**. Measured
+> with real yt-dlp and no ffmpeg: the job now raises *"The video and audio could
+> not be joined into one file"*, names ffmpeg in the hint, delivers nothing to
+> Downloads, and leaves the two streams in the work folder so a later run
+> carries on. That would have hit the full-screen app too, on any machine where
+> ffmpeg was missing or had been removed since the check.
+>
+> 55 tests added (521 → 576), `pyflakes` clean, coverage 94% overall
+> (`plain.py` 94%); the installer artifacts and the Windows translation are
+> covered from Linux, and the Windows job is where they are actually run.
+>
+> **Not verified here, and it is the honest caveat:** there is no Windows
+> machine in this environment. The workflow and the installer have been
+> validated as far as they can be here — YAML parsed, both `.ps1` files parsed
+> by PowerShell 7.4.6, the launcher's argument passing and exit code inspected,
+> the platform-faked tests run — but **the first Windows CI run has not happened
+> yet**, so Windows behaviour is asserted by construction, not observed.
 
 The code handles the registry, `ffmpeg.exe`, `%LOCALAPPDATA%` and `USERPROFILE`,
 and the README admits Windows is tested less. There is no `install.ps1`. Terminals
@@ -1007,7 +1101,15 @@ action, and any way to see *why* something failed in detail.
 Play, and give failures a "Show details" expander with the log lines and a
 "Copy details" button (reusing `errors.explain`).
 
-### U4 — A `--plain` mode · **P2** · M
+### U4 — A `--plain` mode · **P2** · M · ✅ **Done**
+
+> **Landed with R10, which needed exactly this.** `viddl --plain` is the
+> line-oriented mode: ASCII only, progress on one overwritten line, and the
+> saved path alone on stdout for scripts. `--quality` picks a height, `best` or
+> `audio`; `--yes` answers the "ask before downloading" question in advance;
+> without a terminal Viddl refuses rather than acting unattended. The full
+> evidence — real measurements, the cp1252 tests, and the download bug it
+> turned up — is under **R10**.
 
 The TUI needs a real terminal; `cli.main()` catches `OSError` and says so
 politely. But Textual cannot render in some SSH sessions, in terminals without
@@ -1067,7 +1169,16 @@ doc change for adoption.
 
 ## 5. Engineering hygiene and testing
 
-### E1 — There is no CI · **P1** · S
+### E1 — There is no CI · **P1** · S · ◐ **partly done**
+
+The matrix and the lint landed with **R10**: `.github/workflows/tests.yml` runs
+Linux/macOS/Windows × Python 3.9–3.13, `pytest -q` and `pyflakes`, plus a
+Windows job that installs with `install.ps1` and runs the launcher it wrote.
+What is still missing is the coverage floor (`pytest --cov` with a fail-under)
+and the weekly job that runs the extractor-dependent integration test (**E7**)
+against the latest yt-dlp — the failure mode that actually breaks users. The
+Node extension tests already run inside `pytest` when Node is present, and Node
+is on the runners.
 
 No `.github/` at all. The 222 tests, the 93% coverage and the `pyflakes` pass
 only happen when a human runs them. For a project whose README says "a link that

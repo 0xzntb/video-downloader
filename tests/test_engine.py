@@ -46,8 +46,20 @@ def write_executable(path: Path, body: str) -> Path:
     return path
 
 
+def tool_name(name: str) -> str:
+    """The file name the engine looks for on this platform.
+
+    Windows has no extensionless executables: Viddl asks for ``yt-dlp.exe`` and
+    ``ffmpeg.exe``, so a test that writes ``yt-dlp`` is testing a file nothing
+    will look for (R10).
+    """
+    if sys.platform.startswith("win") and name in ("yt-dlp", "ffmpeg"):
+        return f"{name}.exe"
+    return name
+
+
 def make_shim(directory: Path, name: str = "yt-dlp", version: str = "2099.01.01") -> Path:
-    return write_executable(directory / name, f"#!/bin/sh\necho {version}\n")
+    return write_executable(directory / tool_name(name), f"#!/bin/sh\necho {version}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +152,7 @@ def test_finds_viddls_own_copy_first(tmp_path):
 def test_broken_copy_is_ignored(tmp_path, monkeypatch):
     home = tmp_path / "app"
     # Exists, but does not work: must not be trusted.
-    write_executable(home / "bin" / "yt-dlp", "#!/bin/sh\nexit 3\n")
+    write_executable(Engine(home=home).ytdlp_path, "#!/bin/sh\nexit 3\n")
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     assert Engine(home=home).find_ytdlp() is None
 
@@ -358,14 +370,16 @@ def test_ffmpeg_location_args_only_for_viddls_own_copy(tmp_path):
     assert engine.ffmpeg_location_args() == []
 
     write_executable(
-        engine.bin_dir / "ffmpeg",
+        engine.ffmpeg_path,
         "#!/bin/sh\necho 'ffmpeg version 7.0-fake'\n",
     )
     assert engine.ffmpeg_location_args() == ["--ffmpeg-location", str(engine.bin_dir)]
 
 
 def make_ffmpeg_shim(directory: Path, version: str = "7.0-fake") -> Path:
-    return write_executable(directory / "ffmpeg", f"#!/bin/sh\necho 'ffmpeg version {version}'\n")
+    return write_executable(
+        directory / tool_name("ffmpeg"), f"#!/bin/sh\necho 'ffmpeg version {version}'\n"
+    )
 
 
 def no_system_tools(monkeypatch):
@@ -443,14 +457,16 @@ def test_an_option_shaped_tool_override_is_refused(tmp_path, monkeypatch):
 
 def test_a_broken_ffmpeg_is_not_trusted(tmp_path, monkeypatch):
     home = tmp_path / "app"
-    write_executable(home / "bin" / "ffmpeg", "#!/bin/sh\nexit 1\n")
+    write_executable(Engine(home=home).ffmpeg_path, "#!/bin/sh\nexit 1\n")
     no_system_tools(monkeypatch)
     assert Engine(home=home).find_ffmpeg() is None
 
 
 def test_ffmpeg_without_a_version_line_is_still_usable(tmp_path, monkeypatch):
     no_system_tools(monkeypatch)
-    write_executable(tmp_path / "app" / "bin" / "ffmpeg", "#!/bin/sh\necho ready\n")
+    write_executable(
+        Engine(home=tmp_path / "app").ffmpeg_path, "#!/bin/sh\necho ready\n"
+    )
     tool = Engine(home=tmp_path / "app").find_ffmpeg()
     assert tool is not None
     assert tool.version == ""

@@ -9,6 +9,7 @@ piece is also reachable from the command line:
 * ``viddl --doctor``          show where everything lives and whether it works
 * ``viddl --update``          fetch the newest video engine (yt-dlp)
 * ``viddl --update-ffmpeg``   fetch the newest ffmpeg build
+* ``viddl --plain <link>``    download a line at a time, in plain ASCII
 * ``viddl --register-protocol``          wire up the ``viddl://`` hand-off
 * ``viddl --install-browser-extension``  copy the extension out for loading
 """
@@ -83,6 +84,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="save downloads here instead of your Downloads folder",
     )
     parser.add_argument(
+        "--plain",
+        action="store_true",
+        help=(
+            "download a line at a time instead of opening the full-screen app "
+            "(plain ASCII, for scripts and older consoles)"
+        ),
+    )
+    parser.add_argument(
+        "--quality",
+        metavar="HEIGHT",
+        help="with --plain: a height (720, 1080), best, or audio",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="with --plain: download without asking first (for scripts)",
+    )
+    parser.add_argument(
         "--doctor",
         action="store_true",
         help="show where Viddl keeps things and whether the tools are ready",
@@ -121,6 +140,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _prepare_console() -> None:
+    """Never let a console's encoding turn a message into a crash (R10).
+
+    A Windows terminal redirected to a file uses the machine's legacy code
+    page, and one character outside it would otherwise raise
+    ``UnicodeEncodeError`` from the middle of ``--doctor``. Replacing the
+    character is worse than printing it and much better than no output at all;
+    ``--plain`` goes further and only produces ASCII to begin with.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="backslashreplace")
+        except (OSError, ValueError):  # pragma: no cover - a closed or exotic stream
+            pass
+
+
 def _fail(message: str, hint: Optional[str] = None) -> int:
     print(f"{APP_TITLE}: {message}", file=sys.stderr)
     if hint:
@@ -136,7 +174,7 @@ def _describe_update(name: str, before: Optional[Tool], after: Tool) -> str:
         return f"Installed {name} {new_version} ({after.origin_text})."
     if before.version and before.version == after.version:
         return f"{name} {new_version} — already the newest release."
-    return f"{name} {before.version or 'an older copy'} → {new_version} ({after.origin_text})."
+    return f"{name} {before.version or 'an older copy'} -> {new_version} ({after.origin_text})."
 
 
 def _engine_in_use(engine: Engine) -> str:
@@ -212,7 +250,14 @@ def _print_result(result) -> int:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
+    _prepare_console()
     _enable_log_file()
+
+    if not args.plain and (args.quality or args.yes):
+        return _fail(
+            "--quality and --yes only work with --plain.",
+            "Try: viddl --plain --quality 720 <link>",
+        )
 
     if args.download_dir:
         os.environ["VIDDL_DOWNLOAD_DIR"] = str(Path(args.download_dir).expanduser())
@@ -305,6 +350,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     "Example: viddl https://www.youtube.com/watch?v=…",
                 )
             url = link
+
+    if args.plain:
+        if not url:
+            return _fail(
+                "--plain needs a link.",
+                "Example: viddl --plain --yes https://www.youtube.com/watch?v=…",
+            )
+        from .plain import run_plain
+
+        try:
+            return run_plain(
+                url,
+                audio=audio,
+                quality=args.quality or "",
+                assume_yes=bool(args.yes),
+            )
+        except KeyboardInterrupt:  # pragma: no cover - interactive
+            return 130
 
     from .tui.app import run
 

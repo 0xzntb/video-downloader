@@ -44,11 +44,24 @@ machine except the download itself.
 You need Python 3.9 or newer (already installed on macOS and most Linux
 systems).
 
+On Linux and macOS:
+
 ```sh
 git clone <this repo> viddl
 cd viddl
 ./install.sh
 ```
+
+On Windows, in the folder you downloaded:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+It does the same things, for your account only: a private environment in
+`%LOCALAPPDATA%\viddl`, a `viddl.cmd` launcher on your user `PATH`, and the
+`viddl://` handler. Open a new terminal window afterwards. `install.ps1
+-NoPath -NoProtocol` skips the two steps that touch the rest of your account.
 
 Then:
 
@@ -92,6 +105,8 @@ Nothing is installed system-wide and no configuration files are created.
 | Start it | `viddl` |
 | Go straight to a link | `viddl https://www.youtube.com/watch?v=…` |
 | Start on the MP3 options | `viddl --audio <link>` |
+| Use it in a script, an old console or over SSH | `viddl --plain --yes <link>` |
+| Pick the quality without a menu | `viddl --plain --quality 720 <link>` |
 | See what qualities a link has, without downloading | `viddl --list-qualities <link>` |
 | Save somewhere else for one run | `viddl --download-dir ~/Videos <link>` |
 | Check that everything is set up | `viddl --doctor` |
@@ -126,6 +141,24 @@ the link and quality, which is also what lets a stopped download be resumed: the
 half-finished file is waiting there — out of sight, not gone — and picking the
 same video again carries on from it, even in a later session. Choose
 **Discard** on the stopped screen and the folder goes too.
+
+## Without the full-screen app
+
+Some consoles cannot draw the app: a legacy Windows console, some SSH
+sessions, a log file, a screen reader. `--plain` prints one ASCII line at a
+time, keeps progress on a single line, and puts **the saved path alone on
+standard output**, so it composes:
+
+```sh
+path=$(viddl --plain --yes --quality 720 "https://www.youtube.com/watch?v=...")
+```
+
+The title, uploader, quality list and progress go to stderr; only the path is
+on stdout. `--quality` takes a height (`720`, `1080`), `best`, or `audio`.
+Without `--yes` Viddl asks before downloading, and refuses to start when there
+is no terminal to ask on — the safe default for a script. `Ctrl+C` stops the
+download and keeps what was fetched, exactly as in the app, and running the
+same command again carries on.
 
 ## Audio only (MP3)
 
@@ -229,6 +262,13 @@ of yt-dlp when you want to manage that yourself.
 ./uninstall.sh --purge    # remove everything
 ```
 
+On Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
+.\uninstall.ps1 -Purge
+```
+
 ## How it works
 
 | Piece | What it does |
@@ -237,6 +277,7 @@ of yt-dlp when you want to manage that yourself.
 | `viddl/engine.py` | Finds yt-dlp and ffmpeg, or downloads its own copy into `~/.local/share/viddl/bin` — in pieces that survive an interruption, checked against a published checksum and only then unpacked. |
 | `viddl/formats.py` | Turns site metadata into the quality menu, with size estimates. |
 | `viddl/download.py` | Reads what a link offers — in a process of its own, so a slow site can be stopped and its answer is remembered for a few minutes — and runs yt-dlp in a per-download working folder, reads its progress, and moves the finished file out under a name reserved before the move, so two windows cannot collide. A failure worth a second attempt is retried after a doubling wait; stopping it stops the whole tree yt-dlp started — the ffmpeg merge included — and keeps what was fetched so it can be resumed. |
+| `viddl/plain.py` | The line-oriented `--plain` path: ASCII-only text, one progress line, the saved path alone on stdout. |
 | `viddl/errors.py` | Maps raw tool output onto plain-language explanations, and says whether the failure is one another attempt may fix. |
 | `viddl/protocol.py` | The `viddl://` hand-off and its per-OS registration. |
 | `viddl/browser_extension/` | The Chromium (Manifest V3) extension. |
@@ -306,14 +347,20 @@ python3 -m venv .venv
 .venv/bin/python -m pytest
 ```
 
+On Windows the same three lines live in `.venv\Scripts\`. CI runs the suite on
+Linux, macOS and Windows for Python 3.9, 3.12 and 3.13, lints with `pyflakes`,
+and runs `install.ps1` and the launcher it writes in a Windows job of its own.
+
 The suite covers the quality menu and its size estimates, engine discovery and
 installation (including a mirror returning an HTML error page, and a resuming
 download driven against a real server on localhost — a `Range` request is a
 conversation, so a stand-in would only test the stand-in), the download
 runner and its progress parsing, error translation, `viddl://` parsing and
-registration, and the whole interface driven through Textual's test pilot — with
-clicks, arrow keys and the cancel path. The extension is checked too: its
-manifest, every file it references, and its pure JavaScript logic via Node.
+registration, the plain `--plain` path, and the whole interface driven through
+Textual's test pilot — with clicks, arrow keys and the cancel path. The
+extension is checked too: its manifest, every file it references, and its pure
+JavaScript logic via Node. The Windows installer files are checked from any
+platform, and the suite runs on Windows in CI.
 
 Regenerate the extension icons with `python3 tools/make_icons.py`.
 
@@ -331,7 +378,7 @@ Regenerate the extension icons with `python3 tools/make_icons.py`.
   working the next until yt-dlp updates. That is what `viddl --update` is for;
   the app mentions it once the engine it is running is over a month old.
 * Live streams work but are recorded from the current point.
-* Windows is supported by the code (registry handler, `ffmpeg.exe`,
-  `%LOCALAPPDATA%`) but has been tested less than Linux and macOS. There is no
-  `install.ps1` yet — `pip install .` then `viddl --register-protocol` is the
-  short version.
+* Windows is supported and exercised: the suite runs there in CI, the installer
+  (`install.ps1`) is run for real in the Windows job, and every fake shell
+  script the tests use is given the shebang Windows does not understand. If a
+  console cannot draw the full-screen app, `viddl --plain` is the ASCII path.

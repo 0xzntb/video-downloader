@@ -1,0 +1,507 @@
+"""The line-oriented path, and text a legacy console can print (R10).
+
+``viddl --plain`` exists because a Windows console is not always a modern
+terminal. These tests hold two promises: the app's own words are ASCII, so no
+console encoding can turn them into a traceback, and the saved path is the only
+thing on stdout, so a script can use it.
+"""
+
+from __future__ import annotations
+
+import ast
+import io
+import shutil
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from viddl import cli, plain
+from viddl.download import DownloadCancelled, Progress
+from viddl.engine import Tool, ToolError
+from viddl.formats import MediaInfo, MediaOption, parse_info
+
+REPO = Path(__file__).resolve().parent.parent
+URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+#: Where the fake download writes. A real folder in the system temp area: the
+#: fake job creates a real file so the result screen can report a real size.
+DEST = Path(tempfile.gettempdir()) / "viddl-plain-tests"
+
+INFO_JSON = {
+    "title": "A Very Real Video",
+    "uploader": "Some Channel",
+    "duration": 212,
+    "webpage_url": URL,
+    "extractor_key": "Youtube",
+    "formats": [
+        {"format_id": "140", "ext": "m4a", "audio_ext": "m4a", "vcodec": "none",
+         "acodec": "mp4a", "abr": 128, "filesize": 1600000},
+        {"format_id": "137", "ext": "mp4", "vcodec": "avc1", "acodec": "none",
+         "height": 1080, "fps": 30, "vbr": 5000, "filesize": 20000000},
+        {"format_id": "22", "ext": "mp4", "vcodec": "avc1", "acodec": "mp4a",
+         "height": 720, "tbr": 2000, "filesize": 12000000},
+        {"format_id": "18", "ext": "mp4", "vcodec": "avc1", "acodec": "mp4a",
+         "height": 360, "tbr": 700, "filesize": 9000000},
+    ],
+}
+
+
+def media() -> MediaInfo:
+    return parse_info(INFO_JSON)
+
+
+class FakeEngine:
+    """Stands in for the real engine, so no test can depend on the machine.
+
+    Whether ffmpeg is installed on the computer running the suite must not
+    change the answer here — GitHub's runners have it, a fresh container does
+    not.
+    """
+
+    def __init__(self, ffmpeg: bool = True):
+        self.ffmpeg = ffmpeg
+        self.fetched = 0
+
+    def find_ffmpeg(self):
+        if not self.ffmpeg:
+            return None
+        return Tool("ffmpeg", ["/fake/ffmpeg"], "system", version="7.0")
+
+    def ensure_ffmpeg(self, on_status=None, on_progress=None, allow_download=True):
+        self.fetched += 1
+        if on_status:
+            on_status("Downloading ffmpeg (one time)...")
+        if on_progress:
+            on_progress(50, 100)
+        self.ffmpeg = True
+        return Tool("ffmpeg", ["/fake/ffmpeg"], "viddl", version="7.0")
+
+    def ffmpeg_size_hint(self):
+        return 150 * 1024 * 1024
+
+
+class BrokenFfmpegEngine(FakeEngine):
+    def __init__(self):
+        super().__init__(ffmpeg=False)
+
+    def ensure_ffmpeg(self, on_status=None, on_progress=None, allow_download=True):
+        raise ToolError("Could not reach the internet.", "Check your connection.")
+
+
+class FakeJob:
+    """Writes a real file, reporting progress like a real download would."""
+
+    made: list = []
+
+    def __init__(self, engine, url, option, out_dir, on_progress=None, on_log=None):
+        self.option = option
+        self.out_dir = Path(out_dir)
+        self.on_progress = on_progress
+        self.cancelled = False
+        self.force_cancelled = False
+        FakeJob.made.append(self)
+
+    def run(self):
+        self.on_progress(
+            Progress(
+                status="Downloading…",
+                percent=50.0,
+                speed="1.0 MB/s",
+                eta="0:02",
+                downloaded=1024,
+                total=2048,
+            )
+        )
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        target = self.out_dir / "A Very Real Video [dQw4w9WgXcQ].mp4"
+        target.write_bytes(b"x" * 2048)
+        self.on_progress(Progress(status="Done", percent=100.0, phase="done"))
+        return target
+
+    def cancel(self, force: bool = False):
+        self.cancelled = True
+        self.force_cancelled = force
+
+
+class MergeJob(FakeJob):
+    """Reports the phases the real job does: merging, then a retry wait."""
+
+    def run(self):
+        self.on_progress(Progress(status="Merging video and audio…", phase="merge"))
+        self.on_progress(
+            Progress(status="Retrying in 4s (attempt 2 of 3)…", phase="retry")
+        )
+        return super().run()
+
+
+class InterruptedJob(FakeJob):
+    def run(self):
+        raise KeyboardInterrupt()
+
+
+class CancelledJob(FakeJob):
+    def run(self):
+        raise DownloadCancelled()
+
+
+class Tty(io.StringIO):
+    """Standard input that looks like a terminal, with a scripted answer."""
+
+    def __init__(self, answer: str = ""):
+        super().__init__(answer)
+
+    def isatty(self) -> bool:
+        return True
+
+
+@pytest.fixture(autouse=True)
+def no_jobs_left_over():
+    FakeJob.made.clear()
+    shutil.rmtree(DEST, ignore_errors=True)
+    yield
+    FakeJob.made.clear()
+    shutil.rmtree(DEST, ignore_errors=True)
+
+
+def run(url=URL, *, info=None, job_class=FakeJob, probe=None, engine=None, **kwargs):
+    out, err = io.StringIO(), io.StringIO()
+    if probe is None:
+        info = info if info is not None else media()
+
+        def probe(engine, link):
+            return info
+
+    code = plain.run_plain(
+        url,
+        engine=engine if engine is not None else FakeEngine(),
+        probe=probe,
+        make_job=job_class,
+        downloads_dir=lambda: DEST,
+        stdout=out,
+        stderr=err,
+        **kwargs,
+    )
+    return code, out.getvalue(), err.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# ASCII, and only ASCII
+# ---------------------------------------------------------------------------
+
+
+def test_the_typography_viddl_uses_becomes_something_any_console_can_print():
+    line = plain.ascii_text("Audio only · MP3 … — “Stop looking” → done")
+    assert line == 'Audio only - MP3 ... - "Stop looking" -> done'
+    assert line.isascii()
+
+
+def test_accents_are_folded_rather_than_lost():
+    assert plain.ascii_text("Café Crème") == "Cafe Creme"
+
+
+def test_a_title_no_console_can_print_does_not_become_a_crash():
+    line = plain.ascii_text("日本語のビデオ 🎬")
+    assert line.isascii()
+    assert line.startswith("?")
+    line.encode("cp1252")  # the whole point: this cannot raise
+
+
+def test_the_plain_menu_is_ascii_even_for_a_title_full_of_typography():
+    info = media()
+    info.title = "Café — “Live” 日本語"
+    info.uploader = "Sömé Channel"
+    code, out, err = run(info=info, assume_yes=True)
+
+    assert code == 0
+    assert out == f"{DEST / 'A Very Real Video [dQw4w9WgXcQ].mp4'}\n"
+    assert err.isascii(), err
+    assert "Cafe - \"Live\" ???" in err
+    err.encode("cp1252")
+
+
+def test_every_string_viddl_says_can_be_printed_by_a_cp1252_console():
+    """A legacy console is the reason --plain exists; no literal may escape it.
+
+    The one exception is the translation table in ``plain.py`` itself: those
+    characters exist there in order to be replaced by the line above, so they
+    are allowed to be unprintable.
+    """
+    translated = {chr(codepoint) for codepoint in plain._TO_ASCII}
+    bad = []
+    for path in sorted((REPO / "viddl").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if path.name == "plain.py" and node.value in translated:
+                continue
+            try:
+                node.value.encode("cp1252")
+            except UnicodeEncodeError:
+                bad.append(f"{path.relative_to(REPO)}:{node.lineno}: {node.value!r}")
+    assert not bad, "these would break a cp1252 console:\n" + "\n".join(bad)
+
+
+# ---------------------------------------------------------------------------
+# choosing a quality without a menu
+# ---------------------------------------------------------------------------
+
+
+def test_the_best_quality_is_the_default():
+    assert plain.choose_option(media()).height == 1080
+
+
+def test_a_height_picks_that_height():
+    assert plain.choose_option(media(), "720").height == 720
+
+
+def test_a_height_between_rows_takes_the_next_one_down():
+    """900 is not offered, and 720 is the honest answer to \"at most 900\"."""
+    assert plain.choose_option(media(), "900").height == 720
+
+
+def test_a_height_above_everything_takes_the_best_there_is():
+    assert plain.choose_option(media(), "2160").height == 1080
+
+
+@pytest.mark.parametrize("word", ["audio", "mp3", "AUDIO", "a"])
+def test_the_word_audio_takes_the_best_mp3_row(word):
+    chosen = plain.choose_option(media(), word)
+    assert chosen.kind == "audio"
+    assert chosen.key == "mp3-320"
+
+
+def test_the_audio_flag_chooses_audio_without_a_quality():
+    assert plain.choose_option(media(), "", audio=True).kind == "audio"
+
+
+def test_an_audio_request_on_a_link_without_audio_says_so():
+    info = MediaInfo(url=URL, title="Video only", options=[MediaOption(key="v", label="720p")])
+    with pytest.raises(ToolError) as caught:
+        plain.choose_option(info, "audio")
+    assert "audio-only" in caught.value.message
+
+
+def test_an_unusable_quality_says_what_is_allowed():
+    with pytest.raises(ToolError) as caught:
+        plain.choose_option(media(), "medium")
+    assert "Unknown quality" in caught.value.message
+    assert "720" in (caught.value.hint or "")
+
+
+def test_a_link_with_no_rows_is_an_error_with_a_reason():
+    with pytest.raises(ToolError) as caught:
+        plain.choose_option(MediaInfo(url=URL, title="Nothing"))
+    assert "No downloadable qualities" in caught.value.message
+
+
+# ---------------------------------------------------------------------------
+# running it
+# ---------------------------------------------------------------------------
+
+
+def test_the_saved_path_is_the_only_thing_on_stdout():
+    """``path=$(viddl --plain --yes <link>)`` has to receive exactly a path."""
+    code, out, err = run(assume_yes=True)
+
+    assert code == 0
+    assert out.splitlines() == [str(DEST / "A Very Real Video [dQw4w9WgXcQ].mp4")]
+    assert "Selected: 1080p" in err
+    assert "Saved (2.0 KB)" in err
+    assert "\r" in err, "progress is written in place, on one line"
+
+
+def test_progress_never_leaves_a_line_longer_than_the_screen():
+    _, _, err = run(assume_yes=True)
+    for line in err.splitlines():
+        assert len(line) < 120, line
+
+
+def test_a_merge_or_a_retry_status_is_ascii_too():
+    """The statuses come from Viddl, not the site, so they must be reduced."""
+    _, _, err = run(assume_yes=True, job_class=MergeJob)
+    assert err.isascii(), err
+    assert "Merging video and audio..." in err
+    assert "Retrying in 4s (attempt 2 of 3)..." in err
+
+
+def test_a_quality_chosen_on_the_command_line_is_the_one_downloaded():
+    _, _, err = run(assume_yes=True, quality="720")
+    assert "Selected: 720p" in err
+    assert FakeJob.made[0].option.height == 720
+
+
+def test_audio_only_works_from_the_command_line():
+    _, _, err = run(assume_yes=True, quality="audio")
+    assert "Selected: Audio only" in err
+    assert FakeJob.made[0].option.kind == "audio"
+
+
+def test_a_failed_look_up_is_a_sentence_not_a_traceback():
+    def probe(engine, link):
+        raise ToolError("That video is private.", "Only the owner can download it.")
+
+    code, out, err = run(probe=probe)
+    assert code == 1
+    assert out == ""
+    assert "error: That video is private." in err
+    assert "Only the owner can download it." in err
+
+
+def test_a_failed_download_is_a_sentence_too():
+    class Failing(FakeJob):
+        def run(self):
+            raise ToolError("The download was interrupted.", "Try again.")
+
+    code, out, err = run(assume_yes=True, job_class=Failing)
+    assert code == 1
+    assert out == ""
+    assert "error: The download was interrupted." in err
+
+
+def test_without_a_terminal_and_without_yes_it_refuses_before_downloading():
+    code, out, err = run(assume_yes=False)
+    assert code == 1
+    assert out == ""
+    assert "Pass --yes" in err
+    assert FakeJob.made == []
+
+
+def test_at_a_terminal_it_asks_and_a_no_downloads_nothing():
+    code, out, err = run(assume_yes=False, stdin=Tty("n\n"))
+    assert code == 0
+    assert out == ""
+    assert "Download 1080p? [y/N]" in err
+    assert "Nothing was downloaded." in err
+    assert FakeJob.made == []
+
+
+def test_at_a_terminal_a_yes_downloads():
+    code, out, _ = run(assume_yes=False, stdin=Tty("y\n"))
+    assert code == 0
+    assert out.strip().endswith(".mp4")
+    assert len(FakeJob.made) == 1
+
+
+# ---------------------------------------------------------------------------
+# ffmpeg, when the chosen quality needs it
+# ---------------------------------------------------------------------------
+
+
+def test_a_quality_that_needs_ffmpeg_fetches_it_when_asked_in_advance():
+    engine = FakeEngine(ffmpeg=False)
+    code, out, err = run(assume_yes=True, engine=engine)
+
+    assert code == 0
+    assert engine.fetched == 1
+    assert "Fetching ffmpeg" in err
+    assert "ffmpeg is ready" in err
+    assert out.strip().endswith(".mp4")
+
+
+def test_the_ffmpeg_fetch_says_how_big_it_is_before_asking():
+    engine = FakeEngine(ffmpeg=False)
+    code, _, err = run(assume_yes=False, stdin=Tty("n\n"), engine=engine)
+
+    assert code == 0
+    assert "150.0 MB" in err
+    assert "Fetch ffmpeg now" in err
+    assert "Nothing was downloaded." in err
+    assert engine.fetched == 0
+    assert FakeJob.made == []
+
+
+def test_saying_yes_to_ffmpeg_downloads_it_and_then_the_video():
+    """Two questions, two answers: ffmpeg, then the download."""
+    engine = FakeEngine(ffmpeg=False)
+    code, out, _ = run(assume_yes=False, stdin=Tty("y\ny\n"), engine=engine)
+
+    assert code == 0
+    assert engine.fetched == 1
+    assert out.strip().endswith(".mp4")
+
+
+def test_without_a_terminal_ffmpeg_is_not_fetched_behind_the_users_back():
+    engine = FakeEngine(ffmpeg=False)
+    code, _, err = run(assume_yes=False, engine=engine)
+
+    assert code == 1
+    assert "no terminal to ask on" in err
+    assert engine.fetched == 0
+    assert FakeJob.made == []
+
+
+def test_a_quality_that_needs_no_ffmpeg_is_not_asked_about_ffmpeg():
+    info = MediaInfo(
+        url=URL,
+        title="Progressive",
+        options=[MediaOption(key="v360", label="360p", height=360, needs_ffmpeg=False)],
+    )
+    engine = FakeEngine(ffmpeg=False)
+    code, out, err = run(info=info, assume_yes=True, engine=engine)
+
+    assert code == 0
+    assert "ffmpeg" not in err
+    assert out.strip()
+
+
+def test_a_failed_ffmpeg_fetch_is_a_sentence_not_a_traceback():
+    code, out, err = run(assume_yes=True, engine=BrokenFfmpegEngine())
+
+    assert code == 1
+    assert out == ""
+    assert "error: Could not reach the internet." in err
+    assert FakeJob.made == []
+
+
+def test_ctrl_c_stops_the_whole_download_and_keeps_what_was_fetched():
+    code, out, err = run(assume_yes=True, job_class=InterruptedJob)
+    assert code == 130
+    assert out == ""
+    assert "carry on from here" in err
+    assert FakeJob.made[0].cancelled is True
+    assert FakeJob.made[0].force_cancelled is True
+
+
+def test_a_cancelled_download_is_not_reported_as_a_failure():
+    code, _, err = run(assume_yes=True, job_class=CancelledJob)
+    assert code == 130
+    assert "error:" not in err
+
+
+# ---------------------------------------------------------------------------
+# the command line
+# ---------------------------------------------------------------------------
+
+
+def test_plain_without_a_link_says_what_it_needs(capsys):
+    assert cli.main(["--plain"]) == 1
+    assert "--plain needs a link" in capsys.readouterr().err
+
+
+def test_quality_and_yes_are_refused_without_plain(capsys):
+    assert cli.main(["--quality", "720", URL]) == 1
+    assert "only work with --plain" in capsys.readouterr().err
+
+
+def test_the_cli_hands_the_choices_to_the_plain_path(monkeypatch):
+    seen = {}
+
+    def fake_run_plain(url, **kwargs):
+        seen["url"] = url
+        seen.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(plain, "run_plain", fake_run_plain)
+
+    assert cli.main(["--plain", "--yes", "--quality", "720", URL]) == 0
+    assert seen == {"url": URL, "audio": False, "quality": "720", "assume_yes": True}
+
+
+def test_the_cli_passes_audio_through(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(plain, "run_plain", lambda url, **kwargs: seen.update(kwargs) or 0)
+
+    assert cli.main(["--plain", "--audio", "--yes", URL]) == 0
+    assert seen["audio"] is True

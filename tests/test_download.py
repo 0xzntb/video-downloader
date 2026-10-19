@@ -621,16 +621,44 @@ def test_the_merged_file_wins_over_the_streams_it_was_made_from(tmp_path):
     assert job._find_output(job._snapshot()) == merged
 
 
-def test_a_leftover_stream_is_a_last_resort_not_an_error(tmp_path):
-    """If the merge never produced its file, the stream on disk still beats
-    telling the user nothing was saved."""
+def test_a_leftover_stream_is_not_the_finished_video(tmp_path):
+    """A merge that never produced its file left no video, only its streams.
+
+    Returning one of those handed the user an audio fragment as "the download".
+    The caller is told nothing was finished instead, and says why (R10).
+    """
     out = tmp_path / "Downloads"
     out.mkdir()
     video_only = out / "A Video [abc].f137.mp4"
     video_only.write_bytes(b"x" * 100)
     job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
     job._handle_line(f"[download] Destination: {video_only}")
-    assert job._find_output(job._snapshot()) == video_only
+    assert job._find_output(job._snapshot()) is None
+
+
+def test_a_job_that_only_downloaded_streams_does_not_claim_success(tmp_path):
+    """Measured with real yt-dlp: no ffmpeg means exit 0 with two fragments."""
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    engine = engine_for(
+        tmp_path,
+        "fake_streams.py",
+        """import pathlib, sys
+args = sys.argv[1:]
+folder = pathlib.Path(args[args.index("-P") + 1])
+folder.mkdir(parents=True, exist_ok=True)
+for name in ("A Video [abc].f137.mp4", "A Video [abc].f140.m4a"):
+    (folder / name).write_bytes(b"x" * 100)
+    print("[download] Destination: " + str(folder / name), flush=True)
+print("[download] 100% of 200B in 00:00:00")
+""",
+    )
+    job = DownloadJob(engine, "u", video_option(), out)
+    with pytest.raises(ToolError) as caught:
+        job.run()
+    assert "could not be joined" in caught.value.message
+    assert "ffmpeg" in (caught.value.hint or "")
+    assert not list(out.glob("*.m4a")), "a fragment must not be left in Downloads"
 
 
 def test_the_newest_file_scan_skips_leftover_streams(tmp_path):
@@ -783,7 +811,12 @@ def test_a_finished_download_with_no_file_is_reported(tmp_path, monkeypatch):
     out = tmp_path / "Downloads"
     out.mkdir()
     engine = engine_for(tmp_path, "fake_nothing.py", "import sys; sys.exit(0)\n")
-    job = DownloadJob(engine, "u", video_option(), out)
+    # No merge involved: the "nothing was produced at all" message, rather than
+    # the one about streams that could not be joined.
+    plain = MediaOption(
+        key="v360", label="360p", kind="video", needs_ffmpeg=False, format_selector="18"
+    )
+    job = DownloadJob(engine, "u", plain, out)
     with pytest.raises(ToolError) as caught:
         job.run()
     assert "could not be found" in caught.value.message

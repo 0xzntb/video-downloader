@@ -751,6 +751,20 @@ class DownloadJob:
 
         finished = self._find_output(before)
         if finished is None:
+            if self.option.needs_ffmpeg:
+                # Measured, not assumed: yt-dlp exits 0 having downloaded both
+                # streams when ffmpeg is missing and only the merge fails, so
+                # "it finished" is not the same as "there is a file". The
+                # streams it left are not the video the menu promised, and
+                # reporting one of them would hand the user an audio fragment
+                # with a .mp4-shaped name.
+                raise ToolError(
+                    "The video and audio could not be joined into one file.",
+                    "That needs ffmpeg, which is not available. Run "
+                    "`viddl --update-ffmpeg` (about 150 MB), or choose a quality "
+                    "that does not need it.",
+                    raw="\n".join(self._lines[-60:]),
+                )
             raise ToolError(
                 "The download finished but the file could not be found.",
                 f"Look in your Downloads folder: {self.out_dir}",
@@ -1016,8 +1030,9 @@ class DownloadJob:
         for path in reversed(existing):
             if not _is_intermediate(path):
                 return path
-        if existing:
-            return existing[-1]
+        # Nothing but the streams a merge was supposed to join: that is not a
+        # finished download, and returning one here is how a leftover audio
+        # fragment used to be reported as the file the user asked for.
 
         # Only this job's own folder is scanned. The shared downloads folder is
         # not: another window's half-finished or just-finished file is not

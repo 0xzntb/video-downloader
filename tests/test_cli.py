@@ -124,7 +124,7 @@ def test_update_says_what_the_version_was_and_is(capsys, monkeypatch):
     code, out, err = run_update(capsys, monkeypatch, UpdateEngine(before=tool("2099.05.05")))
 
     assert code == 0
-    assert "yt-dlp 2099.05.05 → 2099.06.06" in out
+    assert "yt-dlp 2099.05.05 -> 2099.06.06" in out
     assert "Downloading the video engine" in err
 
 
@@ -168,7 +168,7 @@ def test_update_can_take_ffmpeg_with_it(capsys, monkeypatch):
     code, out, _ = run_update(capsys, monkeypatch, engine, args=("--update", "--update-ffmpeg"))
 
     assert code == 0
-    assert "yt-dlp 2099.05.05 → 2099.06.06" in out
+    assert "yt-dlp 2099.05.05 -> 2099.06.06" in out
     assert "Installed ffmpeg 7.1" in out
 
 

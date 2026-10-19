@@ -1,0 +1,384 @@
+"""A line-oriented, ASCII-only way to download (R10).
+
+The full-screen app needs a terminal that can draw a box and print Unicode. A
+legacy Windows console cannot, and neither can a log file, a screen reader or
+some SSH sessions. ``viddl --plain`` is the way out: one line at a time, every
+piece of Viddl's own text reduced to ASCII, progress overwritten in place, and
+the saved path alone on standard output — which is what a script wants.
+
+The site's own words — a title, an uploader — are reduced too. That is the
+point: a console that cannot encode ``é`` must not turn a title into a
+traceback. A path is written as it is, because mangling one would make the
+answer useless.
+"""
+
+from __future__ import annotations
+
+import sys
+import unicodedata
+from pathlib import Path
+from typing import Callable, Optional, TextIO
+
+from . import appdata
+from .download import DownloadCancelled, DownloadJob, Progress, probe_video
+from .engine import Engine, ToolError
+from .formats import MediaInfo, MediaOption
+from .util import human_duration, human_size
+
+#: Typography Viddl uses in its own sentences, mapped to what a console with a
+#: legacy code page can print: a plain one shows ``·`` and ``…`` as boxes or
+#: question marks, and ``→`` is not in cp1252 at all.
+_TO_ASCII = str.maketrans(
+    {
+        "·": "-",
+        "•": "*",
+        "…": "...",
+        "—": "-",
+        "–": "-",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2018": "'",
+        "\u2019": "'",
+        "→": "->",
+        "←": "<-",
+        "✓": "[ok]",
+        "✗": "[x]",
+        "\u00a0": " ",
+    }
+)
+
+#: What ``--quality`` accepts besides a height.
+_AUDIO_WORDS = ("audio", "mp3", "a")
+
+
+def ascii_text(value: object) -> str:
+    """``value`` as text any console can print.
+
+    Two steps, because they fix different things. The table above keeps the
+    *meaning* of punctuation Viddl uses (``“Stop looking”`` still reads as a
+    quotation), and NFKD folds accented letters to their base so ``café`` stays
+    readable as ``cafe``. Whatever is left — Chinese, emoji — becomes ``?``:
+    losing a character is better than a ``UnicodeEncodeError`` on a console
+    that cannot print it, and the plain path exists for exactly that console.
+    """
+    text = str(value).translate(_TO_ASCII)
+    folded = "".join(
+        character
+        for character in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(character)
+    )
+    return folded.encode("ascii", "replace").decode("ascii")
+
+
+def _say(stream: TextIO, text: object = "") -> None:
+    stream.write(ascii_text(text) + "\n")
+    stream.flush()
+
+
+class _Line:
+    """One line of progress, overwritten in place.
+
+    A shorter update has to erase the tail of the longer one before it, or the
+    screen shows the two glued together — and when the download ends the line
+    is cleared so the sentence that follows starts at the left edge.
+    """
+
+    def __init__(self, stream: TextIO) -> None:
+        self.stream = stream
+        self.width = 0
+
+    def show(self, text: str) -> None:
+        # The status a merge or a retry reports is Viddl's own sentence, so it
+        # goes through the same reduction as everything else: "Merging video and
+        # audio…" must not put an ellipsis on a legacy console.
+        text = ascii_text(text)
+        self.stream.write("\r" + text.ljust(max(self.width, len(text))))
+        self.stream.flush()
+        self.width = len(text)
+
+    def clear(self) -> None:
+        if self.width:
+            self.stream.write("\r" + " " * self.width + "\r")
+            self.stream.flush()
+            self.width = 0
+
+
+def _is_interactive(stream: TextIO) -> bool:
+    try:
+        return bool(stream.isatty())
+    except (AttributeError, OSError):  # pragma: no cover - unusual streams
+        return False
+
+
+def choose_option(
+    info: MediaInfo, quality: str = "", audio: bool = False
+) -> MediaOption:
+    """The row ``--quality`` asks for, or the best one there is.
+
+    Heights are matched the way a person means them: ``720`` takes 720p when it
+    exists, the next one down when it does not (a 900 request on a 1080/720/480
+    menu gets 720), and the smallest available when the link has nothing that
+    low. ``audio`` — the flag or the word — takes the best MP3 row.
+    """
+    options = info.options
+    if not options:
+        raise ToolError(
+            "No downloadable qualities were found for this link.",
+            "It may be a live stream, a page rather than a video, or a site "
+            "that needs you to be signed in.",
+        )
+
+    wanted = (quality or "").strip().lower()
+    if audio and not wanted:
+        wanted = "audio"
+
+    if wanted in ("", "best", "any"):
+        return options[0]
+
+    if wanted in _AUDIO_WORDS:
+        for option in options:
+            if option.kind == "audio":
+                return option
+        raise ToolError(
+            "This link does not offer an audio-only download.",
+            "Pick a video quality instead.",
+        )
+
+    digits = wanted[:-1] if wanted.endswith("p") else wanted
+    if not digits.isdigit():
+        raise ToolError(
+            f"Unknown quality '{quality}'.",
+            "Use a height such as 720 or 1080, or 'best' or 'audio'.",
+        )
+
+    height = int(digits)
+    videos = [option for option in options if option.kind == "video"]
+    if not videos:
+        return options[0]
+
+    # ``height`` is optional on a MediaOption: a handful of extractors hand back
+    # a single ready-made file, and "Best available" is the honest name for it.
+    measured = [option for option in videos if option.height is not None]
+    exact = [option for option in measured if option.height == height]
+    if exact:
+        return exact[0]
+    below = [option for option in measured if (option.height or 0) < height]
+    if below:
+        return max(below, key=lambda option: option.height or 0)
+    if measured:
+        return min(measured, key=lambda option: option.height or 0)
+    return videos[0]
+
+
+def _menu(info: MediaInfo, chosen: MediaOption, stream: TextIO) -> None:
+    """The link's title and rows, written before anything is downloaded."""
+    _say(stream, info.title or "Untitled video")
+    if info.uploader:
+        _say(stream, info.uploader)
+    if info.duration:
+        _say(stream, f"Length: {human_duration(info.duration)}")
+    if info.playlist_note:
+        _say(stream, info.playlist_note)
+    _say(stream)
+    for number, option in enumerate(info.options, start=1):
+        marker = ">" if option is chosen else " "
+        detail = f"  ({option.detail})" if option.detail else ""
+        _say(stream, f" {marker} {number}. {option.label}  {option.size_text}{detail}")
+    _say(stream)
+
+
+def _progress_line(progress: Progress) -> str:
+    """One line describing where the download is.
+
+    A retry or a merge replaces the numbers: "42% 1.2 MB/s" says nothing while
+    yt-dlp is waiting four seconds or running ffmpeg, and the status is the one
+    thing that explains the pause.
+    """
+    if progress.phase == "retry":
+        return progress.status or "Waiting to try again..."
+    if progress.phase not in ("download", "done"):
+        return progress.status or "Working..."
+    bits = []
+    if progress.percent is not None:
+        bits.append(f"{progress.percent:3.0f}%")
+    if progress.downloaded:
+        if progress.total:
+            bits.append(
+                f"{human_size(progress.downloaded)} of {human_size(progress.total)}"
+            )
+        else:
+            bits.append(human_size(progress.downloaded))
+    if progress.speed:
+        bits.append(progress.speed)
+    if progress.eta:
+        bits.append(f"{progress.eta} left")
+    if not bits:
+        return progress.status or "Working..."
+    return "  ".join(bits)
+
+
+def _size_hint(engine: Engine) -> str:
+    """`` (about 149.2 MB)``, or ``""`` when the mirror did not say."""
+    try:
+        size = engine.ffmpeg_size_hint()
+    except Exception:  # pragma: no cover - a nicety, never a failure
+        size = None
+    return f" (about {human_size(size)})" if size else ""
+
+
+def _set_up_ffmpeg(
+    engine: Engine,
+    chosen: MediaOption,
+    err: TextIO,
+    stdin: TextIO,
+    assume_yes: bool,
+) -> Optional[int]:
+    """Fetch ffmpeg when the chosen quality needs it. ``None`` means carry on.
+
+    The app asks before a download this size, so the plain path does too: it
+    says what the quality needs and how big the one-time fetch is, and --yes is
+    the way a script agrees in advance. Without a terminal to ask on, it
+    refuses rather than opening a 150 MB download nobody agreed to.
+    """
+    about = _size_hint(engine)
+    _say(err, f"{chosen.label} needs ffmpeg to join the video and audio streams.")
+
+    if not assume_yes:
+        if not _is_interactive(stdin):
+            _say(err, "error: ffmpeg is not set up and there is no terminal to ask on.")
+            _say(
+                err,
+                f"  Pass --yes to fetch it{about} as part of this download, "
+                "or run `viddl --update-ffmpeg` first.",
+            )
+            return 1
+        err.write(ascii_text(f"Fetch ffmpeg now{about}? [y/N] "))
+        err.flush()
+        if stdin.readline().strip().lower() not in ("y", "yes"):
+            _say(err, "Nothing was downloaded.")
+            return 0
+
+    _say(err, f"Fetching ffmpeg{about} - this is a one-time download...")
+    line = _Line(err)
+
+    def on_progress(done: int, total: Optional[int]) -> None:
+        if total:
+            line.show(f"{done * 100 // total}%  {human_size(done)} of {human_size(total)}")
+        else:
+            line.show(human_size(done))
+
+    try:
+        tool = engine.ensure_ffmpeg(
+            on_status=lambda message: _say(err, message), on_progress=on_progress
+        )
+    except ToolError as exc:
+        line.clear()
+        _say(err, f"error: {exc.message}")
+        if exc.hint:
+            _say(err, f"  {exc.hint}")
+        return 1
+    line.clear()
+    _say(err, f"ffmpeg is ready ({tool.version or 'ok'}).")
+    return None
+
+
+def run_plain(
+    url: str,
+    *,
+    audio: bool = False,
+    quality: str = "",
+    assume_yes: bool = False,
+    engine: Optional[Engine] = None,
+    probe: Callable[..., MediaInfo] = probe_video,
+    make_job: Callable[..., DownloadJob] = DownloadJob,
+    downloads_dir: Callable[[], Path] = appdata.downloads_dir,
+    stdin: Optional[TextIO] = None,
+    stdout: Optional[TextIO] = None,
+    stderr: Optional[TextIO] = None,
+) -> int:
+    """Download one link without the full-screen app. Returns an exit code.
+
+    Everything a person reads goes to stderr; the saved path is the only thing
+    on stdout, so ``path=$(viddl --plain --yes <link>)`` works. The exit codes
+    match the rest of the CLI: 0 worked, 1 did not, 130 was stopped.
+    """
+    out = stdout or sys.stdout
+    err = stderr or sys.stderr
+    stdin = stdin or sys.stdin
+    engine = engine or Engine()
+
+    _say(err, f"Looking up {url}")
+    try:
+        info = probe(engine, url)
+    except ToolError as exc:
+        _say(err, f"error: {exc.message}")
+        if exc.hint:
+            _say(err, f"  {exc.hint}")
+        return 1
+
+    try:
+        chosen = choose_option(info, quality=quality, audio=audio)
+    except ToolError as exc:
+        _say(err, f"error: {exc.message}")
+        if exc.hint:
+            _say(err, f"  {exc.hint}")
+        return 1
+
+    _menu(info, chosen, err)
+    _say(err, f"Selected: {chosen.label}  {chosen.size_text}")
+
+    if chosen.needs_ffmpeg and engine.find_ffmpeg() is None:
+        # ffmpeg is what joins the two streams; without it yt-dlp downloads both
+        # and stops, and there is no finished video to report.
+        answer = _set_up_ffmpeg(engine, chosen, err, stdin, assume_yes)
+        if answer is not None:
+            return answer
+
+    if not assume_yes:
+        if not _is_interactive(stdin):
+            _say(err, "error: Viddl will not download without being asked.")
+            _say(err, "  Pass --yes to download without a question, for scripts.")
+            return 1
+        err.write(ascii_text(f"Download {chosen.label}? [y/N] "))
+        err.flush()
+        if stdin.readline().strip().lower() not in ("y", "yes"):
+            _say(err, "Nothing was downloaded.")
+            return 0
+
+    line = _Line(err)
+
+    def on_progress(progress: Progress) -> None:
+        line.show(_progress_line(progress))
+
+    job = None
+    try:
+        job = make_job(engine, url, chosen, downloads_dir(), on_progress=on_progress)
+        path = job.run()
+    except KeyboardInterrupt:
+        if job is not None:
+            job.cancel(force=True)
+        line.clear()
+        _say(err, "Stopped. Run the same command again to carry on from here.")
+        return 130
+    except DownloadCancelled:
+        line.clear()
+        _say(err, "Stopped. Run the same command again to carry on from here.")
+        return 130
+    except ToolError as exc:
+        line.clear()
+        _say(err, f"error: {exc.message}")
+        if exc.hint:
+            _say(err, f"  {exc.hint}")
+        return 1
+
+    line.clear()
+    try:
+        size = human_size(Path(path).stat().st_size)
+    except OSError:  # pragma: no cover - a file that vanished after the move
+        size = "?"
+    _say(err, f"Saved ({size})")
+    # The path goes out exactly as it is: this line is what a script uses, and
+    # a transliterated filename would point at a file that is not there.
+    out.write(f"{path}\n")
+    out.flush()
+    return 0
