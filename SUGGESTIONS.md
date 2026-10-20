@@ -1243,6 +1243,9 @@ throws quality away for no reason.
 > ffmpeg as the codec its row promised, each in 1.9–2.8 s on top of the
 > download.
 >
+> **21 new tests** (698 → 719), `pyflakes` clean, coverage 93 % overall and
+> 94 % on `formats.py`, where the new half lives.
+>
 > **Not done:** the MP3 presets are still libmp3lame **VBR steps** labelled with
 > rough nominal bitrates — the row that says 128 kbps wrote 44 kb/s on a
 > 19-second speech clip, marked `~` but a 65 % miss is not "rough"; making them
