@@ -4,7 +4,7 @@ The normal way to use Viddl is to run ``viddl`` and paste a link, but every
 piece is also reachable from the command line:
 
 * ``viddl <link>``            open the app with the link already loaded
-* ``viddl --audio <link>``    open it on the MP3 options
+* ``viddl --audio <link>``    open it on the audio options
 * ``viddl --uri viddl://…``   what the browser extension calls
 * ``viddl --doctor``          show where everything lives and whether it works
 * ``viddl --update``          fetch the newest video engine (yt-dlp)
@@ -37,7 +37,7 @@ from .protocol import (
 )
 from .util import safe_video_link
 
-_DESCRIPTION = "Download videos and MP3s by pasting a link."
+_DESCRIPTION = "Download videos and audio by pasting a link."
 
 
 def _enable_log_file() -> None:
@@ -71,7 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--audio",
         action="store_true",
-        help="start on the MP3 options",
+        help=(
+            "start on the audio options: the site's own file, or MP3, M4A, "
+            "Opus, FLAC or WAV"
+        ),
     )
     parser.add_argument(
         "--list-qualities",
@@ -93,8 +96,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--quality",
-        metavar="HEIGHT",
-        help="with --plain: a height (720, 1080), best, or audio",
+        metavar="QUALITY",
+        help=(
+            "with --plain: a height (720, 1080), best, or an audio format — "
+            "audio, mp3, m4a, opus, flac, wav, or a preset such as mp3-192"
+        ),
     )
     parser.add_argument(
         "--yes",

@@ -269,11 +269,57 @@ def test_a_height_above_everything_takes_the_best_there_is():
     assert plain.choose_option(media(), "2160").height == 1080
 
 
-@pytest.mark.parametrize("word", ["audio", "mp3", "AUDIO", "a"])
-def test_the_word_audio_takes_the_best_mp3_row(word):
+@pytest.mark.parametrize("word", ["audio", "AUDIO", "a"])
+def test_the_word_audio_takes_the_best_sound_the_link_has(word):
+    """Which, since F4, is the site's own file rather than a re-encode."""
     chosen = plain.choose_option(media(), word)
     assert chosen.kind == "audio"
-    assert chosen.key == "mp3-320"
+    assert chosen.key == "orig"
+
+
+def test_mp3_still_means_mp3():
+    """A script that asked for MP3 keeps getting MP3."""
+    assert plain.choose_option(media(), "mp3").key == "mp3-320"
+
+
+def test_a_preset_can_be_named_exactly():
+    assert plain.choose_option(media(), "mp3-192").key == "mp3-192"
+    assert plain.choose_option(media(), "opus-96").key == "opus-96"
+
+
+def test_a_lossless_format_is_chosen_by_name():
+    assert plain.choose_option(media(), "flac").key == "flac"
+    assert plain.choose_option(media(), "wav").key == "wav"
+
+
+def test_a_format_the_link_already_has_is_not_re_encoded():
+    """The sound is already m4a, so `m4a` gives it untouched (F4)."""
+    chosen = plain.choose_option(media(), "m4a")
+    assert chosen.key == "orig"
+    assert chosen.keeps_source_audio is True
+
+
+def test_a_format_the_link_does_not_have_is_converted_to():
+    info = parse_info(
+        {
+            "title": "opus only",
+            "duration": 60,
+            "formats": [
+                {"format_id": "251", "ext": "webm", "vcodec": "none", "acodec": "opus",
+                 "abr": 160, "filesize": 1200000},
+            ],
+        }
+    )
+    chosen = plain.choose_option(info, "m4a")
+    assert chosen.key == "m4a-256"
+    assert chosen.extra_args[-2:] == ["--audio-quality", "256"]
+
+
+def test_an_audio_preset_the_link_does_not_have_says_what_is_offered():
+    with pytest.raises(ToolError) as caught:
+        plain.choose_option(media(), "mp3-999")
+    assert "no 'mp3-999' audio option" in caught.value.message
+    assert "flac" in (caught.value.hint or "")
 
 
 def test_the_audio_flag_chooses_audio_without_a_quality():
@@ -340,6 +386,15 @@ def test_audio_only_works_from_the_command_line():
     _, _, err = run(assume_yes=True, quality="audio")
     assert "Selected: Audio only" in err
     assert FakeJob.made[0].option.kind == "audio"
+    # The untouched file, not an MP3 made out of it (F4).
+    assert FakeJob.made[0].option.key == "orig"
+
+
+def test_a_conversion_can_be_chosen_from_the_command_line():
+    _, _, err = run(assume_yes=True, quality="flac")
+    # The separator reaches the console as a hyphen: --plain is ASCII only.
+    assert "Selected: Audio only - FLAC" in err
+    assert FakeJob.made[0].option.extra_args[-1] == "flac"
 
 
 def test_a_failed_look_up_is_a_sentence_not_a_traceback():
@@ -423,6 +478,28 @@ def test_saying_yes_to_ffmpeg_downloads_it_and_then_the_video():
 
     assert code == 0
     assert engine.fetched == 1
+    assert out.strip().endswith(".mp4")
+
+
+def test_the_ffmpeg_prompt_for_an_audio_conversion_says_what_it_is_for():
+    """Converting is not joining: the sentence has to match the job (F4)."""
+    engine = FakeEngine(ffmpeg=False)
+    code, _, err = run(assume_yes=False, stdin=Tty("n\n"), engine=engine, quality="mp3-128")
+
+    assert code == 0
+    assert "needs ffmpeg to write the MP3 file" in err
+    assert "join the video and audio" not in err
+
+
+def test_the_untouched_audio_row_needs_no_ffmpeg_at_all():
+    engine = FakeEngine(ffmpeg=False)
+    code, out, err = run(assume_yes=True, engine=engine, quality="audio")
+
+    assert code == 0
+    assert engine.fetched == 0
+    # The menu mentions ffmpeg beside the rows that need it; this run never does.
+    assert "Fetch ffmpeg now" not in err
+    assert "Fetching ffmpeg" not in err
     assert out.strip().endswith(".mp4")
 
 

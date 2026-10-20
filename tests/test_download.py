@@ -444,6 +444,24 @@ def test_build_args_points_yt_dlp_at_our_own_ffmpeg(tmp_path):
     assert args[args.index("--ffmpeg-location") + 1].endswith("bin")
 
 
+def test_build_args_leaves_the_sites_own_audio_alone(tmp_path):
+    """The original row takes one stream and converts nothing (F4)."""
+    option = MediaOption(
+        key="orig",
+        label="Audio only · original M4A",
+        kind="audio",
+        needs_ffmpeg=False,
+        format_selector="140",
+        note="no re-encode",
+        audio_format="M4A",
+    )
+    args = DownloadJob(FakeEngine(["/fake/yt-dlp"]), "u", option, tmp_path).build_args()
+    assert args[args.index("-f") + 1] == "140"
+    assert "--extract-audio" not in args
+    assert "--audio-format" not in args
+    assert "--merge-output-format" not in args
+
+
 def test_build_args_adds_mp3_conversion(tmp_path):
     option = MediaOption(
         key="mp3-320",
@@ -577,11 +595,21 @@ def test_an_already_downloaded_file_is_reused(tmp_path):
 def test_an_extracted_audio_path_is_remembered(tmp_path):
     out = tmp_path / "Downloads"
     out.mkdir()
-    song = out / "A Song [abc].mp3"
-    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    song = out / "A Song [abc].flac"
+    option = MediaOption(
+        key="flac",
+        label="Audio only · FLAC",
+        kind="audio",
+        needs_ffmpeg=True,
+        format_selector="ba/b",
+        audio_format="FLAC",
+    )
+    job = DownloadJob(FakeEngine(["/fake"]), "u", option, out)
     job._handle_line(f"[ExtractAudio] Destination: {song}")
     assert job.progress.phase == "convert"
-    assert "MP3" in job.progress.status
+    # The chosen row names the conversion, rather than every conversion being
+    # called an MP3 (F4).
+    assert job.progress.status == "Converting to FLAC…"
 
 
 def test_finishing_steps_are_reported(tmp_path):

@@ -66,7 +66,7 @@ function sendToViddl(url, audio) {
       }
       showToast(
         audio
-          ? 'Sent to Viddl as MP3 — look for the terminal window.'
+          ? 'Sent to Viddl as audio — look for the terminal window.'
           : 'Sent to Viddl — pick a quality in the terminal window.'
       );
     });
@@ -101,7 +101,7 @@ function togglePanel(anchor, url) {
   const audio = document.createElement('button');
   audio.type = 'button';
   audio.className = 'viddl-choice';
-  audio.innerHTML = '<strong>Audio only</strong><span>saved as an MP3</span>';
+  audio.innerHTML = '<strong>Audio only</strong><span>saved as audio</span>';
   audio.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();

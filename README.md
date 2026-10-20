@@ -30,8 +30,10 @@ machine except the download itself.
 │                                                                                    │
 │   240p                              725.0 KB   MP4 video + audio · needs ffmpeg    │
 │   144p                              492.7 KB   MP4 video + audio · needs ffmpeg    │
+│   Audio only · original M4A         302.0 KB   no re-encode                        │
 │   Audio only · MP3 320 kbps        ~301.0 KB   MP3 · source is 130 kbps · needs …  │
-│   Audio only · MP3 128 kbps        ~296.9 KB   MP3 file · needs ffmpeg             │
+│   Audio only · Opus 160 kbps       ~301.0 KB   Opus · source is 130 kbps · needs … │
+│   Audio only · FLAC                  ~1.6 MB   lossless file · needs ffmpeg        │
 │                                                                                    │
 │                          Download        Set up ffmpeg        Back                 │
 │                                                                                    │
@@ -76,8 +78,9 @@ and the app looks after its own dependencies:
   time the app runs. If you already have one, Viddl uses yours instead — and if
   several exist it uses the **newest** one, whichever folder it is in, so a copy
   Viddl fetched months ago cannot shadow a newer one you installed since.
-* **ffmpeg** is only fetched when you actually need it (MP3, or a quality that
-  has to be merged), and it asks before downloading anything large — the
+* **ffmpeg** is only fetched when you actually need it (a conversion to MP3,
+  M4A, Opus, FLAC or WAV, or a quality whose video and audio have to be merged),
+  and it asks before downloading anything large — the
   qualities screen says how big it is first (*"The download is about 149.2 MB"*),
   so the number is on screen before you click. If you already have ffmpeg, that
   is used — unless you have asked Viddl to fetch its own, which is then the one
@@ -104,7 +107,7 @@ Nothing is installed system-wide and no configuration files are created.
 | --- | --- |
 | Start it | `viddl` |
 | Go straight to a link | `viddl https://www.youtube.com/watch?v=…` |
-| Start on the MP3 options | `viddl --audio <link>` |
+| Start on the audio options | `viddl --audio <link>` |
 | Download something that needs a sign-in | Choose **Sign in with my browser** on the qualities screen, or `viddl --cookies-from-browser auto <link>` |
 | Use it in a script, an old console or over SSH | `viddl --plain --yes <link>` |
 | Pick the quality without a menu | `viddl --plain --quality 720 <link>` |
@@ -164,7 +167,9 @@ path=$(viddl --plain --yes --quality 720 "https://www.youtube.com/watch?v=...")
 ```
 
 The title, uploader, quality list and progress go to stderr; only the path is
-on stdout. `--quality` takes a height (`720`, `1080`), `best`, or `audio`.
+on stdout. `--quality` takes a height (`720`, `1080`), `best`, or an audio
+choice: `audio` (the best sound the link has), a format (`mp3`, `m4a`, `opus`,
+`flac`, `wav`), or one preset (`mp3-192`).
 Without `--yes` Viddl asks before downloading, and refuses to start when there
 is no terminal to ask on — the safe default for a script. `Ctrl+C` stops the
 download and keeps what was fetched, exactly as in the app, and running the
@@ -185,12 +190,33 @@ tried, its error is printed, and the exit code is 1 rather than 0 — a partial
 result never looks like a complete one. On a link that is a single video,
 `--playlist` changes nothing.
 
-## Audio only (MP3)
+## Audio only
 
-Pick any `Audio only · MP3` row. Viddl downloads the best audio stream the site
-offers and converts it with ffmpeg. Sizes are marked `~` because MP3 encoding is
-variable — the estimate is capped by the source quality, so it never promises
-more than you can get.
+The first audio row is the site's own file — **`Audio only · original M4A`**
+(or `Opus`, whichever the site serves). Nothing is converted: it is the exact
+stream the site sent, at the quality it sent it, and it needs no ffmpeg at all.
+For most videos this is the best answer, which is why it is first and why
+`--quality audio` means it.
+
+Below it are conversions, for when you want a particular container or a smaller
+file. Each names its format — `MP3`, `M4A`, `Opus`, `FLAC`, `WAV` — and the
+lossy ones have bitrate presets. They all need ffmpeg, and Viddl offers to fetch
+it once.
+
+One format is deliberately missing from the list: the one your link already
+uses. Asking yt-dlp to convert a stream to its own codec does not re-encode it,
+it copies it — an `M4A 128 kbps` row on an m4a source would hand you the source
+file under a bitrate nobody honours. The original row is that format already, so
+on such a link `--quality m4a` gets you the untouched file.
+
+Sizes are marked `~` because encoders are variable. Where it can, the estimate is
+capped by the source quality, so a 130 kbps source never shows as 320 kbps just
+because you asked for it. AAC is the exception: it is asked for a fixed rate and
+writes one, so an M4A row shows what the file will weigh while its note says
+where the sound came from — a bigger file that cannot sound better. FLAC and WAV
+take their size from the length of the audio rather than the source bitrate, so a
+130 kbps source becomes a much bigger file; neither adds quality that was never
+there.
 
 ## Sites that want you to sign in
 
@@ -327,7 +353,7 @@ The first thing to try when a link that used to work stops working is:
 
 ```sh
 viddl --update           # newest yt-dlp; says which version it moved from and to
-viddl --update-ffmpeg    # newest ffmpeg build, if merging or MP3 is the trouble
+viddl --update-ffmpeg    # newest ffmpeg build, if merging or audio is the trouble
 ```
 
 When the engine is more than a month old, the app says so on its first screen
@@ -384,7 +410,7 @@ each, so none of them is a secret.
 | Variable | What it does | Why you would use it |
 | --- | --- | --- |
 | `VIDDL_HOME` | The folder Viddl owns: the helpers it downloads, the log, the extension it copies out. | Keep everything on another disk, or start from a clean state. |
-| `VIDDL_DOWNLOAD_DIR` | Where finished videos and MP3s go (default: your Downloads folder). | Save to a media drive, or straight into a project folder. |
+| `VIDDL_DOWNLOAD_DIR` | Where finished videos and audio files go (default: your Downloads folder). | Save to a media drive, or straight into a project folder. |
 | `VIDDL_YTDLP` | The yt-dlp to run, instead of the one Viddl finds or downloads. | Use a build of your own, or the one your package manager installed. |
 | `VIDDL_FFMPEG` | The ffmpeg to use, instead of the one Viddl finds or downloads. | Same, for ffmpeg. |
 | `VIDDL_YTDLP_ARGS` | Extra options for yt-dlp, split like a shell splits them: `--limit-rate 2M --cookies-from-browser chrome`. | Slow a link down, use your browser's cookies for a site that asks you to sign in, or pass anything else yt-dlp understands. |

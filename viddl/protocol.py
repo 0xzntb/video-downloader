@@ -272,7 +272,7 @@ def _register_linux() -> RegistrationResult:
         "[Desktop Entry]\n"
         "Type=Application\n"
         f"Name=Viddl\n"
-        "Comment=Download a video or MP3 with Viddl\n"
+        "Comment=Download a video or its audio with Viddl\n"
         f"Exec={exec_line} --uri %u\n"
         "Terminal=true\n"
         "NoDisplay=true\n"

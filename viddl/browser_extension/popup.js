@@ -28,7 +28,7 @@ async function send(audio) {
       }
       setStatus(
         audio
-          ? 'Sent as MP3 — check the terminal window that just opened.'
+          ? 'Sent as audio — check the terminal window that just opened.'
           : 'Sent — pick a quality in the terminal window that just opened.'
       );
       window.setTimeout(() => window.close(), 1200);

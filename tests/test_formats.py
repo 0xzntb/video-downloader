@@ -1,4 +1,4 @@
-"""The quality menu: sizes, ordering, and the MP3 options."""
+"""The quality menu: sizes, ordering, and the audio options (F4)."""
 
 from __future__ import annotations
 
@@ -194,6 +194,191 @@ def test_prefers_the_stream_that_knows_its_own_size():
     assert row.size_is_estimate is False
 
 
+# ---------------------------------------------------------------------------
+# more than MP3 (F4)
+# ---------------------------------------------------------------------------
+
+
+def test_the_audio_menu_starts_with_the_file_the_site_already_has():
+    """The best sound is the one nobody re-encoded.
+
+    It is first because it wins on every count at once: better than any
+    conversion can be, and the only audio row that needs no ffmpeg.
+    """
+    info = parse_info(INFO)
+    first_audio = next(opt for opt in info.options if opt.kind == "audio")
+    assert first_audio.key == "orig"
+    assert first_audio.label == "Audio only · original M4A"
+    # 140 is the m4a stream, which comes before opus in the container ranking.
+    assert first_audio.format_selector == "140"
+    assert first_audio.needs_ffmpeg is False
+    assert first_audio.extra_args == []
+    # The site gave an exact size, so the row repeats that rather than a guess.
+    assert first_audio.size_text == "3.2 MB"
+    assert first_audio.keeps_source_audio is True
+
+
+def test_every_conversion_is_on_the_menu_best_first():
+    info = parse_info(INFO)
+    audio = [opt for opt in info.options if opt.kind == "audio"]
+    assert [opt.key for opt in audio] == [
+        "orig",
+        "mp3-320",
+        "mp3-192",
+        "mp3-128",
+        "opus-160",
+        "opus-96",
+        "flac",
+        "wav",
+    ]
+    assert [opt.audio_format for opt in audio] == [
+        "M4A",
+        "MP3",
+        "MP3",
+        "MP3",
+        "Opus",
+        "Opus",
+        "FLAC",
+        "WAV",
+    ]
+
+
+def test_the_format_the_link_already_has_is_not_offered_as_a_conversion():
+    """yt-dlp copies a stream into its own codec instead of re-encoding it.
+
+    Measured with 2026.08.19: `--audio-format m4a` on an m4a source wrote the
+    same 309,205 bytes as the untouched download. An "M4A 128 kbps" row would
+    therefore be the original file under a bitrate nobody honours, so the row
+    is not offered — the original row is that format (F4).
+    """
+    by_key = {opt.key: opt for opt in parse_info(INFO).options}
+    assert by_key["orig"].audio_format == "M4A"
+    assert "m4a-256" not in by_key and "m4a-128" not in by_key
+
+
+def test_a_link_that_does_not_have_m4a_is_offered_it():
+    by_key = {opt.key: opt for opt in parse_info(opus_source()).options}
+    assert by_key["orig"].audio_format == "Opus"
+    assert by_key["m4a-256"].extra_args == [
+        "--extract-audio",
+        "--audio-format",
+        "m4a",
+        "--audio-quality",
+        "256",
+    ]
+    # And the source's own format is now the one that is not offered.
+    assert "opus-160" not in by_key
+
+
+def test_each_conversion_asks_for_the_container_it_names():
+    by_key = {opt.key: opt for opt in parse_info(INFO).options}
+    assert by_key["opus-160"].extra_args == [
+        "--extract-audio",
+        "--audio-format",
+        "opus",
+        "--audio-quality",
+        "160",
+    ]
+    # No bitrate knob for a lossless container: the encoder decides.
+    assert by_key["flac"].extra_args == ["--extract-audio", "--audio-format", "flac"]
+    assert by_key["wav"].extra_args == ["--extract-audio", "--audio-format", "wav"]
+    converting = [opt for opt in by_key.values() if opt.kind == "audio" and not opt.keeps_source_audio]
+    assert all(opt.needs_ffmpeg for opt in converting)
+
+
+def opus_source(bitrate: float = 130) -> dict:
+    """A link whose own sound is opus, so M4A is a real conversion (F4)."""
+    return {
+        "title": "opus only",
+        "duration": DURATION,
+        "formats": [
+            {"format_id": "251", "ext": "webm", "vcodec": "none", "acodec": "opus",
+             "abr": bitrate, "filesize": 3400000},
+        ],
+    }
+
+
+def test_a_variable_rate_encoder_cannot_be_made_to_outweigh_its_source():
+    """The same rule as MP3: a 130 kbps source caps a 160 kbps Opus target."""
+    info = parse_info(
+        {
+            "title": "m4a, for a change",
+            "duration": DURATION,
+            "formats": [
+                {"format_id": "140", "ext": "m4a", "vcodec": "none", "acodec": "mp4a",
+                 "abr": 130, "filesize": 3400000},
+            ],
+        }
+    )
+    by_key = {opt.key: opt for opt in info.options}
+    assert by_key["opus-160"].size_bytes == int(130 * 1000 / 8 * DURATION)
+    assert "source is 130 kbps" in by_key["opus-160"].note
+    # 96 kbps is below the source, so the target is what it will weigh.
+    assert by_key["opus-96"].size_bytes == int(96 * 1000 / 8 * DURATION)
+    assert by_key["opus-96"].note == "Opus file"
+
+
+def test_a_fixed_rate_encoder_writes_its_target_even_from_a_small_source():
+    """Measured: AAC asked for 256 kbps from a 130 kbps source wrote 255 kbps.
+
+    So the row shows what the file will weigh, and the note says where the sound
+    came from — the honest pair: a bigger file that cannot sound better.
+    """
+    by_key = {opt.key: opt for opt in parse_info(opus_source()).options}
+    assert by_key["m4a-256"].size_bytes == int(256 * 1000 / 8 * DURATION)
+    assert "source is 130 kbps" in by_key["m4a-256"].note
+    assert by_key["m4a-128"].size_bytes == int(128 * 1000 / 8 * DURATION)
+    assert by_key["m4a-128"].note == "M4A file"
+
+
+def test_lossless_rows_are_sized_from_the_clock_not_the_source():
+    """A 130 kbps source becomes a WAV several times its size, and says so."""
+    by_key = {opt.key: opt for opt in parse_info(INFO).options}
+    wav, flac = by_key["wav"], by_key["flac"]
+    # 44.1 kHz stereo, 16-bit: 176400 bytes for every second.
+    assert wav.size_bytes == int(DURATION * 176400)
+    assert 0 < flac.size_bytes < wav.size_bytes
+    assert wav.size_is_estimate is True and flac.size_is_estimate is True
+    assert "uncompressed" in wav.note
+    assert "lossless" in flac.note
+    assert wav.size_text.startswith("~")
+
+
+def test_the_original_row_is_named_for_the_sound_inside_the_container():
+    info = parse_info(
+        {
+            "title": "opus only",
+            "duration": 60,
+            "formats": [
+                {"format_id": "251", "ext": "webm", "vcodec": "none", "acodec": "opus",
+                 "abr": 160, "filesize": 1200000},
+            ],
+        }
+    )
+    original = next(opt for opt in info.options if opt.kind == "audio")
+    # "WEBM" says nothing about sound, so the codec names the row.
+    assert original.key == "orig"
+    assert original.label == "Audio only · original Opus"
+    assert original.format_selector == "251"
+
+
+def test_a_link_with_no_separate_audio_offers_no_original_row():
+    info = parse_info(
+        {
+            "title": "odd",
+            "duration": 30,
+            "formats": [
+                {"format_id": "hls-1", "ext": "mp4", "vcodec": "avc1",
+                 "acodec": "mp4a", "tbr": 600},
+            ],
+        }
+    )
+    audio = [opt for opt in info.options if opt.kind == "audio"]
+    assert "orig" not in [opt.key for opt in audio]
+    # The conversions are still offered: -x works on a file that has sound in it.
+    assert audio[0].key == "mp3-320"
+
+
 def test_options_are_videos_then_audio():
     info = parse_info(INFO)
     kinds = [opt.kind for opt in info.options]
@@ -234,6 +419,8 @@ def test_size_text_marks_estimates():
 
 def test_format_rows_aligns_labels_and_sizes():
     rows = format_rows(parse_info(INFO).options)
-    assert len(rows) == 7
+    # Four video rows, then the original and the seven conversions left for an
+    # m4a source (F4): MP3 x3, Opus x2, FLAC, WAV.
+    assert len(rows) == 4 + 8
     assert all(row.startswith("  ") for row in rows)
     assert "1080p" in rows[0]

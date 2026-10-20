@@ -338,7 +338,11 @@ async def test_a_broken_link_offers_the_update_that_is_likely_to_fix_it(tmp_path
         assert isinstance(app.screen, OptionsScreen)
         assert shown(app.screen, "#options-status") == ""
         table = app.screen.query_one("#choices", ChoiceList)
-        assert table.row_count == 4
+        keys = [table.value_at(index).key for index in range(table.row_count)]
+        # The qualities are back — the video row, and the audio rows the menu
+        # offers (F4) — rather than the failure that prompted the update.
+        assert keys[0] == "v1080"
+        assert "orig" in keys
         assert "A Very Real Video" in shown(app.screen, "#options-heading")
         assert app.state.engine_stale is False
         assert "Ready to download" in app.state.engine_note

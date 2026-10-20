@@ -31,7 +31,7 @@ from .download import (
     probe_video,
 )
 from .engine import Engine, ToolError
-from .formats import MediaInfo, MediaOption
+from .formats import AUDIO_FORMATS, ORIGINAL_AUDIO_KEY, MediaInfo, MediaOption
 from .queue import QueueJob
 from .util import human_duration, human_size
 
@@ -57,8 +57,24 @@ _TO_ASCII = str.maketrans(
     }
 )
 
-#: What ``--quality`` accepts besides a height.
-_AUDIO_WORDS = ("audio", "mp3", "a")
+#: What ``--quality`` accepts for "the sound, not the picture" (F4). Where
+#: ``--audio`` used to mean "the best MP3", it now means the best sound there
+#: is: the site's own file, which needs no encoder and loses nothing. ``mp3``
+#: still means MP3, and every format name works on its own too.
+_AUDIO_WORDS = ("audio", "a")
+
+#: Spelled-out names for the row that is not a conversion at all.
+_AUDIO_ALIASES = {
+    "original": ORIGINAL_AUDIO_KEY,
+    "orig": ORIGINAL_AUDIO_KEY,
+    "no-reencode": ORIGINAL_AUDIO_KEY,
+    "no_reencode": ORIGINAL_AUDIO_KEY,
+}
+
+#: The format names that can follow ``--quality``, plus the preset keys built
+#: from them (``mp3-192``): the first half of a hyphenated word is enough to
+#: know the ask was about sound.
+_AUDIO_FORMAT_WORDS = tuple(audio_format.key for audio_format in AUDIO_FORMATS)
 
 
 def ascii_text(value: object) -> str:
@@ -147,6 +163,42 @@ def _is_interactive(stream: TextIO) -> bool:
         return False
 
 
+def _audio_row(options: list, wanted: str) -> Optional[MediaOption]:
+    """The audio row ``wanted`` names, or ``None`` if the link has no such row.
+
+    An exact key wins (``mp3-192``), then a format name (``flac``), then a
+    format's best preset (``mp3`` is 320 because the rows are best-first). The
+    original row is named by its own format, so on a link whose sound already
+    *is* m4a, ``m4a`` gives the untouched file rather than an AAC re-encode of
+    it — which is both the better answer and the cheaper one (F4).
+    """
+    audio = [option for option in options if option.kind == "audio"]
+    if wanted in _AUDIO_WORDS:
+        # "audio" is not a format: it is whichever row is the best sound there
+        # is, and the menu is ordered best-first.
+        return audio[0] if audio else None
+    key = _AUDIO_ALIASES.get(wanted, wanted)
+    for option in audio:
+        if option.key == key:
+            return option
+    for option in audio:
+        if option.audio_format.lower() == key:
+            return option
+    return None
+
+
+def _asked_for_audio(options: list, wanted: str) -> bool:
+    """True when ``wanted`` is a request for sound rather than a height."""
+    if wanted in _AUDIO_WORDS or wanted in _AUDIO_ALIASES:
+        return True
+    if wanted.split("-")[0] in _AUDIO_FORMAT_WORDS:
+        return True
+    return any(
+        option.kind == "audio" and option.audio_format.lower() == wanted
+        for option in options
+    )
+
+
 def choose_option(
     info: MediaInfo, quality: str = "", audio: bool = False
 ) -> MediaOption:
@@ -155,7 +207,9 @@ def choose_option(
     Heights are matched the way a person means them: ``720`` takes 720p when it
     exists, the next one down when it does not (a 900 request on a 1080/720/480
     menu gets 720), and the smallest available when the link has nothing that
-    low. ``audio`` — the flag or the word — takes the best MP3 row.
+    low. ``audio`` — the flag or the word — takes the best sound the link has,
+    which is the site's own file; a format name (``mp3``, ``flac``) or a preset
+    (``mp3-192``) takes exactly that (F4).
     """
     options = info.options
     if not options:
@@ -172,10 +226,16 @@ def choose_option(
     if wanted in ("", "best", "any"):
         return options[0]
 
-    if wanted in _AUDIO_WORDS:
-        for option in options:
-            if option.kind == "audio":
-                return option
+    if _asked_for_audio(options, wanted):
+        chosen = _audio_row(options, wanted)
+        if chosen is not None:
+            return chosen
+        if any(option.kind == "audio" for option in options):
+            raise ToolError(
+                f"This link has no '{quality}' audio option.",
+                "Use 'audio' for the best sound it has, or one of: "
+                "mp3, m4a, opus, flac or wav (mp3-192 picks one bitrate).",
+            )
         raise ToolError(
             "This link does not offer an audio-only download.",
             "Pick a video quality instead.",
@@ -185,7 +245,8 @@ def choose_option(
     if not digits.isdigit():
         raise ToolError(
             f"Unknown quality '{quality}'.",
-            "Use a height such as 720 or 1080, or 'best' or 'audio'.",
+            "Use a height such as 720 or 1080, 'best', or an audio format: "
+            "audio, mp3, m4a, opus, flac or wav.",
         )
 
     height = int(digits)
@@ -278,7 +339,13 @@ def _set_up_ffmpeg(
     refuses rather than opening a 150 MB download nobody agreed to.
     """
     about = _size_hint(engine)
-    _say(err, f"{chosen.label} needs ffmpeg to join the video and audio streams.")
+    if chosen.kind == "audio":
+        # A conversion, not a join: ffmpeg is what writes the new container, and
+        # saying "join" here would describe a different job (F4).
+        need = f"{chosen.label} needs ffmpeg to write the {chosen.audio_format} file."
+    else:
+        need = f"{chosen.label} needs ffmpeg to join the video and audio streams."
+    _say(err, need)
 
     if not assume_yes:
         if not _is_interactive(stdin):

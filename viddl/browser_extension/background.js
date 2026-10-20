@@ -89,7 +89,7 @@ function createMenus() {
     });
     chrome.contextMenus.create({
       id: MENU_AUDIO,
-      title: 'Download audio as MP3 with Viddl',
+      title: 'Download just the audio with Viddl',
       contexts: ['page', 'link', 'video', 'audio'],
     });
   });

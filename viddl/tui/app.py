@@ -3,7 +3,7 @@
 Four screens, in the order you meet them:
 
 1. **Home** - paste a link (or arrive with one from the browser extension)
-2. **Qualities** - pick a video quality or an MP3, with estimated sizes
+2. **Qualities** - pick a video quality or an audio format, with estimated sizes
 3. **Download** - progress, speed and ETA, cancellable at any time
 4. **Done** - the full path of the saved file
 
@@ -421,7 +421,7 @@ class ViddlApp(App):
         if ffmpeg is not None:
             state.engine_note += f"  {_ARP}  ffmpeg ready"
         else:
-            state.engine_note += f"  {_ARP}  ffmpeg comes later, if you need MP3 or 1080p+"
+            state.engine_note += f"  {_ARP}  ffmpeg comes later, for conversion or 1080p+"
         self._post(self._refresh_engine_status)
 
     def _refresh_engine_status(self) -> None:
@@ -490,7 +490,7 @@ class ViddlApp(App):
         note += (
             f"  {_ARP}  ffmpeg ready"
             if self.state.ffmpeg_available
-            else f"  {_ARP}  ffmpeg comes later, if you need MP3 or 1080p+"
+            else f"  {_ARP}  ffmpeg comes later, for conversion or 1080p+"
         )
         self.state.engine_note = note
         changed = before is None or (before.version or "") != (after.version or "")
@@ -999,10 +999,26 @@ class OptionsScreen(Screen):
                     )
                 )
             elif option.kind == "audio":
-                note.update(
-                    "Audio only — saved as an MP3 in your Downloads folder. "
-                    "MP3 sizes are a rough guide: the encoder keeps as much quality as the source has."
-                )
+                # Two different promises, so they are worded differently (F4):
+                # the original row really is the site's own file, while every
+                # other row is an encoder doing its best with what it was given.
+                folder = self.app.services.downloads_dir()
+                if option.keeps_source_audio:
+                    note.update(
+                        _plain(
+                            f"Audio only — the site's own {option.audio_format} file, "
+                            f"saved to {folder} without re-encoding. Nothing is "
+                            "converted, so nothing is lost."
+                        )
+                    )
+                else:
+                    note.update(
+                        _plain(
+                            f"Audio only — converted to {option.audio_format} in "
+                            f"{folder}. Sizes are a rough guide: converting cannot "
+                            "add quality the source does not have."
+                        )
+                    )
             else:
                 folder = self.app.services.downloads_dir()
                 note.update(_plain(f"Saves to {folder}  ·  {option.size_text}"))

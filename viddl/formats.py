@@ -15,7 +15,85 @@ _AUDIO_EXT_RANK = {"m4a": 0, "mp4": 1, "opus": 2, "webm": 3, "mp3": 4, "ogg": 5}
 _MIN_HEIGHT = 144
 _MAX_ROWS = 9
 
-MP3_BITRATES: Tuple[Tuple[int, str], ...] = ((320, "0"), (192, "5"), (128, "7"))
+#: The key of the row that keeps the site's own audio file, untouched (F4).
+#: Chosen for "audio" when no format is named, because an MP3 re-encode of a
+#: source that is already m4a or opus throws away quality for nothing.
+ORIGINAL_AUDIO_KEY = "orig"
+
+#: How big an uncompressed 44.1 kHz stereo WAV of one second is: two channels,
+#: two bytes a sample, 44100 samples. Only the ``~`` estimate on the WAV and
+#: FLAC rows uses it — the source's own rate is not in the metadata, so a number
+#: exact to the byte would be a promise Viddl cannot keep.
+_WAV_BYTES_PER_SECOND = 44100 * 2 * 2
+
+#: FLAC lands at roughly this much of the WAV it came from. A rule of thumb, and
+#: marked as one: the size on the row starts with ``~`` like every other guess.
+#: Measured at 0.40 for a lossy source (which has less to preserve than a
+#: lossless one); 0.5 sits between that and what music usually weighs.
+_FLAC_OF_WAV = 0.5
+
+
+@dataclass(frozen=True)
+class AudioPreset:
+    """One bitrate inside a format — the numbers on the picker's second level.
+
+    ``quality`` is what yt-dlp's ``--audio-quality`` is given. For MP3 it is a
+    VBR step (0 is the best), while a number above 10 is passed to ffmpeg as an
+    explicit ``-b:a`` bitrate, which is how m4a and opus are asked for a size.
+    """
+
+    bitrate: int
+    quality: str
+    #: True when ffmpeg is given a fixed bitrate and writes one whatever the
+    #: source holds (AAC does: measured 255 kbps out of a 130 kbps source).
+    #: False for encoders that spend what the audio needs — libmp3lame's VBR
+    #: steps and libopus — so a small source stays a small file.
+    fixed_rate: bool = False
+
+
+@dataclass(frozen=True)
+class AudioFormat:
+    """A container the sound can be converted to, and its presets (F4)."""
+
+    key: str
+    name: str
+    presets: Tuple[AudioPreset, ...] = ()
+    #: FLAC and WAV have no bitrate to choose: the encoder decides, and the
+    #: result is lossless (or uncompressed), so a preset row would be a knob
+    #: that does nothing.
+    lossless: bool = False
+    uncompressed: bool = False
+
+
+#: Every conversion Viddl offers, best-listening first. MP3 keeps the bitrates
+#: it has always had; the rest get two presets, because one would be a choice
+#: between "this format" and nothing.
+AUDIO_FORMATS: Tuple[AudioFormat, ...] = (
+    AudioFormat(
+        "mp3",
+        "MP3",
+        (
+            AudioPreset(320, "0"),
+            AudioPreset(192, "5"),
+            AudioPreset(128, "7"),
+        ),
+    ),
+    AudioFormat(
+        "m4a",
+        "M4A",
+        (
+            AudioPreset(256, "256", fixed_rate=True),
+            AudioPreset(128, "128", fixed_rate=True),
+        ),
+    ),
+    AudioFormat("opus", "Opus", (AudioPreset(160, "160"), AudioPreset(96, "96"))),
+    AudioFormat("flac", "FLAC", lossless=True),
+    AudioFormat("wav", "WAV", uncompressed=True),
+)
+
+#: What the original row calls the site's own file, by the codec it holds. A
+#: webm stream is named for its codec because "WEBM" says nothing about sound.
+_AUDIO_CODEC_NAMES = {"opus": "Opus", "vorbis": "Vorbis", "aac": "M4A", "alac": "ALAC"}
 
 
 @dataclass
@@ -33,6 +111,18 @@ class MediaOption:
     note: str = ""
     height: Optional[int] = None
     merge_container: Optional[str] = None
+    #: What the sound ends up as — "MP3", "Opus", or the name of the file the
+    #: site already had ("M4A"). Empty on video rows (F4).
+    audio_format: str = ""
+
+    @property
+    def keeps_source_audio(self) -> bool:
+        """True for the audio row that downloads the site's own file (F4).
+
+        It is the only audio row with nothing to convert: no ``-x``, no
+        ``--audio-format``, no encoder to disagree with the source.
+        """
+        return self.kind == "audio" and not self.extra_args
 
     @property
     def size_text(self) -> str:
@@ -441,32 +531,167 @@ def parse_info(info: Dict[str, Any]) -> MediaInfo:
         )
 
     # ---- audio rows ---------------------------------------------------------
-    for bitrate, quality in MP3_BITRATES:
-        # Transcoding cannot invent quality: encoding a 130 kbps source at a
-        # 320 kbps target still lands near the source, so estimate from the
-        # smaller of the two. It keeps the number honest for the common case.
-        effective = bitrate
-        note = "MP3 file"
-        if source_audio_bitrate and source_audio_bitrate < bitrate:
-            effective = source_audio_bitrate
-            note = f"MP3 · source is {int(round(source_audio_bitrate))} kbps"
-        size = int(effective * 1000 / 8 * duration) if duration else None
-        estimate = True
-        media.options.append(
+    media.options.extend(
+        audio_options(
+            best_audio, audio_size, audio_is_estimate, duration, source_audio_bitrate
+        )
+    )
+
+    return media
+
+
+def audio_name(fmt: Dict[str, Any]) -> str:
+    """What to call the sound inside ``fmt``: "M4A", "Opus", … (F4).
+
+    The codec wins over the container when it has a name of its own, because a
+    webm holding opus is remembered by its listener as "an opus file", and the
+    container is what the site happened to wrap it in.
+    """
+    codec = str(fmt.get("acodec") or "").lower()
+    for family, name in _AUDIO_CODEC_NAMES.items():
+        if codec.startswith(family):
+            return name
+    ext = str(fmt.get("audio_ext") or fmt.get("ext") or "").lower()
+    return {"m4a": "M4A", "mp3": "MP3", "flac": "FLAC", "wav": "WAV", "ogg": "OGG"}.get(
+        ext, ext.upper() or "audio"
+    )
+
+
+def _source_format(fmt: Dict[str, Any]) -> str:
+    """Which of :data:`AUDIO_FORMATS` the stream already is, if any (F4).
+
+    The codec decides, because the container can lie about the contents: a webm
+    holding opus is an Opus source. A codec with no row of its own — vorbis, on
+    the sites that still serve it — returns its own name, which matches nothing
+    and therefore skips nothing.
+    """
+    codec = str(fmt.get("acodec") or "").lower()
+    for family, key in (
+        ("opus", "opus"),
+        ("mp4a", "m4a"),
+        ("aac", "m4a"),
+        ("mp3", "mp3"),
+        ("flac", "flac"),
+        ("alac", "m4a"),
+    ):
+        if codec.startswith(family):
+            return key
+    ext = str(fmt.get("audio_ext") or fmt.get("ext") or "").lower()
+    return {"m4a": "m4a", "mp3": "mp3", "flac": "flac", "wav": "wav", "webm": "opus"}.get(
+        ext, ext
+    )
+
+
+def audio_options(
+    best_audio: Optional[Dict[str, Any]],
+    audio_size: Optional[int],
+    audio_is_estimate: bool,
+    duration: Optional[float],
+    source_bitrate: Optional[float],
+) -> List[MediaOption]:
+    """The audio half of the menu: keep the site's file, or convert it (F4).
+
+    The first row is the one the site already has. It is first because it is
+    both the best-sounding and the cheapest choice: there is no ffmpeg step, no
+    generation loss, and no chance of an encoder disagreeing with the source.
+    Everything below it is a deliberate trade — a smaller file, a container a
+    particular player wants, or a format somebody has always used.
+    """
+    rows: List[MediaOption] = []
+    # The format the site already uses. Asking yt-dlp to "convert" a stream to
+    # its own codec does not re-encode it — it copies it — so an "M4A 128 kbps"
+    # row on an m4a source would deliver the source at 130 kbps while claiming
+    # 128. Measured with yt-dlp 2026.08.19: `--audio-format m4a` on an m4a
+    # source produced the same 309,205 bytes twice. The original row already is
+    # that format, so the conversion is not offered at all (F4).
+    source_format = _source_format(best_audio) if best_audio is not None else ""
+
+    if best_audio is not None:
+        name = audio_name(best_audio)
+        rows.append(
             MediaOption(
-                key=f"mp3-{bitrate}",
-                label=f"Audio only · MP3 {bitrate} kbps",
-                size_bytes=size,
-                size_is_estimate=estimate,
+                key=ORIGINAL_AUDIO_KEY,
+                label=f"Audio only · original {name}",
+                size_bytes=audio_size,
+                size_is_estimate=audio_is_estimate,
                 kind="audio",
-                needs_ffmpeg=True,
-                format_selector="ba/b",
-                extra_args=["--extract-audio", "--audio-format", "mp3", "--audio-quality", quality],
-                note=note,
+                # The whole point: the stream is taken as it is.
+                needs_ffmpeg=False,
+                format_selector=str(best_audio["format_id"]),
+                note="no re-encode",
+                audio_format=name,
             )
         )
 
-    return media
+    for audio_format in AUDIO_FORMATS:
+        if audio_format.key == source_format:
+            continue
+        for preset in audio_format.presets:
+            # What the file will weigh. A variable-rate encoder given a 130 kbps
+            # source at a 320 kbps setting stays near 130 kbps, so the estimate
+            # takes the smaller of the two; a fixed-rate one writes 320 whatever
+            # it was handed (measured: AAC at 256 from a 130 kbps source wrote
+            # 255 kbps), so its row has to say the target.
+            effective = preset.bitrate
+            note = f"{audio_format.name} file"
+            if source_bitrate and source_bitrate < preset.bitrate:
+                if not preset.fixed_rate:
+                    effective = source_bitrate
+                note = (
+                    f"{audio_format.name} · source is "
+                    f"{int(round(source_bitrate))} kbps"
+                )
+            size = int(effective * 1000 / 8 * duration) if duration else None
+            rows.append(
+                MediaOption(
+                    key=f"{audio_format.key}-{preset.bitrate}",
+                    label=f"Audio only · {audio_format.name} {preset.bitrate} kbps",
+                    size_bytes=size,
+                    size_is_estimate=True,
+                    kind="audio",
+                    needs_ffmpeg=True,
+                    format_selector="ba/b",
+                    extra_args=[
+                        "--extract-audio",
+                        "--audio-format",
+                        audio_format.key,
+                        "--audio-quality",
+                        preset.quality,
+                    ],
+                    note=note,
+                    audio_format=audio_format.name,
+                )
+            )
+        if not audio_format.presets:
+            # A lossless container has no bitrate to pick: converting is a
+            # container change, and the size follows the source rather than a
+            # number on the row.
+            if audio_format.uncompressed:
+                size = int(duration * _WAV_BYTES_PER_SECOND) if duration else None
+                note = "uncompressed file"
+            else:
+                size = (
+                    int(duration * _WAV_BYTES_PER_SECOND * _FLAC_OF_WAV)
+                    if duration
+                    else None
+                )
+                note = "lossless file"
+            rows.append(
+                MediaOption(
+                    key=audio_format.key,
+                    label=f"Audio only · {audio_format.name}",
+                    size_bytes=size,
+                    size_is_estimate=True,
+                    kind="audio",
+                    needs_ffmpeg=True,
+                    format_selector="ba/b",
+                    extra_args=["--extract-audio", "--audio-format", audio_format.key],
+                    note=note,
+                    audio_format=audio_format.name,
+                )
+            )
+
+    return rows
 
 
 def format_rows(options: List[MediaOption]) -> List[str]:

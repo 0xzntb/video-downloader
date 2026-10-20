@@ -21,7 +21,7 @@ from textual.widgets import Button, Static
 
 from viddl.download import DownloadCancelled, ProbeCancelled, Progress
 from viddl.engine import Tool, ToolError
-from viddl.formats import MediaInfo, parse_info
+from viddl.formats import MediaInfo, MediaOption, parse_info
 from viddl.protocol import build_scheme_url
 from viddl.tui.app import (
     DownloadScreen,
@@ -335,6 +335,20 @@ def shown(screen, selector: str) -> str:
     return str(screen.query_one(selector).render())
 
 
+def row_index_of(screen, key: str) -> int:
+    """Where the quality row with this key sits in the list.
+
+    Asked for by key rather than counted out, so adding an audio format (F4)
+    does not silently point a test at a different row.
+    """
+    choices = screen.query_one("#choices", ChoiceList)
+    for index in range(choices.row_count):
+        value = choices.value_at(index)
+        if isinstance(value, MediaOption) and value.key == key:
+            return index
+    raise AssertionError(f"no quality row for {key}")
+
+
 class captured_notifications:
     """Collect the toasts the app would have shown instead of showing them."""
 
@@ -383,7 +397,8 @@ async def test_typing_a_link_shows_qualities_and_downloads(tmp_path):
 
         assert isinstance(app.screen, OptionsScreen)
         choices = app.screen.query_one("#choices", ChoiceList)
-        assert choices.row_count == 5  # 1080p, 360p and three MP3 options
+        # 1080p and 360p, then the original audio file and seven conversions.
+        assert choices.row_count == 10
         assert "A Very Real Video" in shown(app.screen, "#options-heading")
 
         # Keyboard: Enter on the highlighted (best) option starts the download.
@@ -464,10 +479,11 @@ async def test_clicking_a_quality_row_selects_it(tmp_path):
     async with app.run_test(size=(100, 32)) as pilot:
         await settle(pilot)
         choices = app.screen.query_one("#choices", ChoiceList)
-        assert choices.row_count == 5
+        assert choices.row_count == 10
 
-        # Row 4 is the 128 kbps MP3 (rows are one line tall, no border).
-        await pilot.click("#choices", offset=(4, 4))
+        # The 128 kbps MP3 row, wherever it is (rows are one line tall, no
+        # border, so the row's index is its offset from the top).
+        await pilot.click("#choices", offset=(4, row_index_of(app.screen, "mp3-128")))
         await settle(pilot)
 
         assert app.state.option is not None
@@ -496,13 +512,15 @@ async def test_arrow_keys_move_the_highlight(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_audio_flag_starts_on_the_mp3_options(tmp_path):
+async def test_audio_flag_starts_on_the_audio_rows(tmp_path):
+    """And on the best of them: the site's own file, not a re-encode (F4)."""
     app = ViddlApp(initial_url=URL, prefer_audio=True, services=make_services(tmp_path))
     async with app.run_test(size=(100, 32)) as pilot:
         await settle(pilot)
         choices = app.screen.query_one("#choices", ChoiceList)
         assert choices.highlighted_value.kind == "audio"
-        assert choices.highlighted_value.key == "mp3-320"
+        assert choices.highlighted_value.key == "orig"
+        assert choices.highlighted_value.keeps_source_audio is True
 
 
 @pytest.mark.asyncio
@@ -555,7 +573,7 @@ async def test_the_ffmpeg_prompt_appears_and_goes_away(tmp_path):
         # Focus went to the button; the list still takes over from there.
         choices = app.screen.query_one("#choices", ChoiceList)
         choices.focus()
-        await pilot.press("down", "down", "down", "down")
+        choices.select_index(row_index_of(app.screen, "mp3-128"))
         await pilot.pause()
         assert choices.highlighted_value.kind == "audio"
         assert choices.highlighted_value.key == "mp3-128"
@@ -832,7 +850,8 @@ async def test_rows_show_the_size_and_render_as_text(tmp_path):
     async with app.run_test(size=(100, 32)) as pilot:
         await settle(pilot)
         rows = list(app.screen.query(ChoiceRow))
-        assert len(rows) == 5
+        # Two video qualities and eight audio rows (F4).
+        assert len(rows) == 10
         first = rows[0]
         assert first.row_size.startswith("~") or first.row_size.endswith(("MB", "GB"))  # noqa: E501
         assert first.row_label == "1080p"
@@ -977,13 +996,46 @@ async def test_the_note_says_where_the_file_will_land(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_the_mp3_rows_explain_themselves(tmp_path):
+async def test_the_audio_rows_explain_what_they_are(tmp_path):
     app = ViddlApp(initial_url=URL, prefer_audio=True, services=make_services(tmp_path))
     async with app.run_test(size=(100, 32)) as pilot:
         await settle(pilot)
         note = shown(app.screen, "#options-note")
         assert "Audio only" in note
-        assert "MP3" in note
+        # The first audio row is the site's own file, and the note says why it
+        # is the best of them rather than talking about an MP3 (F4).
+        assert "site's own M4A file" in note
+        assert "without re-encoding" in note
+
+
+@pytest.mark.asyncio
+async def test_a_converted_audio_row_says_it_is_converted(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        choices = app.screen.query_one("#choices", ChoiceList)
+        choices.select_index(row_index_of(app.screen, "flac"))
+        await pilot.pause()
+        note = shown(app.screen, "#options-note")
+        assert "converted to FLAC" in note
+        # FLAC of a lossy source is bigger without being better, so the note
+        # promises nothing the encoder cannot deliver.
+        assert "cannot add quality" in note
+
+
+@pytest.mark.asyncio
+async def test_the_untouched_row_needs_no_ffmpeg_and_says_so(tmp_path):
+    engine = FakeEngine(ffmpeg=False)
+    app = ViddlApp(
+        initial_url=URL, prefer_audio=True, services=make_services(tmp_path, engine=engine)
+    )
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        # No ffmpeg on this machine, yet the best audio choice still works.
+        assert app.screen.query_one("#get-ffmpeg").has_class("hidden")
+        note = shown(app.screen, "#options-note")
+        assert "without re-encoding" in note
+        assert "needs ffmpeg" not in note
 
 
 @pytest.mark.asyncio
@@ -1535,6 +1587,11 @@ def sign_in_rows_of(screen) -> list:
     ]
 
 
+def sign_in_index(screen) -> int:
+    """Where the sign-in row is: last, after every quality (F1, F4)."""
+    return screen.query_one("#choices", ChoiceList).row_count - 1
+
+
 @pytest.mark.asyncio
 async def test_a_browser_that_is_installed_is_offered_as_a_row(tmp_path):
     app = ViddlApp(initial_url=URL, services=make_services(tmp_path, browsers=["chrome"]))
@@ -1543,13 +1600,13 @@ async def test_a_browser_that_is_installed_is_offered_as_a_row(tmp_path):
         await settle(pilot)
         choices = app.screen.query_one("#choices", ChoiceList)
 
-        assert choices.row_count == 6, "five qualities and one sign-in row"
-        row = choices.value_at(5)
+        assert choices.row_count == 11, "ten qualities and one sign-in row"
+        row = choices.value_at(10)
         assert isinstance(row, SignIn)
         assert row.label == "Sign in with Chrome"
         assert row.browser == "chrome"
 
-        choices.select_index(5)
+        choices.select_index(sign_in_index(app.screen))
         await pilot.pause()
         note = shown(app.screen, "#options-note")
         # The whole sentence, because it is the only place this decision is
@@ -1585,7 +1642,7 @@ async def test_no_browser_means_no_sign_in_row(tmp_path):
     async with app.run_test(size=(100, 32)) as pilot:
         await settle(pilot)
 
-        assert app.screen.query_one("#choices", ChoiceList).row_count == 5
+        assert app.screen.query_one("#choices", ChoiceList).row_count == 10
         assert sign_in_rows_of(app.screen) == []
 
 
@@ -1599,7 +1656,7 @@ async def test_choosing_the_row_re_asks_the_site_signed_in(tmp_path):
     async with app.run_test(size=(100, 32)) as pilot:
         await settle(pilot)
         choices = app.screen.query_one("#choices", ChoiceList)
-        choices.select_index(5)
+        choices.select_index(sign_in_index(app.screen))
         await pilot.press("enter")
         await settle(pilot)
 
@@ -1608,10 +1665,10 @@ async def test_choosing_the_row_re_asks_the_site_signed_in(tmp_path):
         # The state is visible: the row says what it is doing, and so does the
         # heading — a download reading an account's cookies must not look like
         # one that is not.
-        assert choices.value_at(5).label == "Signing in with Chrome"
+        assert choices.value_at(sign_in_index(app.screen)).label == "Signing in with Chrome"
         assert "signed in with Chrome" in shown(app.screen, "#options-heading")
 
-        choices.select_index(5)
+        choices.select_index(sign_in_index(app.screen))
         await pilot.pause()
         assert "Using Chrome's cookies" in shown(app.screen, "#options-note")
 
@@ -1627,13 +1684,13 @@ async def test_the_cookies_can_be_turned_off_again(tmp_path):
         await settle(pilot)
         choices = app.screen.query_one("#choices", ChoiceList)
         for _ in range(2):
-            choices.select_index(5)
+            choices.select_index(sign_in_index(app.screen))
             await pilot.press("enter")
             await settle(pilot)
 
         assert app.state.cookies_browser == ""
         assert [call["cookies"] for call in probe.calls] == ["", "chrome", ""]
-        assert choices.value_at(5).label == "Sign in with Chrome"
+        assert choices.value_at(sign_in_index(app.screen)).label == "Sign in with Chrome"
 
 
 @pytest.mark.asyncio
@@ -1647,9 +1704,9 @@ async def test_the_app_can_start_already_signed_in(tmp_path):
         await settle(pilot)
 
         assert probe.calls[0]["cookies"] == "chrome"
-        assert app.screen.query_one("#choices", ChoiceList).value_at(5).label == (
-            "Signing in with Chrome"
-        )
+        assert app.screen.query_one("#choices", ChoiceList).value_at(
+            sign_in_index(app.screen)
+        ).label == ("Signing in with Chrome")
 
 
 @pytest.mark.asyncio
@@ -1674,7 +1731,7 @@ async def test_a_download_uses_the_browser_that_signed_it_in(tmp_path):
     async with app.run_test(size=(100, 32)) as pilot:
         await settle(pilot)
         choices = app.screen.query_one("#choices", ChoiceList)
-        choices.select_index(5)
+        choices.select_index(sign_in_index(app.screen))
         await pilot.press("enter")  # sign in
         await settle(pilot)
         await pilot.press("enter")  # take the first quality
@@ -1693,7 +1750,9 @@ async def test_the_download_button_does_not_download_the_sign_in_row(tmp_path):
 
     async with app.run_test(size=(100, 32)) as pilot:
         await settle(pilot)
-        app.screen.query_one("#choices", ChoiceList).select_index(5)
+        app.screen.query_one("#choices", ChoiceList).select_index(
+            sign_in_index(app.screen)
+        )
         await pilot.pause()
 
         with captured_notifications(app) as noted:
@@ -1749,7 +1808,7 @@ async def test_a_link_that_needs_a_sign_in_offers_the_row_and_then_works(tmp_pat
         assert probe.calls == ["", "firefox"]
         assert app.state.cookies_browser == "firefox"
         # Same screen, now with the qualities the site only shows signed in.
-        assert app.screen.query_one("#choices", ChoiceList).row_count == 6
+        assert app.screen.query_one("#choices", ChoiceList).row_count == 11
         assert "signed in with Firefox" in shown(app.screen, "#options-heading")
 
 

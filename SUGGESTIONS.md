@@ -10,7 +10,7 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **23 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F3
+Progress so far: **24 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F4
 in section 3, U4 in section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -1187,7 +1187,7 @@ feature in this space: "it broke, make it work again."
 > latest **stable** release, not a nightly; and Windows is exercised by tests
 > with the platform faked, not by a real in-app update.
 
-### F4 — More than three audio options · **P2** · S
+### F4 — More than three audio options · **P2** · S · ✅ **Done**
 
 `MP3_BITRATES = ((320, "0"), (192, "5"), (128, "7"))` and the audio path always
 targets MP3. m4a/opus/flac are lossless-or-better choices people actually want,
@@ -1196,6 +1196,59 @@ throws quality away for no reason.
 
 **Do:** add "Audio only · original (m4a/opus, no re-encode)" and a format picker
 (mp3/m4a/opus/flac/wav) with bitrate presets, reusing the existing estimate logic.
+
+> **Done, and the first row is the one that costs nothing.** `parse_info` now
+> puts **`Audio only · original M4A`** (or `Opus`, or whatever the stream holds)
+> first: the site's own audio stream by its own format id, `needs_ffmpeg=False`,
+> no `-x`, no encoder. `MP3_BITRATES` became a table — `AudioFormat` with
+> `AudioPreset` rows — covering **MP3 (320/192/128), M4A (256/128), Opus
+> (160/96), FLAC and WAV**, each labelled with its container and each carrying
+> the `--extract-audio --audio-format … --audio-quality …` the old MP3 rows
+> carried. Sizes reuse `estimate_size`, still capped by the source bitrate;
+> FLAC and WAV are sized from the clock instead (44.1 kHz stereo for WAV, half of
+> that for FLAC) because their size does not follow the source bitrate at all.
+>
+> **`--quality` names a format now.** `audio` (and `--audio`) means the best
+> sound the link has — the untouched file — while `mp3`, `m4a`, `opus`, `flac`,
+> `wav`, `original` and a preset such as `mp3-192` each pick exactly that row. A
+> format name that the link already *is* resolves to the original row, which is
+> the same thing without the encoder; `mp3` still means MP3, so a script that
+> asked for one keeps getting one. The note under the list says which of the two
+> it is looking at — *"the site's own M4A file … without re-encoding"* against
+> *"converted to FLAC … converting cannot add quality the source does not
+> have"* — and the engine line, `--help`, the README and the browser extension's
+> "Audio only" button all stopped assuming MP3.
+>
+> **What the measurement changed — two real behaviours.** First, asking yt-dlp
+> for the container the source already uses does not re-encode it, it **copies**
+> it: `--audio-format m4a` on an m4a source wrote **the same 309,205 bytes** a
+> second time. An "M4A 128 kbps" row would therefore have been the source file
+> under a bitrate nobody honours, so a format whose key matches the source's own
+> codec is **not offered at all** — the original row is that format. On the real
+> link that left 8 audio rows, no M4A pair, and `--quality m4a` resolving to the
+> original.
+>
+> Second, AAC is asked for a **fixed** rate and writes it: `M4A 256 kbps` from a
+> 130 kbps Opus source produced **612,353 bytes at 255 kb/s in 3.3 s**. The old
+> "cap the estimate by the source" rule is right for libmp3lame's VBR steps and
+> for libopus (measured: MP3 320 from a 130 kbps source → 323 KB at 139 kb/s;
+> Opus 160 → 241 KB), but it understated a fixed-rate row by half.
+> `AudioPreset` now carries `fixed_rate`, so an M4A row shows what the file will
+> weigh and its note says where the sound came from.
+>
+> **Measured end to end with real yt-dlp 2026.08.19, a real ffmpeg and the real
+> "Me at the zoo" link** (probe 3.0 s): original **309,157 bytes** AAC 44.1 kHz
+> with no ffmpeg step (2.5 s); MP3 128 **105,045 bytes**; Opus 96 **247,111
+> bytes**; FLAC **1,416,212 bytes**; WAV **3,649,142 bytes** — each confirmed by
+> ffmpeg as the codec its row promised, each in 1.9–2.8 s on top of the
+> download.
+>
+> **Not done:** the MP3 presets are still libmp3lame **VBR steps** labelled with
+> rough nominal bitrates — the row that says 128 kbps wrote 44 kb/s on a
+> 19-second speech clip, marked `~` but a 65 % miss is not "rough"; making them
+> fixed-rate is a separate decision about quality per byte. M4A and Opus
+> conversions were exercised against a real source through the same arguments a
+> real run builds, not through a site whose own sound is opus (none was to hand).
 
 ### F5 — Subtitles, thumbnails and metadata · **P2** · M
 

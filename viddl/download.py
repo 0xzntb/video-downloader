@@ -1148,7 +1148,10 @@ class DownloadJob:
                 self._remember_path(match.group(1))
             self._emit(status="Merging video and audio…", percent=None, phase="merge")
         elif line.startswith("[ExtractAudio]"):
-            self._emit(status="Converting to MP3…", percent=None, phase="convert")
+            # The container depends on the row that was chosen (F4), so the
+            # sentence names it instead of assuming an MP3.
+            target = self.option.audio_format or "audio"
+            self._emit(status=f"Converting to {target}…", percent=None, phase="convert")
             match = _DESTINATION_RE.search(line)
             if match:
                 self._remember_path(match.group(1))
