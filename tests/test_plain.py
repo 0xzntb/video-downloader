@@ -506,6 +506,7 @@ def test_the_cli_hands_the_choices_to_the_plain_path(monkeypatch):
         "quality": "720",
         "assume_yes": True,
         "cookies": "",
+        "playlist": False,
     }
 
 

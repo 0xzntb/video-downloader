@@ -17,7 +17,7 @@ import inspect
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.markup import escape
@@ -40,11 +40,13 @@ from ..download import (
     DownloadJob,
     ProbeCancelled,
     Progress,
+    probe_playlist,
     probe_video,
 )
 from ..engine import Engine, ToolError
-from ..formats import MediaInfo, MediaOption
-from ..util import human_size, safe_video_link, shorten
+from ..formats import MediaInfo, MediaOption, Playlist, PlaylistEntry
+from ..queue import QueueItem, QueueJob, QueueSummary
+from ..util import human_duration, human_size, safe_video_link, shorten
 from .widgets import ChoiceList
 
 _ARP = "·"
@@ -71,6 +73,8 @@ class Services:
     #: drawn (F1). Swappable, so a test says what is installed instead of
     #: depending on the machine running it.
     browsers: Callable[[], List[str]] = cookies_mod.installed_keys
+    #: Lists a playlist's videos when the checklist screen opens (F2).
+    fetch_playlist: Callable[..., Playlist] = probe_playlist
 
 
 @dataclass
@@ -92,6 +96,11 @@ class State:
     #: The browser whose cookies the look-up and download may read (F1). Empty
     #: means none: nothing is read from a browser unless it was asked for.
     cookies_browser: str = ""
+    #: The playlist being taken, once the user asked for more than its first
+    #: video, and the videos they ticked (F2). Empty means one video.
+    playlist: Optional[Playlist] = None
+    playlist_entries: List[PlaylistEntry] = field(default_factory=list)
+    queue: Optional[QueueJob] = None
     ffmpeg_available: bool = False
     # How big the one-time ffmpeg download would be, once the mirror has been
     # asked (R8). ``None`` means "not known" — never "zero".
@@ -417,11 +426,19 @@ class ViddlApp(App):
         self.state.info = None
         self.state.option = None
         self.state.saved_path = None
+        self.state.playlist = None
+        self.state.playlist_entries = []
+        self.state.queue = None
         for screen in self.screen_stack:
             if isinstance(screen, HomeScreen):
                 screen.reset()
 
     def action_quit_app(self) -> None:
+        # A queue is a job of jobs: stopping only the one inside it would leave
+        # the next video starting inside an app that is closing.
+        queue = self.state.queue
+        if queue is not None:
+            queue.cancel(force=True)
         job = self.state.job
         if job is not None:
             # Quitting is not a pause: nothing can be left behind to keep
@@ -433,7 +450,15 @@ class ViddlApp(App):
 
     # -- flow ---------------------------------------------------------------
     def start_download(self, option: MediaOption) -> None:
+        # One video, whatever was ticked earlier: a list left over from a queue
+        # that was abandoned must not turn this click into five downloads.
+        self.state.playlist_entries = []
         self.state.option = option
+        self.push_screen(DownloadScreen())
+
+    def start_queue(self, entries: List[PlaylistEntry]) -> None:
+        """Take these videos, in this order, with the quality already chosen."""
+        self.state.playlist_entries = list(entries)
         self.push_screen(DownloadScreen())
 
 
@@ -553,6 +578,7 @@ class OptionsScreen(Screen):
         Binding("b", "go_back", "Back", show=False),
         Binding("enter", "download", "Download", show=False),
         Binding("d", "download", "Download", show=False),
+        Binding("p", "playlist", "Choose videos", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -562,6 +588,7 @@ class OptionsScreen(Screen):
             yield ChoiceList(id="choices")
             with Horizontal(classes="buttons"):
                 yield Button("Download", variant="primary", id="download")
+                yield Button("Choose videos…", id="playlist")
                 yield Button("Set up ffmpeg", id="get-ffmpeg")
                 yield Button("Stop looking", id="stop-probe")
                 yield Button("Back", id="back")
@@ -570,6 +597,9 @@ class OptionsScreen(Screen):
 
     def on_mount(self) -> None:
         self.query_one("#get-ffmpeg", Button).add_class("hidden")
+        # Only a playlist link has anything to choose from; on every other link
+        # the button would be a promise the screen cannot keep (F2).
+        self.query_one("#playlist", Button).add_class("hidden")
         self._start_looking()
 
     def _start_looking(self) -> None:
@@ -675,6 +705,7 @@ class OptionsScreen(Screen):
             return
         self.stop_looking()
         self.query_one("#stop-probe", Button).add_class("hidden")
+        self.query_one("#playlist", Button).add_class("hidden")
         status = self.query_one("#options-status", Static)
         status.update(_plain(error.message))
         self.app.state.info = None
@@ -722,8 +753,6 @@ class OptionsScreen(Screen):
             )
         sub = "  ·  ".join(bit for bit in sub_bits if bit)
         if info.duration:
-            from ..util import human_duration
-
             sub = f"{human_duration(info.duration)}  ·  {sub}" if sub else human_duration(info.duration)
         heading.update(f"{_plain(title)}\n[dim]{_plain(sub)}[/dim]" if sub else _plain(title))
         status.update("")
@@ -736,8 +765,17 @@ class OptionsScreen(Screen):
         table.set_choices(choices)
         table.focus()
 
-        if info.playlist_note:
-            note.update(_plain(info.playlist_note))
+        if info.playlist is not None:
+            # The rest of the playlist is an offer, not a second screen nobody
+            # asked for: the button is there, and pressing it is the asking.
+            self.query_one("#playlist", Button).remove_class("hidden")
+            if info.playlist_note:
+                note.update(
+                    _plain(
+                        f"{info.playlist_note}. Download takes the first one; "
+                        "“Choose videos…” picks which of them to take."
+                    )
+                )
 
         if not info.options:
             self.query_one("#options-status", Static).update(
@@ -820,7 +858,12 @@ class OptionsScreen(Screen):
             button.add_class("hidden")
             info = state.info
             if info is not None and info.playlist_note:
-                note.update(_plain(info.playlist_note))
+                note.update(
+                    _plain(
+                        f"{info.playlist_note}. Download takes the first one; "
+                        "“Choose videos…” picks which of them to take."
+                    )
+                )
             elif option.kind == "audio":
                 note.update(
                     "Audio only — saved as an MP3 in your Downloads folder. "
@@ -877,6 +920,8 @@ class OptionsScreen(Screen):
         button_id = event.button.id
         if button_id == "download":
             self.action_download()
+        elif button_id == "playlist":
+            self.action_playlist()
         elif button_id == "back":
             self.action_go_back()
         elif button_id == "get-ffmpeg":
@@ -892,6 +937,28 @@ class OptionsScreen(Screen):
             self.notify("Choose a quality first.", severity="warning")
             return
         self.app.start_download(option)
+
+    def action_playlist(self) -> None:
+        """Offer the rest of a playlist, at the quality already highlighted.
+
+        The quality is the one under the cursor, not a second question asked
+        later: a playlist and a quality are two halves of one decision, and the
+        checklist screen repeats the choice back so it is never a surprise.
+        """
+        info = self.app.state.info
+        if info is None or info.playlist is None:
+            return
+        table = self.query_one("#choices", ChoiceList)
+        option = table.highlighted_value
+        if not isinstance(option, MediaOption):
+            # The cursor is on the sign-in row: the playlist is still on offer,
+            # but at the best quality rather than at nothing.
+            option = info.options[0] if info.options else None
+        if option is None:
+            self.notify("There is nothing in this playlist to download.", severity="warning")
+            return
+        self.stop_looking()
+        self.app.push_screen(PlaylistScreen(option=option))
 
     def action_go_back(self) -> None:
         # Going back while the link is being looked up is also a way of saying
@@ -928,6 +995,193 @@ class OptionsScreen(Screen):
         self.app._post(self.refresh_note)
 
 
+class PlaylistScreen(Screen):
+    """Screen 2b: which videos of a playlist to take, at the chosen quality (F2).
+
+    Every video starts ticked, because "I opened a playlist" is a request for
+    the playlist; unticking is how a user says "all but these". The listing is
+    read when the screen opens — titles only — so a fifty-video playlist opens
+    in seconds and nothing is downloaded until the button is pressed.
+    """
+
+    BINDINGS = [
+        Binding("escape", "go_back", "Back", show=True),
+        Binding("space", "toggle", "Tick", show=True),
+        Binding("a", "all", "All", show=False),
+        Binding("n", "none", "None", show=False),
+        Binding("d", "download", "Download", show=False),
+    ]
+
+    def __init__(self, option: MediaOption, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.option = option
+        self.playlist: Optional[Playlist] = None
+        self._checked: set = set()
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="options-panel"):
+            yield Static("", id="options-heading")
+            yield Static("Looking up the videos in this playlist…", id="options-status")
+            yield ChoiceList(id="choices")
+            with Horizontal(classes="buttons"):
+                yield Button("Download selected", variant="primary", id="download")
+                yield Button("All", id="all")
+                yield Button("None", id="none")
+                yield Button("Back", id="back")
+            yield Static("", id="options-note")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#download", Button).disabled = True
+        self.query_one("#all", Button).disabled = True
+        self.query_one("#none", Button).disabled = True
+        self.load_playlist()
+
+    # -- loading ------------------------------------------------------------
+    @work(thread=True, exclusive=True, group="playlist")
+    def load_playlist(self) -> None:
+        """List the playlist without extracting a single video (F2)."""
+        try:
+            playlist = self.app.services.fetch_playlist(
+                self.app.services.engine,
+                self.app.state.url,
+                cookies=self.app.state.cookies_browser,
+            )
+        except ProbeCancelled:
+            self.app._post(
+                self.show_error,
+                ToolError("Stopped looking up the playlist.", "Press Escape to go back."),
+            )
+            return
+        except ToolError as exc:
+            self.app._post(self.show_error, exc)
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            self.app._post(self.show_error, ToolError(str(exc)))
+            return
+        self.app._post(self.show_playlist, playlist)
+
+    def show_playlist(self, playlist: Playlist) -> None:
+        if not self.is_mounted:
+            return
+        self.playlist = playlist
+        self.app.state.playlist = playlist
+        self._checked = set(range(len(playlist.entries)))
+        self.query_one("#options-heading", Static).update(_plain(playlist.heading))
+        self.query_one("#options-status", Static).update("")
+        for button_id in ("all", "none"):
+            self.query_one(f"#{button_id}", Button).disabled = False
+        self.render_rows()
+
+    def show_error(self, error: ToolError) -> None:
+        if not self.is_mounted:
+            return
+        self.query_one("#options-heading", Static).update("That playlist could not be read")
+        self.query_one("#options-status", Static).update(_plain(error.message))
+        self.query_one("#options-note", Static).update(
+            _plain(error.hint or "Press Escape to go back.")
+        )
+        self.query_one("#download", Button).disabled = True
+
+    # -- the list -----------------------------------------------------------
+    def render_rows(self) -> None:
+        playlist = self.playlist
+        if playlist is None:
+            return
+        table = self.query_one("#choices", ChoiceList)
+        cursor = table.cursor_index or 0
+        choices: List[Tuple[str, str, str, Any]] = []
+        for index, entry in enumerate(playlist.entries):
+            tick = "[x]" if index in self._checked else "[ ]"
+            length = human_duration(entry.duration) if entry.duration else ""
+            choices.append((f"{tick} {entry.title}", length, "", index))
+        table.set_choices(choices)
+        if choices:
+            # Ticking the fifth video must leave the cursor on the fifth video.
+            table.select_index(min(cursor, len(choices) - 1))
+        self.refresh_note()
+
+    def toggle(self, index: int) -> None:
+        playlist = self.playlist
+        if playlist is None or not (0 <= index < len(playlist.entries)):
+            return
+        if index in self._checked:
+            self._checked.discard(index)
+        else:
+            self._checked.add(index)
+        table = self.query_one("#choices", ChoiceList)
+        tick = "[x]" if index in self._checked else "[ ]"
+        # Only this row changes, so the cursor and the scroll position stay put.
+        table.set_label(index, f"{tick} {playlist.entries[index].title}")
+        self.refresh_note()
+
+    def refresh_note(self) -> None:
+        playlist = self.playlist
+        if playlist is None:
+            return
+        total = len(playlist.entries)
+        chosen = len(self._checked)
+        lines = [f"{chosen} of {total} selected  {_ARP}  {self.option.label} each"]
+        if playlist.truncated:
+            lines.append(
+                f"Viddl lists the first {total} of {playlist.count} videos in this "
+                "playlist. Split it into shorter playlists to take the rest."
+            )
+        if chosen == 0:
+            lines.append("Tick at least one video to download.")
+        else:
+            lines.append("Click a video, or press Space, to tick it on or off.")
+        self.query_one("#options-note", Static).update(_plain("\n".join(lines)))
+        self.query_one("#download", Button).disabled = chosen == 0
+
+    # -- actions ------------------------------------------------------------
+    def action_toggle(self) -> None:
+        table = self.query_one("#choices", ChoiceList)
+        if table.cursor_index is not None:
+            self.toggle(table.cursor_index)
+
+    def on_choice_list_selected(self, message: ChoiceList.Selected) -> None:
+        message.stop()
+        self.toggle(message.index)
+
+    def action_all(self) -> None:
+        self._set_all(True)
+
+    def action_none(self) -> None:
+        self._set_all(False)
+
+    def _set_all(self, checked: bool) -> None:
+        playlist = self.playlist
+        if playlist is None:
+            return
+        self._checked = set(range(len(playlist.entries))) if checked else set()
+        self.render_rows()
+
+    def action_download(self) -> None:
+        playlist = self.playlist
+        if playlist is None:
+            return
+        if not self._checked:
+            self.notify("Tick at least one video first.", severity="warning")
+            return
+        self.app.state.option = self.option
+        self.app.start_queue([playlist.entries[index] for index in sorted(self._checked)])
+
+    def action_go_back(self) -> None:
+        self.app.pop_screen()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        button_id = event.button.id
+        if button_id == "download":
+            self.action_download()
+        elif button_id == "all":
+            self.action_all()
+        elif button_id == "none":
+            self.action_none()
+        elif button_id == "back":
+            self.action_go_back()
+
+
 class DownloadScreen(Screen):
     """Screen 3: progress."""
 
@@ -946,11 +1200,21 @@ class DownloadScreen(Screen):
     def on_mount(self) -> None:
         option = self.app.state.option
         info = self.app.state.info
+        entries = self.app.state.playlist_entries
         heading = self.app.state.url
         if option is not None:
             heading = f"{option.label}  ·  {option.size_text}"
         line = _plain(heading)
-        if info is not None and info.title:
+        if entries:
+            # A queue is not one video, so the heading says how many; the status
+            # line says which one is running.
+            count = f"{len(entries)} videos  {_ARP}  "
+            heading = count + heading
+            line = _plain(heading)
+            playlist = self.app.state.playlist
+            if playlist is not None and playlist.title:
+                line = f"{_plain(shorten(playlist.title, 60))}\n[dim]{line}[/dim]"
+        elif info is not None and info.title:
             line = f"{_plain(shorten(info.title, 60))}\n[dim]{line}[/dim]"
         self.query_one("#download-heading", Static).update(line)
         self.run_download()
@@ -963,18 +1227,19 @@ class DownloadScreen(Screen):
             return
 
         try:
-            if option.needs_ffmpeg and not app.state.ffmpeg_available:
-                tool = app.services.engine.find_ffmpeg()
-                if tool is None:
-                    app._post(self.set_status, "Setting up ffmpeg (one time)…")
-                    app.services.engine.ensure_ffmpeg(
-                        on_status=lambda message: app._post(self.set_status, message),
-                        on_progress=lambda done, total: app._post(
-                            self.set_ffmpeg_progress, done, total
-                        ),
-                    )
-                app.state.ffmpeg_available = True
+            self.prepare_ffmpeg(option)
+        except ToolError as exc:
+            app._post(self.finish_error, exc)
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            app._post(self.finish_error, ToolError(str(exc)))
+            return
 
+        if app.state.playlist_entries:
+            self.run_queue(option)
+            return
+
+        try:
             out_dir = app.services.downloads_dir()
             job = app.services.make_job(
                 app.services.engine,
@@ -997,6 +1262,92 @@ class DownloadScreen(Screen):
             return
         app._post(self.finish_ok, path)
 
+    def prepare_ffmpeg(self, option: MediaOption) -> None:
+        """Fetch ffmpeg before a download that needs it, once for the whole run."""
+        app = self.app
+        if not option.needs_ffmpeg or app.state.ffmpeg_available:
+            return
+        tool = app.services.engine.find_ffmpeg()
+        if tool is None:
+            app._post(self.set_status, "Setting up ffmpeg (one time)…")
+            app.services.engine.ensure_ffmpeg(
+                on_status=lambda message: app._post(self.set_status, message),
+                on_progress=lambda done, total: app._post(
+                    self.set_ffmpeg_progress, done, total
+                ),
+            )
+        app.state.ffmpeg_available = True
+
+    # -- a playlist, one video at a time ------------------------------------
+    def run_queue(self, option: MediaOption) -> None:
+        """Download the ticked videos in order, reporting each as it starts."""
+        app = self.app
+        entries = list(app.state.playlist_entries)
+        playlist = app.state.playlist
+        if playlist is None:  # pragma: no cover - defensive
+            playlist = Playlist(title="", url=app.state.url)
+        queue = QueueJob(
+            app.services.engine,
+            playlist,
+            entries,
+            option,
+            app.services.downloads_dir(),
+            cookies=app.state.cookies_browser,
+            make_job=app.services.make_job,
+            on_start=lambda item: app._post(self.on_item_start, item),
+            on_progress=lambda item, progress: app._post(
+                self.on_item_progress, item, progress
+            ),
+            on_end=lambda item: app._post(self.on_item_end, item),
+        )
+        app.state.queue = queue
+        try:
+            summary = queue.run()
+        except ToolError as exc:
+            app.state.queue = None
+            app._post(self.finish_error, exc)
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            app.state.queue = None
+            app._post(self.finish_error, ToolError(str(exc)))
+            return
+        app.state.queue = None
+        app._post(self.finish_queue, summary)
+
+    def _overall(self, item: QueueItem, percent: float) -> float:
+        """One bar for the whole playlist, so nine videos do not look like nine."""
+        done = item.position - 1
+        total = max(1, item.total)
+        return min(100.0, (done + (percent or 0.0) / 100.0) / total * 100.0)
+
+    def on_item_start(self, item: QueueItem) -> None:
+        self.query_one("#download-bar", ProgressBar).update(progress=self._overall(item, 0.0))
+        self.set_status(
+            f"Video {item.position} of {item.total}  {_ARP}  {shorten(item.title, 48)}"
+        )
+        self.query_one("#download-detail", Static).update("")
+
+    def on_item_progress(self, item: QueueItem, progress: Progress) -> None:
+        self.set_status(f"Video {item.position} of {item.total}  {_ARP}  {progress.status}")
+        if progress.percent is not None and progress.phase == "download":
+            self.query_one("#download-bar", ProgressBar).update(
+                progress=self._overall(item, progress.percent)
+            )
+        self._show_detail(progress)
+
+    def on_item_end(self, item: QueueItem) -> None:
+        if item.path is not None:
+            self.query_one("#download-detail", Static).update(
+                _plain(f"Saved {Path(item.path).name}")
+            )
+
+    def finish_queue(self, summary: QueueSummary) -> None:
+        self.app.state.queue = None
+        if not self._has_a_screen():
+            return
+        self.query_one("#download-bar", ProgressBar).update(progress=100.0)
+        self.app.push_screen(QueueResultScreen(summary=summary, option=self.app.state.option))
+
     # -- updates ------------------------------------------------------------
     def set_status(self, message: str) -> None:
         self.query_one("#download-status", Static).update(_plain(message))
@@ -1018,7 +1369,9 @@ class DownloadScreen(Screen):
             bar.update(progress=min(100.0, progress.percent))
         if progress.phase == "done":
             bar.update(progress=100.0)
+        self._show_detail(progress)
 
+    def _show_detail(self, progress: Progress) -> None:
         detail_bits = []
         if progress.downloaded:
             if progress.total:
@@ -1065,6 +1418,13 @@ class DownloadScreen(Screen):
         self.app.switch_screen(StoppedScreen(job=job, option=self.app.state.option))
 
     def action_cancel(self) -> None:
+        queue = self.app.state.queue
+        if queue is not None:
+            # The current video stops, and the rest are not started: cancelling
+            # a queue means the queue, not just whatever it is on right now.
+            queue.cancel()
+            self.set_status("Stopping…")
+            return
         job = self.app.state.job
         if job is not None:
             job.cancel()
@@ -1253,6 +1613,129 @@ class ResultScreen(Screen):
                 self.app.go_home()
             else:
                 self.app.action_quit_app()
+
+
+class QueueResultScreen(Screen):
+    """Screen 4b: what a whole playlist did, video by video (F2).
+
+    A single "Saved" would hide the two things worth knowing after nine
+    downloads: which ones worked, and which did not. Failures are named rather
+    than counted, because a title is what a person needs to try again.
+    """
+
+    BINDINGS = [
+        Binding("escape", "go_home", "Start over", show=True),
+        Binding("o", "open_folder", "Open folder", show=False),
+    ]
+
+    #: How many saved names are listed before the rest are summed up. The files
+    #: are in the folder either way; a screen is not a directory listing.
+    _LISTED = 8
+
+    def __init__(
+        self,
+        summary: QueueSummary,
+        option: Optional[MediaOption] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.summary = summary
+        self.option = option
+
+    @property
+    def saved(self) -> List[Path]:
+        return [item.path for item in self.summary.items if item.path is not None]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="result-panel"):
+            yield Static("", id="brand")
+            yield Static("", classes="sub", id="result-sub")
+            yield Static("", id="result-path")
+            yield Static("", id="result-message")
+            with Horizontal(classes="buttons"):
+                if self.summary.stopped and self.summary.done < self.summary.total:
+                    yield Button("Download the rest", variant="primary", id="resume")
+                if self.saved:
+                    yield Button("Open folder", id="open")
+                    yield Button("Copy paths", id="copy")
+                yield Button("Done", id="again")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        summary = self.summary
+        if summary.failed:
+            title = "Playlist finished with problems"
+        elif summary.stopped:
+            title = "Playlist stopped"
+        else:
+            title = "Playlist saved"
+        self.query_one("#brand", Static).update(title)
+        self.query_one("#result-sub", Static).update(_plain(summary.headline))
+
+        saved = self.saved
+        names = [path.name for path in saved[: self._LISTED]]
+        if len(saved) > self._LISTED:
+            names.append(f"and {len(saved) - self._LISTED} more")
+        self.query_one("#result-path", Static).update(_plain("\n".join(names)))
+
+        lines: List[str] = []
+        failures = [item for item in summary.items if item.error is not None]
+        for item in failures[:5]:
+            error = item.error
+            lines.append(f"{item.position}. {item.title}: {error.message if error else ''}")
+        if len(failures) > 5:
+            lines.append(f"...and {len(failures) - 5} more that did not work.")
+        if summary.stopped and summary.done < summary.total:
+            lines.append("The videos that were not started are still unticked in the list.")
+        self.query_one("#result-message", Static).update(_plain("\n".join(lines)))
+
+    # -- actions ------------------------------------------------------------
+    def action_go_home(self) -> None:
+        self.app.go_home()
+
+    def action_open_folder(self) -> None:
+        target = self.saved[0] if self.saved else self.app.services.downloads_dir()
+        problem = _open_folder(target)
+        if problem:
+            self.notify(problem, severity="warning")
+
+    def action_copy_paths(self) -> None:
+        paths = "\n".join(str(path) for path in self.saved)
+        if not paths:
+            return
+        self.run_worker(self._copy(paths))
+
+    async def _copy(self, text: str) -> None:
+        try:
+            result = self.app.copy_to_clipboard(text)
+            if inspect.isawaitable(result):
+                await result
+            self.notify("The saved paths are on the clipboard.", timeout=3)
+        except Exception as exc:  # pragma: no cover - terminal dependent
+            self.notify(
+                f"Could not copy automatically ({exc}). The paths are shown above.",
+                severity="warning",
+            )
+
+    def action_resume(self) -> None:
+        if not self.app.state.playlist_entries:  # pragma: no cover - defensive
+            self.action_go_home()
+            return
+        # The queue runs again from the top. The videos already saved are found
+        # again and reported as already downloaded, so this costs a look-up per
+        # finished file rather than a download per finished file.
+        self.app.switch_screen(DownloadScreen())
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        button_id = event.button.id
+        if button_id == "open":
+            self.action_open_folder()
+        elif button_id == "copy":
+            self.action_copy_paths()
+        elif button_id == "resume":
+            self.action_resume()
+        elif button_id == "again":
+            self.app.go_home()
 
 
 def run(

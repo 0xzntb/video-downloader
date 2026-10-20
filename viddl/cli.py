@@ -102,6 +102,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="with --plain: download without asking first (for scripts)",
     )
     parser.add_argument(
+        "--playlist",
+        action="store_true",
+        help=(
+            "with --plain: download every video of a playlist, one after "
+            "another, instead of only the first"
+        ),
+    )
+    parser.add_argument(
         "--cookies-from-browser",
         metavar="BROWSER",
         help=(
@@ -262,10 +270,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _prepare_console()
     _enable_log_file()
 
-    if not args.plain and (args.quality or args.yes):
+    if not args.plain and (args.quality or args.yes or args.playlist):
+        hint = "Try: viddl --plain --quality 720 <link>"
+        if args.playlist and not (args.quality or args.yes):
+            hint = "Try: viddl --plain --playlist <link>"
         return _fail(
-            "--quality and --yes only work with --plain.",
-            "Try: viddl --plain --quality 720 <link>",
+            "--quality, --yes and --playlist only work with --plain.",
+            hint,
         )
 
     if args.download_dir:
@@ -393,6 +404,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 quality=args.quality or "",
                 assume_yes=bool(args.yes),
                 cookies=cookies,
+                playlist=bool(args.playlist),
             )
         except KeyboardInterrupt:  # pragma: no cover - interactive
             return 130

@@ -19,7 +19,7 @@ from . import appdata
 from .cookies import cookies_args
 from .engine import Engine, ToolError, is_windows
 from .errors import explain
-from .formats import MediaInfo, MediaOption, parse_info
+from .formats import MediaInfo, MediaOption, Playlist, parse_info, parse_playlist
 
 # The line prefix yt-dlp prints our progress on.
 _PROGRESS_MARKER = "VIDDLPROGRESS"
@@ -111,6 +111,12 @@ PROBE_CACHE_SECONDS = 300
 #: At most this many links are remembered, so a long session cannot grow
 #: without bound. The oldest answer goes when a new one arrives.
 _PROBE_CACHE_MAX = 20
+
+#: How many videos of a playlist are listed in the checklist (F2). A flat
+#: listing is cheap — titles and links, no extraction per video — but a playlist
+#: of five thousand is not a menu anybody reads, and building it would still
+#: take a while. The count is shown either way, so a cut list says so.
+PLAYLIST_LIMIT = 200
 
 #: A stop is felt this often while a look-up runs. The user pressed a button;
 #: they mean now, not whenever yt-dlp happens to finish.
@@ -220,11 +226,24 @@ class _ProbeAnswer:
 _PROBE_CACHE: Dict[str, _ProbeAnswer] = {}
 _PROBE_CACHE_LOCK = threading.Lock()
 
+@dataclass
+class _PlaylistAnswer:
+    """A listed playlist that has already been paid for, and when."""
+
+    playlist: Playlist
+    at: float
+
+
+#: Playlist listings, remembered the same way and for the same reason: going
+#: back to the qualities screen and returning must not list the videos again.
+_PLAYLIST_CACHE: Dict[str, _PlaylistAnswer] = {}
+
 
 def clear_probe_cache() -> None:
     """Forget every remembered look-up, so the next one asks the site again."""
     with _PROBE_CACHE_LOCK:
         _PROBE_CACHE.clear()
+        _PLAYLIST_CACHE.clear()
 
 
 def _probe_key(url: str, cookies: str = "") -> str:
@@ -257,6 +276,27 @@ def _remember_probe(key: str, info: MediaInfo) -> None:
         while len(_PROBE_CACHE) > _PROBE_CACHE_MAX:
             oldest = min(_PROBE_CACHE, key=lambda held: _PROBE_CACHE[held].at)
             del _PROBE_CACHE[oldest]
+
+
+def _remembered_playlist(key: str) -> Optional[Playlist]:
+    """The listing of this playlist if it is still fresh, else ``None``."""
+    now = time.monotonic()
+    with _PROBE_CACHE_LOCK:
+        answer = _PLAYLIST_CACHE.get(key)
+        if answer is None:
+            return None
+        if now - answer.at > PROBE_CACHE_SECONDS:
+            del _PLAYLIST_CACHE[key]
+            return None
+        return answer.playlist
+
+
+def _remember_playlist(key: str, playlist: Playlist) -> None:
+    with _PROBE_CACHE_LOCK:
+        _PLAYLIST_CACHE[key] = _PlaylistAnswer(playlist, time.monotonic())
+        while len(_PLAYLIST_CACHE) > _PROBE_CACHE_MAX:
+            oldest = min(_PLAYLIST_CACHE, key=lambda held: _PLAYLIST_CACHE[held].at)
+            del _PLAYLIST_CACHE[oldest]
 
 
 def _run_lookup(
@@ -408,6 +448,86 @@ def probe_video(
     return parsed
 
 
+def probe_playlist(
+    engine: Engine,
+    url: str,
+    timeout: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
+    cookies: str = "",
+    limit: int = PLAYLIST_LIMIT,
+) -> Playlist:
+    """List a playlist's videos, without reading any of them in full (F2).
+
+    ``--flat-playlist`` is what makes this affordable: yt-dlp asks the site for
+    the list and each video's title, not for each video page. A playlist of two
+    hundred can therefore be shown in seconds, where a full look-up of every
+    entry would take minutes and fail entirely if one video in the middle had
+    been deleted.
+
+    What the listing cannot give is a complete video — only enough to choose
+    from. Each chosen video is then downloaded on its own, so one bad entry
+    costs one item in the queue rather than the whole list.
+    """
+    if timeout is None:
+        timeout = lookup_timeout()
+    # Keyed the same way as a look-up — link, cookies, the user's own extra
+    # options — plus the list length, because a listing of 5 is not the answer
+    # to a question about 200.
+    key = f"playlist|{limit}|" + _probe_key(url, cookies)
+    remembered = _remembered_playlist(key)
+    if remembered is not None:
+        return remembered
+
+    tool = engine.ensure_ytdlp()
+    args = tool.command(
+        "--ignore-config",
+        "--flat-playlist",
+        "--dump-single-json",
+        "--playlist-end",
+        str(max(1, int(limit))),
+        "--no-warnings",
+        "--no-progress",
+        "--socket-timeout",
+        str(socket_timeout()),
+        "--no-color",
+    )
+    args += cookies_args(cookies)
+    args += appdata.ytdlp_arguments()
+    args += ["--", url]
+
+    returncode, stdout, stderr = _run_lookup(args, timeout, cancel)
+
+    if returncode != 0 or not (stdout or "").strip():
+        raw = (stderr or "") + "\n" + (stdout or "")
+        friendly = explain(raw, returncode)
+        raise ToolError(
+            friendly.message,
+            friendly.hint,
+            raw=raw.strip(),
+            temporary=friendly.temporary,
+        )
+
+    try:
+        info = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise ToolError(
+            "The site sent back something Viddl could not read.",
+            "This usually means the site changed. Trying again later often fixes it.",
+            raw=str(exc),
+        ) from exc
+
+    if not isinstance(info, dict):
+        raise ToolError("That link did not point to a playlist.")
+    playlist = parse_playlist(info)
+    if not playlist.entries:
+        raise ToolError(
+            "This playlist has no videos in it that Viddl can see.",
+            "It may be empty or private. Press Escape to try another link.",
+        )
+    _remember_playlist(key, playlist)
+    return playlist
+
+
 class DownloadJob:
     """One download, run in a background thread with cancel support."""
 
@@ -423,6 +543,7 @@ class DownloadJob:
         attempts: int = DEFAULT_ATTEMPTS,
         retry_delay: float = RETRY_BASE_SECONDS,
         cookies: str = "",
+        playlist_item: Optional[int] = None,
     ):
         self.engine = engine
         self.url = url
@@ -432,6 +553,11 @@ class DownloadJob:
         # default — means the download runs as nobody in particular, which is
         # how every download ran before the choice existed.
         self.cookies = cookies
+        # Which item of the playlist at ``url`` to take (F2). ``None`` is one
+        # video, which is every download that is not part of a queue; a number
+        # is used when the listing gave an identifier rather than an address,
+        # so the playlist itself has to be asked again for that item.
+        self.playlist_item = playlist_item
         self.on_progress = on_progress
         self.on_log = on_log
         # Keeping what a stopped download fetched is what makes resuming
@@ -554,13 +680,20 @@ class DownloadJob:
             # add options (or commands) to the run behind the user's back.
             "--ignore-config",
             "--newline",
-            "--no-playlist",
-            # One video, and the screen said so: "Only the first of N videos in
-            # this playlist." ``--no-playlist`` only covers a video link that
-            # carries a list; a playlist link of its own would be downloaded
-            # whole — six files for a link the menu described as one.
-            "--playlist-end",
-            "1",
+        )
+        if self.playlist_item is None:
+            # One video, and the screen said so. ``--no-playlist`` only covers a
+            # video link that carries a list; a playlist link of its own would
+            # be downloaded whole — six files for a link the menu described as
+            # one — so the length is cut to one as well.
+            args += ["--no-playlist", "--playlist-end", "1"]
+        else:
+            # This one video, by its place in the playlist (F2): used when the
+            # listing gave the site's own identifier instead of an address, so
+            # the playlist has to be asked for the item rather than the item
+            # asked for by name.
+            args += ["--playlist-items", str(int(self.playlist_item))]
+        args += [
             "--no-color",
             "--no-warnings",
             # Carry on from a ".part" file a previous attempt left. yt-dlp does
@@ -582,7 +715,7 @@ class DownloadJob:
             _PROGRESS_TEMPLATE,
             "--trim-filenames",
             "150",
-        )
+        ]
         if self.option.merge_container and self.option.needs_ffmpeg:
             args += ["--merge-output-format", self.option.merge_container]
         args += self.engine.ffmpeg_location_args()

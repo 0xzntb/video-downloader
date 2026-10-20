@@ -203,7 +203,11 @@ def test_options_are_videos_then_audio():
 def test_playlist_uses_first_entry_and_says_so():
     info = parse_info({"entries": [INFO, INFO], "_type": "playlist"})
     assert info.title == "A Very Real Video"
-    assert info.playlist_note.startswith("Only the first of 2")
+    assert info.playlist_note.startswith("This is a playlist of 2 videos")
+    # The rest of the list is on offer (F2), and the summary is what makes the
+    # choice possible without listing anything yet.
+    assert info.playlist is not None
+    assert info.playlist.count == 2
 
 
 def test_missing_formats_falls_back_to_best_available():

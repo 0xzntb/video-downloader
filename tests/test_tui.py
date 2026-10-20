@@ -1160,7 +1160,12 @@ async def test_a_playlist_says_it_will_take_the_first_video(tmp_path):
     app = ViddlApp(initial_url=URL, services=services)
     async with app.run_test(size=(100, 32)) as pilot:
         await settle(pilot)
-        assert "Only the first of 2 videos" in shown(app.screen, "#options-note")
+        note = shown(app.screen, "#options-note")
+        assert "This is a playlist of 2 videos" in note
+        assert "Download takes the first one" in note
+        # The rest of the list is one click away, and the button only appears
+        # for a link that has more to offer (F2).
+        assert app.screen.query_one("#playlist").has_class("hidden") is False
 
 
 @pytest.mark.asyncio

@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **21 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1 in
-section 3, U4 in section 4, D2–D3 in section 6.
+Progress so far: **22 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F2
+in section 3, U4 in section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
 down keeps a secret, and a web page can no longer start it *doing* anything —
@@ -1045,7 +1045,7 @@ just the README.
 > on yt-dlp's own documented behaviour and on the argument reaching it intact —
 > not on a download this repository performed.
 
-### F2 — Playlists · **P1** · M
+### F2 — Playlists · **P1** · M · ✅ **Done**
 
 Currently `--no-playlist` plus a note: "Only the first of N videos in this
 playlist." That is a reasonable default and a good message, but a playlist link is
@@ -1054,6 +1054,74 @@ common.
 **Do:** when `parse_info()` detects a playlist, offer a checklist screen (all /
 some / just this one) and run a sequential queue with per-item progress and a
 final summary. Reuse the batch machinery from **F7**.
+
+> **Done, and the machinery is a module F7 can use rather than a screen it would
+> have to copy.** `viddl/queue.py` holds `QueueJob`: it downloads a list one
+> video at a time, reports each start and each progress line, keeps going after
+> a failure, and returns a `QueueSummary` whose `headline` is true whether the
+> run finished, partly failed or was stopped. F7 (paste several links) needs to
+> add a way to build the list; it does not need to touch the running of it.
+>
+> **The first video is still the default, and the note now offers the rest.**
+> `parse_info` puts a `PlaylistSummary` on `MediaInfo` beside the first entry's
+> qualities, so the qualities screen can say *"This is a playlist of 182 videos:
+> “Popular Music Videos”. Download takes the first one; “Choose videos…” picks
+> which of them to take."* A click never starts forty downloads.
+>
+> **The checklist is a listing, not 182 look-ups.** `probe_playlist` runs
+> yt-dlp with `--flat-playlist --dump-single-json --playlist-end 200`: titles,
+> links and lengths, no video page read. **Measured with yt-dlp 2026.08.19 on a
+> real 182-video playlist: 1.7 s to list all 182** (against 2.9 s for the
+> ordinary look-up of the first video), and **0.00 s** when the same list is
+> asked for again — remembered in memory for five minutes, keyed on the link,
+> the cookie choice and Viddl's own options, exactly like a look-up. A playlist
+> longer than the limit says *"Viddl lists the first 200 of 500 videos…"* rather
+> than pretending to be complete.
+>
+> **All, some, or just this one.** The checklist opens with every video ticked;
+> a click or `Space` leaves one out, `a`/`n` tick all or none, and the quality
+> chosen on the screen before it is repeated on the list (*"2 of 3 selected ·
+> 1080p each"*) so it is never a surprise. **Download** on the qualities screen
+> is still just this one video. The queue's heading says `3 videos`, the status
+> says `Video 2 of 3 · La Diabla`, one bar covers the whole list, and the end
+> screen says *"Saved all 2 videos."* or names the videos that failed by title.
+>
+> **A bad video costs one item.** The queue catches the failure, records it, and
+> starts the next video; the summary names what did not work. Stopping the queue
+> stops the video it is on and starts nothing else — the items after it are
+> marked skipped rather than left `waiting` — and `Download the rest` runs the
+> list again, which costs a look-up per finished file rather than a download.
+>
+> **`--plain --playlist`** takes every video at the chosen quality, prints
+> `[3/9] Title` and the same progress line for each, writes **one path per line**
+> on stdout, and ends with the summary. One failure means exit code 1 even when
+> nine files were saved, so a script cannot mistake a partial run for a complete
+> one. On a single video the flag is harmless; on a playlist without it the
+> output says *"Viddl will download the first of the 3 videos. Add --playlist to
+> download all of them."* — the same advice the app gives with a button.
+> `viddl --playlist` without `--plain` is refused with the right example.
+>
+> **A listing that gives identifiers instead of links still works.** Some
+> extractors name an entry by id rather than address; for those the queue asks
+> the playlist for item *N* (`--playlist-items N`) instead of refusing, while a
+> download that is not part of a queue keeps `--no-playlist --playlist-end 1`
+> exactly as before.
+>
+> **27 new tests** (658 → 685; all in `tests/test_playlist.py`), `pyflakes`
+> clean, coverage 93% overall and 93% on `queue.py`.
+> **Measured end to end with real yt-dlp 2026.08.19 and a real ffmpeg:** two
+> videos from that playlist downloaded through `QueueJob` in **6.4 s**, written
+> as `Real Boston Richey … [jWdxXdp8sZI].mp4` (6.4 MB) and `La Diabla
+> [s6cdjJvGM2o].mp4` (3.1 MB), with the callbacks firing `start 1/2`, `end 1
+> done`, `start 2/2`, `end 2 done` and the summary *"Saved all 2 videos."*
+>
+**Not done:** a queue is not paused and resumed item by item (stopping keeps
+> the partial file and the finished files, and `Download the rest` re-checks
+> them), and a playlist is listed to 200 videos. A `watch?v=…&list=…` link is
+> still read as the one video it names: the look-up asks yt-dlp not to read a
+> list, so Viddl never learns the video belongs to one — opening the playlist
+> address itself is what offers the rest. **F7** (pasting several links) is
+> still open, and now has the runner it was told to reuse.
 
 ### F3 — `viddl --update` · **P1** · S
 
@@ -1091,6 +1159,11 @@ file (path, title, size, when) with Reveal/Copy/Re-download actions. That is als
 the natural home for **F9** notifications.
 
 ### F7 — Batch queue · **P2** · L
+
+> **The runner now exists.** `viddl/queue.py` (see **F2**) takes any list of
+> entries and downloads it in order with per-item progress, failures that do not
+> end the run, and a summary. What is left here is collecting the links and the
+> interaction for adding and removing them.
 
 Paste several links (or select playlist entries) and let them run in order, with
 per-item state and an overall summary.

@@ -49,6 +49,93 @@ class MediaOption:
         return " · ".join(bits)
 
 
+@dataclass(frozen=True)
+class PlaylistSummary:
+    """What a look-up can tell about a playlist without listing it (F2).
+
+    The look-up only reads the first video, so this is the part that says
+    "there is more here": enough to offer the choice, not enough to show the
+    list. Listing it is a second, flatter question — see :class:`Playlist` —
+    asked only when somebody asks for more than the first video.
+    """
+
+    title: str
+    count: int
+    url: str
+
+
+@dataclass(frozen=True)
+class PlaylistEntry:
+    """One video in a playlist, as the flat listing describes it.
+
+    The flat listing is metadata only — no full extraction per video — so a
+    title can be missing or a link can be an identifier rather than an address.
+    Both are handled where they are used, not papered over here.
+    """
+
+    index: int
+    title: str
+    url: str = ""
+    duration: Optional[float] = None
+
+
+@dataclass
+class Playlist:
+    """A playlist's videos, in the order the site keeps them."""
+
+    title: str
+    url: str
+    entries: List[PlaylistEntry] = field(default_factory=list)
+    #: What the playlist says it holds, which can be more than was read: the
+    #: listing stops at a limit so a playlist of a thousand does not become a
+    #: thousand-item menu.
+    count: int = 0
+
+    @property
+    def truncated(self) -> bool:
+        return self.count > len(self.entries)
+
+    @property
+    def heading(self) -> str:
+        title = self.title or "Playlist"
+        if self.truncated:
+            return f"{title}  ·  the first {len(self.entries)} of {self.count} videos"
+        return f"{title}  ·  {len(self.entries)} videos"
+
+
+def _playlist_title(info: Dict[str, Any]) -> str:
+    return str(info.get("title") or info.get("id") or "Playlist")
+
+
+def parse_playlist(info: Dict[str, Any]) -> Playlist:
+    """Build the checklist from yt-dlp's flat playlist listing.
+
+    A flat entry can be missing a title, a length or even a usable link; each
+    of those is left empty here rather than invented, so the checklist can show
+    what the site actually said and the queue can decide what to do about it.
+    """
+    raw_entries = [entry for entry in (info.get("entries") or []) if isinstance(entry, dict)]
+    total = int(_num(info.get("playlist_count")) or 0)
+    total = max(total, len(raw_entries))
+    entries: List[PlaylistEntry] = []
+    for position, entry in enumerate(raw_entries, start=1):
+        index = int(_num(entry.get("playlist_index")) or position)
+        entries.append(
+            PlaylistEntry(
+                index=index,
+                title=str(entry.get("title") or entry.get("id") or f"Video {index}"),
+                url=str(entry.get("webpage_url") or entry.get("url") or ""),
+                duration=_num(entry.get("duration")),
+            )
+        )
+    return Playlist(
+        title=_playlist_title(info),
+        url=str(info.get("webpage_url") or info.get("original_url") or ""),
+        entries=entries,
+        count=total,
+    )
+
+
 @dataclass
 class MediaInfo:
     """What we know about a link before downloading it."""
@@ -62,6 +149,10 @@ class MediaInfo:
     options: List[MediaOption] = field(default_factory=list)
     is_live: bool = False
     playlist_note: str = ""
+    #: Set when the link is a playlist, so the app can offer the rest of it
+    #: (F2). The options above still describe the first video, which is what
+    #: "download this one" means.
+    playlist: Optional[PlaylistSummary] = None
 
     @property
     def heading(self) -> str:
@@ -185,6 +276,7 @@ def _label_for_height(height: int, extra: str = "") -> str:
 def parse_info(info: Dict[str, Any]) -> MediaInfo:
     """Build the quality menu for one video's metadata."""
     playlist_note = ""
+    playlist: Optional[PlaylistSummary] = None
     if isinstance(info.get("entries"), list) and info["entries"]:
         entries = [entry for entry in info["entries"] if entry]
         # The probe asks yt-dlp for the first entry only, so the list here is
@@ -193,7 +285,16 @@ def parse_info(info: Dict[str, Any]) -> MediaInfo:
         total = int(_num(info.get("playlist_count")) or 0)
         total = max(total, len(entries))
         if total > 1:
-            playlist_note = f"Only the first of {total} videos in this playlist."
+            playlist = PlaylistSummary(
+                title=_playlist_title(info),
+                count=total,
+                url=str(info.get("webpage_url") or info.get("original_url") or ""),
+            )
+            # Kept as metadata, not as instructions: the same sentence is read
+            # by the app (where a button takes the rest) and by --plain (where
+            # a flag does), so it says what the link is and lets each path say
+            # what it will do about it (F2).
+            playlist_note = f"This is a playlist of {total} videos: “{playlist.title}”"
         info = entries[0]
 
     url = str(info.get("webpage_url") or info.get("original_url") or info.get("url") or "")
@@ -209,6 +310,7 @@ def parse_info(info: Dict[str, Any]) -> MediaInfo:
         extractor=str(info.get("extractor_key") or info.get("extractor") or ""),
         is_live=bool(info.get("is_live")),
         playlist_note=playlist_note,
+        playlist=playlist,
     )
 
     formats: Iterable[Dict[str, Any]] = [

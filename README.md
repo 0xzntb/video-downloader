@@ -108,6 +108,7 @@ Nothing is installed system-wide and no configuration files are created.
 | Download something that needs a sign-in | Choose **Sign in with my browser** on the qualities screen, or `viddl --cookies-from-browser auto <link>` |
 | Use it in a script, an old console or over SSH | `viddl --plain --yes <link>` |
 | Pick the quality without a menu | `viddl --plain --quality 720 <link>` |
+| Take a whole playlist, or just some of it | Choose **Choose videos…** on the qualities screen (`p`), or `viddl --plain --playlist --yes <link>` |
 | See what qualities a link has, without downloading | `viddl --list-qualities <link>` |
 | Save somewhere else for one run | `viddl --download-dir ~/Videos <link>` |
 | Check that everything is set up | `viddl --doctor` |
@@ -121,6 +122,14 @@ In the app:
 * **Keyboard** — `↑`/`↓` or `j`/`k` to move, `Enter` to download, `Tab` between
   buttons, `Esc` to go back, `Ctrl+Q` to quit.
 * Paste with `Ctrl+V` / `Cmd+V`, or just type the link.
+
+When the link is a **playlist**, the qualities screen says so and offers
+**Choose videos…** (`p`). That opens a checklist of every video in it, all
+ticked: click one, or press `Space`, to leave it out; `a` ticks all and `n` none.
+The quality under the cursor when you open the list is the quality used for
+every video in it. **Download** without opening the list takes the first video
+only, which is what a playlist link did before — a click never starts forty
+downloads.
 
 Downloads go to your **Downloads** folder (`~/Downloads`, or whatever your
 desktop calls it) with the video's own title, plus its id so nothing gets
@@ -160,6 +169,21 @@ Without `--yes` Viddl asks before downloading, and refuses to start when there
 is no terminal to ask on — the safe default for a script. `Ctrl+C` stops the
 download and keeps what was fetched, exactly as in the app, and running the
 same command again carries on.
+
+`--playlist` takes every video of a playlist, one after another, at the chosen
+quality:
+
+```sh
+viddl --plain --playlist --yes --quality 720 "https://www.youtube.com/playlist?list=..."
+```
+
+Each video gets its own `[3/9] Title` line and progress, and **one path per line**
+lands on stdout as it is saved — so a script gets the list in the site's own
+order, and files already downloaded are reported rather than fetched again.
+The run ends with `Saved all 9 videos.`; if one video fails the rest are still
+tried, its error is printed, and the exit code is 1 rather than 0 — a partial
+result never looks like a complete one. On a link that is a single video,
+`--playlist` changes nothing.
 
 ## Audio only (MP3)
 
@@ -253,7 +277,9 @@ left running out of sight. **Back** (or `Esc`) does the same. If you go back and
 open the same link again within a few minutes, the answer is remembered, so it
 appears at once instead of asking the site a second time. A link that offers a
 whole playlist is only read up to its first video, so a long one cannot turn
-into minutes of waiting and a menu that never arrives.
+into minutes of waiting and a menu that never arrives; the list of its videos is
+asked for separately — titles and links only, no video page read — and only
+when you press **Choose videos…**.
 
 A failure that might not have happened — the site rate-limiting you, a server
 having a bad minute, a connection that dropped — is tried again by itself: after
@@ -312,10 +338,11 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 
 | Piece | What it does |
 | --- | --- |
-| `viddl/tui/` | The terminal interface (Textual). Five screens: home, qualities, progress, stopped, done. |
+| `viddl/tui/` | The terminal interface (Textual). Screens for home, qualities, the playlist checklist, progress, stopped, and the result. |
 | `viddl/engine.py` | Finds yt-dlp and ffmpeg, or downloads its own copy into `~/.local/share/viddl/bin` — in pieces that survive an interruption, checked against a published checksum and only then unpacked. |
 | `viddl/formats.py` | Turns site metadata into the quality menu, with size estimates. |
 | `viddl/download.py` | Reads what a link offers — in a process of its own, so a slow site can be stopped and its answer is remembered for a few minutes — and runs yt-dlp in a per-download working folder, reads its progress, and moves the finished file out under a name reserved before the move, so two windows cannot collide. A failure worth a second attempt is retried after a doubling wait; stopping it stops the whole tree yt-dlp started — the ffmpeg merge included — and keeps what was fetched so it can be resumed. |
+| `viddl/queue.py` | Several videos, one at a time: which one is running, a count that is honest at the end, and a bad video that costs one item rather than the list. |
 | `viddl/plain.py` | The line-oriented `--plain` path: ASCII-only text, one progress line, the saved path alone on stdout. |
 | `viddl/errors.py` | Maps raw tool output onto plain-language explanations, and says whether the failure is one another attempt may fix. |
 | `viddl/protocol.py` | The `viddl://` hand-off and its per-OS registration. |
@@ -405,9 +432,10 @@ The suite covers the quality menu and its size estimates, engine discovery and
 installation (including a mirror returning an HTML error page, and a resuming
 download driven against a real server on localhost — a `Range` request is a
 conversation, so a stand-in would only test the stand-in), the download
-runner and its progress parsing, error translation, `viddl://` parsing and
-registration, the plain `--plain` path, and the whole interface driven through
-Textual's test pilot — with clicks, arrow keys and the cancel path. The
+runner and its progress parsing, error translation, playlist listings and the
+sequential queue behind them, `viddl://` parsing and registration, the plain
+`--plain` path, and the whole interface driven through Textual's test pilot —
+with clicks, arrow keys, ticking a checklist and the cancel path. The
 extension is checked too: its manifest, every file it references, and its pure
 JavaScript logic via Node. The Windows installer files are checked from any
 platform, and the suite runs on Windows in CI.
@@ -416,8 +444,13 @@ Regenerate the extension icons with `python3 tools/make_icons.py`.
 
 ## Notes
 
-* Playlists are not supported yet: a playlist link downloads its first video and
-  the app says so.
+* A playlist link downloads its first video unless you ask for more: **Choose
+  videos…** in the app, `--playlist` in `--plain`. The checklist lists up to 200
+  videos; a longer playlist shows the first 200 and says how many were left out
+  rather than pretending to be complete. Videos are taken one at a time on
+  purpose — four at once is not faster on a throttled account, and it makes
+  "which one is this?" unanswerable. A stopped queue keeps what it has, and
+  **Download the rest** carries on without fetching the finished files again.
 * Instagram, Threads, and sometimes Vimeo or TikTok ask for a login on some
   networks (they are stricter with datacenter connections than with home ones).
   When that happens Viddl says *"The site wants you to be signed in to watch

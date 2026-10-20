@@ -63,6 +63,17 @@ class ChoiceRow(Static):
             self._refresh_content()
         self.set_class(active, "active")
 
+    def set_label(self, label: str) -> None:
+        """Change what the row says without rebuilding the list (F2).
+
+        A checklist ticks a row in place. Replacing the whole list would jump
+        the cursor back to the top on every tick, which makes ticking the fifth
+        of nine videos an exercise in scrolling.
+        """
+        if label != self.row_label:
+            self.row_label = label
+            self._refresh_content()
+
     def on_click(self, event: Click) -> None:
         event.stop()
         self.post_message(self.Chosen(self.row_index))
@@ -142,6 +153,12 @@ class ChoiceList(VerticalScroll):
 
     def select_index(self, index: int) -> None:
         self._set_index(index)
+
+    def set_label(self, index: int, label: str) -> None:
+        """Rename the row at ``index``, keeping the cursor where it is."""
+        rows = self._rows()
+        if 0 <= index < len(rows):
+            rows[index].set_label(label)
 
     # -- cursor -------------------------------------------------------------
     def _rows(self) -> List[ChoiceRow]:

@@ -21,9 +21,17 @@ from typing import Callable, Optional, TextIO
 
 from . import appdata
 from . import cookies as cookies_mod
-from .download import DownloadCancelled, DownloadJob, Progress, probe_video
+from .download import (
+    DownloadCancelled,
+    DownloadJob,
+    ProbeCancelled,
+    Progress,
+    probe_playlist,
+    probe_video,
+)
 from .engine import Engine, ToolError
 from .formats import MediaInfo, MediaOption
+from .queue import QueueJob
 from .util import human_duration, human_size
 
 #: Typography Viddl uses in its own sentences, mapped to what a console with a
@@ -283,6 +291,119 @@ def _set_up_ffmpeg(
     return None
 
 
+def _run_playlist_plain(
+    engine: Engine,
+    info: MediaInfo,
+    chosen: MediaOption,
+    *,
+    playlist_url: str,
+    cookies: str,
+    assume_yes: bool,
+    make_job: Callable[..., DownloadJob],
+    downloads_dir: Callable[[], Path],
+    stdin: TextIO,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    """Download every video of a playlist, one at a time (F2).
+
+    One line per video, the same progress line as a single download, and the
+    path of each saved file on stdout — so ``viddl --plain --playlist --yes``
+    gives a script a list it can act on, in the order the site keeps them.
+    """
+    _say(stderr, "Looking up the videos in the playlist...")
+    try:
+        listing = probe_playlist(engine, playlist_url, cookies=cookies)
+    except ProbeCancelled:
+        _say(stderr, "Stopped before the playlist was read.")
+        return 130
+    except ToolError as exc:
+        _say(stderr, f"error: {exc.message}")
+        if exc.hint:
+            _say(stderr, f"  {exc.hint}")
+        return 1
+
+    entries = listing.entries
+    _say(stderr, listing.heading)
+    if listing.truncated:
+        # Saying so matters: a script that expects 900 files and gets 200 should
+        # be able to find out why without reading the source.
+        _say(
+            stderr,
+            f"  Viddl lists the first {len(entries)} videos of a playlist this "
+            "long. Split it into shorter playlists to take the rest.",
+        )
+    _say(stderr, f"Every video will be downloaded at {chosen.label}.")
+
+    if chosen.needs_ffmpeg and engine.find_ffmpeg() is None:
+        answer = _set_up_ffmpeg(engine, chosen, stderr, stdin, assume_yes)
+        if answer is not None:
+            return answer
+
+    if not assume_yes:
+        if not _is_interactive(stdin):
+            _say(stderr, "error: Viddl will not download without being asked.")
+            _say(stderr, "  Pass --yes to download without a question, for scripts.")
+            return 1
+        question = f"Download all {len(entries)} videos at {chosen.label}? [y/N] "
+        stderr.write(ascii_text(question))
+        stderr.flush()
+        if stdin.readline().strip().lower() not in ("y", "yes"):
+            _say(stderr, "Nothing was downloaded.")
+            return 0
+
+    line = _Line(stderr)
+
+    def on_start(item) -> None:
+        _say(stderr, f"[{item.position}/{item.total}] {item.title}")
+
+    def on_progress(item, progress: Progress) -> None:
+        line.show(_progress_line(progress))
+
+    def on_end(item) -> None:
+        line.clear()
+        if item.path is not None:
+            try:
+                size = human_size(Path(item.path).stat().st_size)
+            except OSError:  # pragma: no cover - a file that vanished
+                size = "?"
+            _say(stderr, f"Saved ({size})")
+            # One path per line, and nothing else: this is what a script reads.
+            stdout.write(f"{item.path}\n")
+            stdout.flush()
+        elif item.error is not None:
+            _say(stderr, f"error: {item.error.message}")
+            if item.error.hint:
+                _say(stderr, f"  {item.error.hint}")
+
+    job = QueueJob(
+        engine,
+        listing,
+        entries,
+        chosen,
+        downloads_dir(),
+        cookies=cookies,
+        make_job=make_job,
+        on_start=on_start,
+        on_progress=on_progress,
+        on_end=on_end,
+    )
+    try:
+        result = job.run()
+    except KeyboardInterrupt:
+        job.cancel(force=True)
+        line.clear()
+        _say(stderr, "Stopped. Run the same command again to carry on from here.")
+        return 130
+
+    line.clear()
+    _say(stderr, result.headline)
+    if result.stopped:
+        _say(stderr, "Run the same command again to carry on from here.")
+        return 130
+    return 0 if result.failed == 0 else 1
+
+
 def run_plain(
     url: str,
     *,
@@ -290,6 +411,7 @@ def run_plain(
     quality: str = "",
     assume_yes: bool = False,
     cookies: str = "",
+    playlist: bool = False,
     engine: Optional[Engine] = None,
     probe: Callable[..., MediaInfo] = probe_video,
     make_job: Callable[..., DownloadJob] = DownloadJob,
@@ -334,6 +456,32 @@ def run_plain(
 
     _menu(info, chosen, err)
     _say(err, f"Selected: {chosen.label}  {chosen.size_text}")
+
+    if info.playlist is not None:
+        # A playlist link was read as its first video, which is the safe
+        # default: one click must not start forty downloads (F2). Saying so
+        # twice is deliberate — once above the menu, because the note is about
+        # the link, and once here, because this is where the choice is made.
+        if playlist:
+            return _run_playlist_plain(
+                engine,
+                info,
+                chosen,
+                playlist_url=url,
+                cookies=cookies,
+                assume_yes=assume_yes,
+                make_job=make_job,
+                downloads_dir=downloads_dir,
+                stdin=stdin,
+                stdout=out,
+                stderr=err,
+            )
+        _say(err, f"  Viddl will download the first of the {info.playlist.count} videos.")
+        _say(err, "  Add --playlist to download all of them.")
+    elif playlist:
+        # --playlist on a single video is not an error: a script that always
+        # passes it should keep working when a link happens not to be a list.
+        _say(err, "This link is one video, not a playlist; downloading it.")
 
     if chosen.needs_ffmpeg and engine.find_ffmpeg() is None:
         # ffmpeg is what joins the two streams; without it yt-dlp downloads both
