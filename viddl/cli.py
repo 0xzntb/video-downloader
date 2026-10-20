@@ -25,7 +25,7 @@ from typing import Optional, Sequence
 
 from . import APP_TITLE, __version__
 from . import appdata, cookies as cookies_mod, logfile
-from .engine import Engine, Tool, ToolError
+from .engine import Engine, Tool, ToolError, staleness_advice
 from .formats import format_rows
 from . import protocol
 from .protocol import (
@@ -338,10 +338,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return _fail("That does not look like a link.")
         from .download import probe_video
 
+        engine = Engine()
         try:
-            info = probe_video(Engine(), url, cookies=cookies)
+            info = probe_video(engine, url, cookies=cookies)
         except ToolError as exc:
-            return _fail(exc.message, exc.hint)
+            hint = exc.hint or ""
+            # "It broke, make it work again" starts with knowing what to run,
+            # and the engine's age is the usual reason a link stopped working
+            # (F3). Nothing is said while the engine is current.
+            tool = engine.find_ytdlp()
+            advice = staleness_advice(tool.version) if tool and tool.version else ""
+            if advice:
+                hint = f"{hint}\n{advice}" if hint else advice
+            return _fail(exc.message, hint)
         print(info.heading)
         if info.uploader:
             print(info.uploader)

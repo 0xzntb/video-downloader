@@ -33,6 +33,7 @@ from textual.widgets import Button, Footer, Input, ProgressBar, Static
 from .. import APP_TITLE, __version__
 from .. import appdata
 from .. import cookies as cookies_mod
+from .. import download as download_mod
 from .. import engine as engine_mod
 from .. import errors
 from ..download import (
@@ -43,7 +44,7 @@ from ..download import (
     probe_playlist,
     probe_video,
 )
-from ..engine import Engine, ToolError
+from ..engine import Engine, Tool, ToolError
 from ..formats import MediaInfo, MediaOption, Playlist, PlaylistEntry
 from ..queue import QueueItem, QueueJob, QueueSummary
 from ..util import human_duration, human_size, safe_video_link, shorten
@@ -61,6 +62,11 @@ _PROBE_HINT_SECONDS = 5.0
 _PROBE_TICK_SECONDS = 0.5
 
 
+def _update_engine(engine: Engine, **kwargs: Any) -> Tuple[Optional[Tool], Tool]:
+    """Fetch the newest yt-dlp; the seam a test uses instead of the network (F3)."""
+    return engine.update_ytdlp(**kwargs)
+
+
 @dataclass
 class Services:
     """Everything the UI needs from the outside world, swappable for tests."""
@@ -75,6 +81,9 @@ class Services:
     browsers: Callable[[], List[str]] = cookies_mod.installed_keys
     #: Lists a playlist's videos when the checklist screen opens (F2).
     fetch_playlist: Callable[..., Playlist] = probe_playlist
+    #: Fetches the newest engine, returning what was there before and after
+    #: (F3). Swappable so an update can be tested without downloading 3 MB.
+    update_engine: Callable[..., Tuple[Optional[Tool], Tool]] = _update_engine
 
 
 @dataclass
@@ -89,6 +98,10 @@ class State:
     saved_path: Optional[Path] = None
     engine_note: str = ""
     engine_error: Optional[str] = None
+    #: True once the engine is old enough that updating it is the likeliest fix
+    #: for a link that stopped working (F3). It is what puts the "Update
+    #: engine" button on screen, so the advice can be acted on where it is read.
+    engine_stale: bool = False
     # Set once, at startup, from what appdata could not create (R7). It is a
     # warning rather than a stop: downloads can still work with an engine that
     # was already installed, and the folder may only be un-writable for now.
@@ -394,11 +407,13 @@ class ViddlApp(App):
         state.engine_error = None
         # Kept short on purpose: the full build strings go in `viddl --doctor`.
         age = engine_mod.engine_age_days(tool.version)
-        if age is not None and age >= engine_mod.STALE_DAYS:
+        state.engine_stale = age is not None and age >= engine_mod.STALE_DAYS
+        if state.engine_stale:
             # The likeliest cause of "this link stopped working" is a yt-dlp
             # older than the site, so it is said here rather than only in the
-            # doctor — the person clicking a link is not running --doctor.
-            state.engine_note = f"Engine {age} days old — run `viddl --update`"
+            # doctor — the person clicking a link is not running --doctor. The
+            # button beside it is what lets them act without leaving the app.
+            state.engine_note = f"Engine {age} days old — update it if a link stopped working"
         else:
             state.engine_note = f"Ready to download  {_ARP}  engine {tool.version or 'ok'}"
         ffmpeg = engine.find_ffmpeg()
@@ -416,6 +431,92 @@ class ViddlApp(App):
         for screen in self.screen_stack:
             if isinstance(screen, OptionsScreen):
                 screen.refresh_note()
+
+    # -- the engine, from inside the app (F3) ---------------------------------
+    def start_engine_update(self, then_retry: bool = False) -> None:
+        """Fetch the newest engine; ``then_retry`` re-asks the link afterwards."""
+        self.run_engine_update(then_retry)
+
+    @work(thread=True, exclusive=True, group="engine-update")
+    def run_engine_update(self, then_retry: bool = False) -> None:
+        """Update yt-dlp without leaving the screen that said it was old.
+
+        The work is ``Engine.update_ytdlp``'s, checksum check included: an
+        update inside the app is the same install the flag performs, so there
+        is one path that can install something and one place to get it right.
+        """
+        self._post(self.show_update_message, "Updating the video engine…")
+
+        def status(message: str) -> None:
+            self._post(self.show_update_message, message)
+
+        def progress(done: int, total: Optional[int]) -> None:
+            text = (
+                f"Updating the video engine… {done * 100 // total}%"
+                if total
+                else f"Updating the video engine… {human_size(done)}"
+            )
+            self._post(self.show_update_message, text)
+
+        try:
+            before, after = self.services.update_engine(
+                self.services.engine, on_status=status, on_progress=progress
+            )
+        except ToolError as exc:
+            self._post(self.update_failed, exc)
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            self._post(self.update_failed, ToolError(str(exc)))
+            return
+        # A new engine gives new answers, so nothing the old one said about a
+        # site is reused — that is what makes "ask the link again" worth doing.
+        download_mod.clear_probe_cache()
+        self._post(self.update_finished, before, after, then_retry)
+
+    def show_update_message(self, message: str) -> None:
+        screen = self.screen
+        if isinstance(screen, HomeScreen) and screen.is_mounted:
+            screen.query_one("#engine-status", Static).update(_plain(shorten(message, 96)))
+        elif isinstance(screen, OptionsScreen) and screen.is_mounted:
+            screen.query_one("#options-status", Static).update(_plain(message))
+
+    def update_finished(
+        self, before: Optional[Tool], after: Tool, then_retry: bool
+    ) -> None:
+        self.state.engine_stale = False
+        # The same sentence bootstrap uses, so an update does not quietly drop
+        # the ffmpeg half of what the home screen says.
+        note = f"Ready to download  {_ARP}  engine {after.version or 'ok'}"
+        note += (
+            f"  {_ARP}  ffmpeg ready"
+            if self.state.ffmpeg_available
+            else f"  {_ARP}  ffmpeg comes later, if you need MP3 or 1080p+"
+        )
+        self.state.engine_note = note
+        changed = before is None or (before.version or "") != (after.version or "")
+        if before is None:
+            text = f"Installed yt-dlp {after.version or 'ok'}."
+        elif changed:
+            text = f"yt-dlp {before.version or 'an older copy'} -> {after.version or 'ok'}"
+        else:
+            text = f"yt-dlp {after.version or 'ok'} — already the newest release."
+        self._refresh_engine_status()
+
+        screen = self.screen
+        if isinstance(screen, OptionsScreen) and screen.is_mounted:
+            screen.engine_updated(text, changed, then_retry)
+            return
+        self.notify(_plain(text), timeout=8)
+
+    def update_failed(self, error: ToolError) -> None:
+        screen = self.screen
+        if isinstance(screen, OptionsScreen) and screen.is_mounted:
+            screen.update_failed(error)
+            return
+        if isinstance(screen, HomeScreen) and screen.is_mounted:
+            screen.query_one("#update-engine", Button).disabled = False
+            screen.refresh_engine_status()
+        self.notify(_plain(error.message), severity="error", timeout=10)
 
     # -- navigation ---------------------------------------------------------
     def go_home(self) -> None:
@@ -486,11 +587,15 @@ class HomeScreen(Screen):
             )
             with Horizontal(classes="buttons"):
                 yield Button("Find qualities", variant="primary", id="go")
+                yield Button("Update engine", id="update-engine")
                 yield Button("Quit", id="quit")
             yield Static("", id="engine-status")
         yield Footer()
 
     def on_mount(self) -> None:
+        # Only an old engine has an update worth offering (F3): on a current
+        # one the button would fetch the same release for nothing.
+        self.query_one("#update-engine", Button).add_class("hidden")
         self.refresh_engine_status()
         if self.app.state.url:
             self.query_one("#url-input", Input).value = self.app.state.url
@@ -518,6 +623,10 @@ class HomeScreen(Screen):
                 timeout=12,
             )
             return
+
+        button = self.query_one("#update-engine", Button)
+        button.set_class(not state.engine_stale, "hidden")
+        button.disabled = False
 
         lines = [state.folder_problem] if state.folder_problem else []
         if state.engine_note:
@@ -556,8 +665,14 @@ class HomeScreen(Screen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "go":
             self.submit_url()
+        elif event.button.id == "update-engine":
+            self.action_update_engine()
         elif event.button.id == "quit":
             self.app.action_quit_app()
+
+    def action_update_engine(self) -> None:
+        self.query_one("#update-engine", Button).disabled = True
+        self.app.start_engine_update()
 
     def action_quit_app(self) -> None:
         self.app.action_quit_app()
@@ -579,6 +694,7 @@ class OptionsScreen(Screen):
         Binding("enter", "download", "Download", show=False),
         Binding("d", "download", "Download", show=False),
         Binding("p", "playlist", "Choose videos", show=False),
+        Binding("u", "update_engine", "Update engine", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -589,6 +705,7 @@ class OptionsScreen(Screen):
             with Horizontal(classes="buttons"):
                 yield Button("Download", variant="primary", id="download")
                 yield Button("Choose videos…", id="playlist")
+                yield Button("Update engine", id="update-engine")
                 yield Button("Set up ffmpeg", id="get-ffmpeg")
                 yield Button("Stop looking", id="stop-probe")
                 yield Button("Back", id="back")
@@ -600,6 +717,9 @@ class OptionsScreen(Screen):
         # Only a playlist link has anything to choose from; on every other link
         # the button would be a promise the screen cannot keep (F2).
         self.query_one("#playlist", Button).add_class("hidden")
+        # Updating is offered only where it is the likely fix: a link that just
+        # failed, on an engine old enough to be the reason (F3).
+        self.query_one("#update-engine", Button).add_class("hidden")
         self._start_looking()
 
     def _start_looking(self) -> None:
@@ -706,6 +826,9 @@ class OptionsScreen(Screen):
         self.stop_looking()
         self.query_one("#stop-probe", Button).add_class("hidden")
         self.query_one("#playlist", Button).add_class("hidden")
+        update = self.query_one("#update-engine", Button)
+        update.set_class(not self.app.state.engine_stale, "hidden")
+        update.disabled = False
         status = self.query_one("#options-status", Static)
         status.update(_plain(error.message))
         self.app.state.info = None
@@ -716,6 +839,15 @@ class OptionsScreen(Screen):
         # sign-in row" with no row to choose is not advice (F1).
         rows = self.sign_in_rows()
         hint = error.hint or "Press Escape to try another link."
+        if self.app.state.engine_stale:
+            # The single most common cause of "it broke" is an engine older
+            # than the site, and the button beside this sentence is the fix
+            # (F3). Said only when it is true of the copy being used.
+            hint = (
+                f"{hint}\nThe video engine is old, which is the usual reason a "
+                "link stops working. Press “Update engine”, and the link is "
+                "asked again straight afterwards."
+            )
         if not rows and errors.SIGN_IN_MARK in hint:
             # No browser was found, so there is no row: say what is actually
             # missing instead of pointing at a choice that is not on screen.
@@ -725,6 +857,7 @@ class OptionsScreen(Screen):
             )
         note.update(_plain(hint))
         self.query_one("#download", Button).disabled = True
+        self.query_one("#update-engine", Button).disabled = False
         if rows:
             table = self.query_one("#choices", ChoiceList)
             table.set_choices(rows)
@@ -736,6 +869,7 @@ class OptionsScreen(Screen):
             return
         self.stop_looking()
         self.query_one("#stop-probe", Button).add_class("hidden")
+        self.query_one("#update-engine", Button).add_class("hidden")
         self.app.state.info = info
         heading = self.query_one("#options-heading", Static)
         status = self.query_one("#options-status", Static)
@@ -922,6 +1056,8 @@ class OptionsScreen(Screen):
             self.action_download()
         elif button_id == "playlist":
             self.action_playlist()
+        elif button_id == "update-engine":
+            self.action_update_engine()
         elif button_id == "back":
             self.action_go_back()
         elif button_id == "get-ffmpeg":
@@ -959,6 +1095,63 @@ class OptionsScreen(Screen):
             return
         self.stop_looking()
         self.app.push_screen(PlaylistScreen(option=option))
+
+    # -- updating the engine from the failure screen (F3) --------------------
+    def action_update_engine(self) -> None:
+        """The likely fix, without leaving the screen that reported the problem.
+
+        The link is asked again the moment the new engine is in place: the
+        point of updating is to make *this* link work, and asking the person to
+        press Find qualities again afterwards would be a second step for
+        something they already asked for.
+        """
+        button = self.query_one("#update-engine", Button)
+        # Hidden means it is not offered — the key must respect the same rule as
+        # the button, or `u` would update a current engine behind a screen that
+        # decided not to suggest it.
+        if button.disabled or button.has_class("hidden"):
+            return
+        button.disabled = True
+        note = self.query_one("#options-note", Static)
+        note.update(
+            _plain(
+                "Fetching the newest video engine (about 3 MB). The link is asked "
+                "again as soon as it is in place."
+            )
+        )
+        self.query_one("#options-status", Static).update("Updating the video engine…")
+        self.app.start_engine_update(then_retry=True)
+
+    def engine_updated(self, message: str, changed: bool, then_retry: bool) -> None:
+        if not self.is_mounted:
+            return
+        self.query_one("#update-engine", Button).disabled = False
+        self.app.notify(_plain(message), timeout=8)
+        if then_retry and changed:
+            # A new engine is a new answer, so the old failure is replaced by a
+            # fresh look-up rather than left on screen next to a working link.
+            self.query_one("#update-engine", Button).add_class("hidden")
+            self._start_looking()
+            return
+        # Nothing newer: the button has answered its question, so it stops
+        # being offered for the rest of the session.
+        self.query_one("#update-engine", Button).add_class("hidden")
+        self.query_one("#options-status", Static).update(_plain(message))
+        self.query_one("#options-note", Static).update(
+            _plain(
+                "The engine is current, so the link was not asked again: an "
+                "update would not change what the site said."
+            )
+        )
+
+    def update_failed(self, error: ToolError) -> None:
+        if not self.is_mounted:
+            return
+        self.query_one("#update-engine", Button).disabled = False
+        self.query_one("#options-status", Static).update(_plain(error.message))
+        self.query_one("#options-note", Static).update(
+            _plain(error.hint or "Nothing was changed. The link was not asked again.")
+        )
 
     def action_go_back(self) -> None:
         # Going back while the link is being looked up is also a way of saying

@@ -181,6 +181,25 @@ def staleness_note(version: str, today: Optional[date] = None) -> str:
     )
 
 
+def staleness_advice(version: str, today: Optional[date] = None) -> str:
+    """What to do about an old engine, said where a failure has just happened.
+
+    ``staleness_note`` is the doctor's line, written for someone who went
+    looking. This is the same fact with an instruction attached, because it is
+    read by someone whose link did not work and who does not yet know that the
+    engine is the part that goes stale (F3). "" is the answer while the engine
+    is current: an update would not have fixed a private video, and saying so
+    would only send somebody fetching three megabytes for nothing.
+    """
+    days = engine_age_days(version, today)
+    if days is None or days < STALE_DAYS:
+        return ""
+    return (
+        f"The video engine is {days} days old, which is the usual reason a link "
+        "stops working. Run `viddl --update` to replace it."
+    )
+
+
 def version_key(version: str) -> tuple:
     """Order versions the way yt-dlp numbers them: date first, then any suffix.
 

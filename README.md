@@ -112,7 +112,7 @@ Nothing is installed system-wide and no configuration files are created.
 | See what qualities a link has, without downloading | `viddl --list-qualities <link>` |
 | Save somewhere else for one run | `viddl --download-dir ~/Videos <link>` |
 | Check that everything is set up | `viddl --doctor` |
-| Fetch the newest video engine (the usual fix for a link that stopped working) | `viddl --update` |
+| Fetch the newest video engine (the usual fix for a link that stopped working) | Press **Update engine** on the home or failure screen, or `viddl --update` |
 | Fetch the newest ffmpeg build | `viddl --update-ffmpeg` |
 
 In the app:
@@ -280,6 +280,20 @@ whole playlist is only read up to its first video, so a long one cannot turn
 into minutes of waiting and a menu that never arrives; the list of its videos is
 asked for separately — titles and links only, no video page read — and only
 when you press **Choose videos…**.
+
+**"It worked last week."** A link that stops working is usually a site that has
+changed, and the engine is the part that learns the change. When the engine is
+more than a month old, the home screen says so, and a link that fails says it
+too — with an **Update engine** button beside the words rather than an
+instruction to leave the app. Pressing it fetches the newest release with the
+same checksum check as the first install, says what it moved from and to
+(*"yt-dlp 2026.08.19 -> 2026.09.01"*), and then **asks the link again by
+itself**, because making *this* link work is the whole point. If there was
+nothing newer, it says *"already the newest release"*, does not ask the link a
+second time, and does not keep offering the update for the rest of the session.
+A failed update says why and leaves the failure screen as it was. `--plain` and
+`--list-qualities` add the same advice to a failure when the engine is old,
+pointing at `viddl --update`.
 
 A failure that might not have happened — the site rate-limiting you, a server
 having a bad minute, a connection that dropped — is tried again by itself: after

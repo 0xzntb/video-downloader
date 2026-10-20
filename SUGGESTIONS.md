@@ -10,7 +10,7 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **22 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F2
+Progress so far: **23 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F3
 in section 3, U4 in section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -1123,10 +1123,69 @@ final summary. Reuse the batch machinery from **F7**.
 > address itself is what offers the rest. **F7** (pasting several links) is
 > still open, and now has the runner it was told to reuse.
 
-### F3 — `viddl --update` · **P1** · S
+### F3 — `viddl --update` · **P1** · S · ✅ **Done**
 
 See **R4** — listed again because it is also the single most requested kind of
 feature in this space: "it broke, make it work again."
+
+> **R4 built the command; F3 closes the loop around where the advice is read.**
+> The app used to tell an old engine's owner to run `viddl --update` and then
+> offer nothing else — advice that means leaving the app and finding a terminal.
+> Now the sentence has a button beside it, in the two places a person is when
+> they need it: the home screen's staleness line and the screen that says a link
+> did not work.
+>
+> **The button is offered only when it is true.** It appears when the copy
+> actually in use is over `STALE_DAYS` (30) old, and not on a current engine,
+> because updating a current engine changes nothing. On the failure screen the
+> note adds *"The video engine is old, which is the usual reason a link stops
+> working. Press “Update engine”, and the link is asked again straight
+> afterwards."* On a current engine that sentence and the button are absent.
+>
+> **It runs the same install, not a second one.** `Services.update_engine`
+> calls `Engine.update_ytdlp`, so the checksum check, the size cap and the
+> atomic replace are the ones the flag uses. Progress is shown where the status
+> line is (`Updating the video engine… 50%`), the version is reported as a move
+> (*"yt-dlp 2020.01.01 -> 2026.08.19"*, "Installed yt-dlp …" for a first
+> install), and a failure says why and re-enables the button without touching
+> the failure that prompted it.
+>
+> **Then it asks the link again by itself** — and that is the feature. The
+> remembered answers are cleared first (`clear_probe_cache`), because a new
+> engine gives new answers and reusing the old ones would defeat the point. If
+> there was nothing newer the screen says *"already the newest release"*, the
+> link is **not** asked a second time, and the button stops being offered for
+> the rest of the session: an update that changed nothing is an answer, not a
+> prompt to press it again.
+>
+> **Said where a script can read it too.** `viddl --plain` appends
+> `The video engine is 62 days old, which is the usual reason a link stops
+> working. Run `viddl --update` to replace it.` to a failed look-up or download,
+> and `--list-qualities` appends the same to its failure — but only when the
+> engine really is old, and once per playlist run rather than once per failed
+> video (`viddl/engine.py:staleness_advice`).
+>
+> **13 new tests** (685 → 698, all in `tests/test_update.py`), `pyflakes` clean,
+> coverage 93% overall and 96% on `engine.py`.
+> **Measured with the real release:** `update_ytdlp` on an empty folder fetched
+> and checksum-verified yt-dlp **2026.08.19 in 1.8 s**; the doctor then read
+> `2026.08.19 (downloaded by Viddl), sha256 1fa6733c37ea… (matches what was
+> installed)`. A second update took 2.0 s, reported the same version, and
+> `changed=False` — which is exactly the branch that does not re-ask the link.
+>
+> **What that measurement found, and what was changed because of it:** the
+> newest stable release was itself **62 days old** on the day this was measured,
+> so a freshly updated engine is still "stale" by the 30-day rule. Left alone,
+> the app would have nagged about an engine the user had just replaced. It now
+> clears the staleness once an update has been attempted and says "already the
+> newest release" instead; the *next* launch may still call it old, which is
+> true, and pressing the button then costs two seconds and answers honestly.
+>
+> **Not done:** a download that fails *after* a successful look-up shows the
+> error without the update button (the engine could read the site, so it is the
+> less likely cause); the update needs a working connection and fetches the
+> latest **stable** release, not a nightly; and Windows is exercised by tests
+> with the platform faked, not by a real in-app update.
 
 ### F4 — More than three audio options · **P2** · S
 

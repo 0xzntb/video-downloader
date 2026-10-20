@@ -572,6 +572,8 @@ async def test_the_home_screen_says_the_engine_is_ready(tmp_path):
         assert "ffmpeg ready" in line
         # It has to fit on one line of an 80-column terminal.
         assert len(line) <= 76
+        # A current engine has no update worth offering (F3).
+        assert app.screen.query_one("#update-engine").has_class("hidden")
 
 
 @pytest.mark.asyncio
@@ -586,8 +588,11 @@ async def test_the_home_screen_says_when_the_engine_is_old(tmp_path):
         await settle(pilot)
         line = shown(app.screen, "#engine-status")
         assert "days old" in line
-        assert "viddl --update" in line
+        assert "update it" in line
         assert len(line) <= 76
+        # And the advice has a button beside it, so acting on it does not mean
+        # leaving the app (F3).
+        assert app.screen.query_one("#update-engine").has_class("hidden") is False
 
 
 @pytest.mark.asyncio

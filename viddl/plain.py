@@ -21,6 +21,7 @@ from typing import Callable, Optional, TextIO
 
 from . import appdata
 from . import cookies as cookies_mod
+from . import engine as engine_mod
 from .download import (
     DownloadCancelled,
     DownloadJob,
@@ -110,6 +111,33 @@ class _Line:
             self.stream.write("\r" + " " * self.width + "\r")
             self.stream.flush()
             self.width = 0
+
+
+def _engine_advice(engine: Engine) -> str:
+    """The "run --update" sentence, when the engine is old enough to be the cause.
+
+    Asked only when something has already failed, which is why the cost of
+    finding out which copy is running — a version probe — is paid here and
+    nowhere else. A failure with a current engine gets no advice, because none
+    of it would be true.
+    """
+    try:
+        tool = engine.find_ytdlp()
+    except Exception:  # pragma: no cover - advice must never become the error
+        return ""
+    if tool is None or not tool.version:
+        return ""
+    return engine_mod.staleness_advice(tool.version)
+
+
+def _explain_failure(err: TextIO, exc: ToolError, engine: Engine) -> None:
+    """``error: …``, its hint, and the update advice when it applies (F3)."""
+    _say(err, f"error: {exc.message}")
+    if exc.hint:
+        _say(err, f"  {exc.hint}")
+    advice = _engine_advice(engine)
+    if advice:
+        _say(err, f"  {advice}")
 
 
 def _is_interactive(stream: TextIO) -> bool:
@@ -318,9 +346,7 @@ def _run_playlist_plain(
         _say(stderr, "Stopped before the playlist was read.")
         return 130
     except ToolError as exc:
-        _say(stderr, f"error: {exc.message}")
-        if exc.hint:
-            _say(stderr, f"  {exc.hint}")
+        _explain_failure(stderr, exc, engine)
         return 1
 
     entries = listing.entries
@@ -353,6 +379,10 @@ def _run_playlist_plain(
             return 0
 
     line = _Line(stderr)
+    # One piece of engine advice per run, not one per failed video: a playlist
+    # of forty with a broken extractor must not print the same sentence forty
+    # times.
+    advised = {"done": False}
 
     def on_start(item) -> None:
         _say(stderr, f"[{item.position}/{item.total}] {item.title}")
@@ -372,9 +402,11 @@ def _run_playlist_plain(
             stdout.write(f"{item.path}\n")
             stdout.flush()
         elif item.error is not None:
-            _say(stderr, f"error: {item.error.message}")
-            if item.error.hint:
-                _say(stderr, f"  {item.error.hint}")
+            if advised["done"]:
+                _say(stderr, f"error: {item.error.message}")
+                return
+            _explain_failure(stderr, item.error, engine)
+            advised["done"] = True
 
     job = QueueJob(
         engine,
@@ -441,9 +473,7 @@ def run_plain(
     try:
         info = probe(engine, url, cookies=cookies)
     except ToolError as exc:
-        _say(err, f"error: {exc.message}")
-        if exc.hint:
-            _say(err, f"  {exc.hint}")
+        _explain_failure(err, exc, engine)
         return 1
 
     try:
@@ -524,9 +554,7 @@ def run_plain(
         return 130
     except ToolError as exc:
         line.clear()
-        _say(err, f"error: {exc.message}")
-        if exc.hint:
-            _say(err, f"  {exc.hint}")
+        _explain_failure(err, exc, engine)
         return 1
 
     line.clear()
