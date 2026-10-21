@@ -45,10 +45,11 @@ from ..download import (
     probe_video,
 )
 from ..engine import Engine, Tool, ToolError
+from ..extras import EXTRAS, Extras
 from ..formats import MediaInfo, MediaOption, Playlist, PlaylistEntry
 from ..queue import QueueItem, QueueJob, QueueSummary
 from ..util import human_duration, human_size, safe_video_link, shorten
-from .widgets import ChoiceList
+from .widgets import ChoiceList, ExtraToggle
 
 _ARP = "·"
 LOGGER = logging.getLogger("viddl")
@@ -119,6 +120,11 @@ class State:
     # asked (R8). ``None`` means "not known" — never "zero".
     ffmpeg_size: Optional[int] = None
     ffmpeg_size_asked: bool = False
+    #: What to add to the download besides the media (F5): nothing, until the
+    #: row on the qualities screen is clicked. Kept here rather than on the
+    #: screen so going to the playlist and back, or resuming a stopped
+    #: download, keeps the same answer.
+    extras: Extras = field(default_factory=Extras)
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +269,42 @@ class ViddlApp(App):
         height: auto;
     }
 
+    #extras-row {
+        height: 1;
+        /* A margin, not padding: padding inside a one-row box leaves it no
+           room for its own children, and they land on top of the buttons. */
+        margin-top: 1;
+        align: left middle;
+    }
+
+    #extras-label {
+        color: $text-muted;
+        width: auto;
+        height: 1;
+        padding: 0 1 0 0;
+    }
+
+    .extra-toggle {
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        margin: 0 1 0 0;
+    }
+
+    .extra-toggle:hover {
+        background: $primary 25%;
+    }
+
+    .extra-toggle.on {
+        background: $primary;
+        color: $text;
+        text-style: bold;
+    }
+
+    .extra-toggle:focus {
+        text-style: bold underline;
+    }
+
     #options-note {
         padding-top: 1;
     }
@@ -339,6 +381,7 @@ class ViddlApp(App):
         initial_url: str = "",
         prefer_audio: bool = False,
         cookies: str = "",
+        extras: Optional[Extras] = None,
         services: Optional[Services] = None,
     ) -> None:
         super().__init__()
@@ -351,6 +394,9 @@ class ViddlApp(App):
             # Checked against the closed list on the way in, so the value that
             # reaches a command line cannot be something else (F1).
             cookies_browser=cookies_mod.default_for(cookies),
+            # Extras named on the command line arrive switched on; the screen
+            # can still switch them off, because they are the same toggles (F5).
+            extras=extras or Extras(),
         )
         problem = appdata.ensure_dirs()
         if problem is not None:
@@ -695,6 +741,11 @@ class OptionsScreen(Screen):
         Binding("d", "download", "Download", show=False),
         Binding("p", "playlist", "Choose videos", show=False),
         Binding("u", "update_engine", "Update engine", show=False),
+        # The extras are buttons first; these keys are the same switches for
+        # anyone who would rather not reach for the mouse (F5).
+        Binding("s", "extra('subs')", "Subtitles", show=False),
+        Binding("m", "extra('details')", "Details", show=False),
+        Binding("t", "extra('cover')", "Cover image", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -702,6 +753,18 @@ class OptionsScreen(Screen):
             yield Static("", id="options-heading")
             yield Static("Looking up the link…", id="options-status")
             yield ChoiceList(id="choices")
+            with Horizontal(id="extras-row"):
+                yield Static("Extras", id="extras-label")
+                for extra in EXTRAS:
+                    yield ExtraToggle(
+                        extra.key,
+                        extra.label,
+                        id=f"extra-{extra.key}",
+                        classes="extra-toggle",
+                        # What the one-word label actually adds, for a mouse
+                        # that stops on it.
+                        tooltip=extra.note,
+                    )
             with Horizontal(classes="buttons"):
                 yield Button("Download", variant="primary", id="download")
                 yield Button("Choose videos…", id="playlist")
@@ -720,7 +783,49 @@ class OptionsScreen(Screen):
         # Updating is offered only where it is the likely fix: a link that just
         # failed, on an engine old enough to be the reason (F3).
         self.query_one("#update-engine", Button).add_class("hidden")
+        self.sync_extras()
         self._start_looking()
+
+    # -- extras (F5) ---------------------------------------------------------
+    def sync_extras(self) -> None:
+        """Make the toggles say what the state actually is.
+
+        The tick is part of the label, not only the colour, because colour is
+        the first thing a monochrome terminal and a screen reader lose.
+        """
+        extras = self.app.state.extras
+        for extra in EXTRAS:
+            toggle = self.query_one(f"#extra-{extra.key}", ExtraToggle)
+            toggle.set_on(extras.has(extra.key))
+
+    def on_extra_toggle_pressed(self, message: ExtraToggle.Pressed) -> None:
+        message.stop()
+        self.action_extra(message.key)
+
+    def action_extra(self, key: str) -> None:
+        """Switch one extra on or off, and say what that means for this row."""
+        before = self.app.state.extras.has(key)
+        self.app.state.extras = self.app.state.extras.toggled(key)
+        self.sync_extras()
+        self.refresh_note()
+        extra = next((item for item in EXTRAS if item.key == key), None)
+        if extra is None:  # pragma: no cover - the binding names a real key
+            return
+        if not before and extra.video_only and self._audio_highlighted():
+            self.notify(
+                "Subtitles only go into a video: this download is audio, so it "
+                "will not include them.",
+                severity="warning",
+                timeout=5,
+            )
+
+    def _highlighted_option(self) -> Optional[MediaOption]:
+        value = self.query_one("#choices", ChoiceList).highlighted_value
+        return value if isinstance(value, MediaOption) else None
+
+    def _audio_highlighted(self) -> bool:
+        option = self._highlighted_option()
+        return option is not None and option.kind == "audio"
 
     def _start_looking(self) -> None:
         """Begin a look-up: a fresh stop button and a fresh clock (R9, F1).
@@ -985,18 +1090,18 @@ class OptionsScreen(Screen):
             )
             return
 
-        if option.needs_ffmpeg and not state.ffmpeg_available:
+        needs_ffmpeg = option.needs_ffmpeg or state.extras.needs_ffmpeg_for(option)
+        if needs_ffmpeg and not state.ffmpeg_available:
             button.remove_class("hidden")
-            note.update(_plain(self.ffmpeg_prompt(state)))
+            note.update(_plain(self.ffmpeg_prompt(state, option)))
         else:
             button.add_class("hidden")
             info = state.info
+            lines: List[str] = []
             if info is not None and info.playlist_note:
-                note.update(
-                    _plain(
-                        f"{info.playlist_note}. Download takes the first one; "
-                        "“Choose videos…” picks which of them to take."
-                    )
+                lines.append(
+                    f"{info.playlist_note}. Download takes the first one; "
+                    "“Choose videos…” picks which of them to take."
                 )
             elif option.kind == "audio":
                 # Two different promises, so they are worded differently (F4):
@@ -1004,36 +1109,62 @@ class OptionsScreen(Screen):
                 # other row is an encoder doing its best with what it was given.
                 folder = self.app.services.downloads_dir()
                 if option.keeps_source_audio:
-                    note.update(
-                        _plain(
-                            f"Audio only — the site's own {option.audio_format} file, "
-                            f"saved to {folder} without re-encoding. Nothing is "
-                            "converted, so nothing is lost."
-                        )
+                    lines.append(
+                        f"Audio only — the site's own {option.audio_format} file, "
+                        f"saved to {folder} without re-encoding. Nothing is "
+                        "converted, so nothing is lost."
                     )
                 else:
-                    note.update(
-                        _plain(
-                            f"Audio only — converted to {option.audio_format} in "
-                            f"{folder}. Sizes are a rough guide: converting cannot "
-                            "add quality the source does not have."
-                        )
+                    lines.append(
+                        f"Audio only — converted to {option.audio_format} in "
+                        f"{folder}. Sizes are a rough guide: converting cannot "
+                        "add quality the source does not have."
                     )
             else:
                 folder = self.app.services.downloads_dir()
-                note.update(_plain(f"Saves to {folder}  ·  {option.size_text}"))
+                lines.append(f"Saves to {folder}  ·  {option.size_text}")
+            extras_note = self.extras_note(option)
+            if extras_note:
+                lines.append(extras_note)
+            note.update(_plain("\n".join(lines)))
 
-    def ffmpeg_prompt(self, state: State) -> str:
+    def extras_note(self, option: Optional[MediaOption]) -> str:
+        """What the ticked extras will do to this row, in one sentence (F5)."""
+        extras = self.app.state.extras
+        if not extras:
+            return ""
+        skipped = extras.skipped(option)
+        if skipped and not extras.applicable(option):
+            return (
+                f"{skipped[0].label} will not be added: an audio download has "
+                "nowhere to put them."
+            )
+        sentence = f"Also adding: {extras.summary(option)}."
+        if extras.has("cover"):
+            # Said plainly because the button does not embed it: the toolchain
+            # Viddl installs cannot, so the picture is a file of its own.
+            sentence += " The picture is saved beside the file, not inside it."
+        if skipped:
+            sentence += f" {skipped[0].label} are skipped for an audio download."
+        return sentence
+
+    def ffmpeg_prompt(self, state: State, option: Optional[MediaOption] = None) -> str:
         """What setting ffmpeg up costs, before the user agrees to it.
 
         150 MB is a decision, so the size is asked for as soon as the button
         appears — and the asking is in a worker, because the answer needs the
         network. Until it arrives the sentence stays true without a number.
         """
-        text = (
-            "This option needs ffmpeg to join or convert the file. "
-            "Click “Set up ffmpeg” once and Viddl keeps it for good."
-        )
+        if option is not None and not option.needs_ffmpeg and state.extras:
+            text = (
+                "The extras you ticked need ffmpeg to be written. "
+                "Click “Set up ffmpeg” once and Viddl keeps it for good."
+            )
+        else:
+            text = (
+                "This option needs ffmpeg to join or convert the file. "
+                "Click “Set up ffmpeg” once and Viddl keeps it for good."
+            )
         if state.ffmpeg_size:
             return f"{text} The download is about {human_size(state.ffmpeg_size)}."
         if not state.ffmpeg_size_asked:
@@ -1080,6 +1211,7 @@ class OptionsScreen(Screen):
             self.setup_ffmpeg()
         elif button_id == "stop-probe":
             self.action_stop_probe()
+
 
     def action_download(self) -> None:
         table = self.query_one("#choices", ChoiceList)
@@ -1331,6 +1463,11 @@ class PlaylistScreen(Screen):
         total = len(playlist.entries)
         chosen = len(self._checked)
         lines = [f"{chosen} of {total} selected  {_ARP}  {self.option.label} each"]
+        extras = self.app.state.extras
+        if extras:
+            # Chosen on the previous screen, so it is repeated here: a queue
+            # of nine downloads should not surprise anyone (F5).
+            lines.append(f"Also adding: {extras.summary(self.option)}.")
         if playlist.truncated:
             lines.append(
                 f"Viddl lists the first {total} of {playlist.count} videos in this "
@@ -1457,6 +1594,7 @@ class DownloadScreen(Screen):
                 out_dir,
                 on_progress=lambda progress: app._post(self.on_progress, progress),
                 cookies=app.state.cookies_browser,
+                extras=app.state.extras,
             )
             app.state.job = job
             path = job.run()
@@ -1474,7 +1612,11 @@ class DownloadScreen(Screen):
     def prepare_ffmpeg(self, option: MediaOption) -> None:
         """Fetch ffmpeg before a download that needs it, once for the whole run."""
         app = self.app
-        if not option.needs_ffmpeg or app.state.ffmpeg_available:
+        # The extras are written by ffmpeg too, so a download that only needs
+        # it for the cover image still gets the same one-time setup (F5).
+        if app.state.ffmpeg_available:
+            return
+        if not option.needs_ffmpeg and not app.state.extras.needs_ffmpeg_for(option):
             return
         tool = app.services.engine.find_ffmpeg()
         if tool is None:
@@ -1502,6 +1644,7 @@ class DownloadScreen(Screen):
             option,
             app.services.downloads_dir(),
             cookies=app.state.cookies_browser,
+            extras=app.state.extras,
             make_job=app.services.make_job,
             on_start=lambda item: app._post(self.on_item_start, item),
             on_progress=lambda item, progress: app._post(
@@ -1606,10 +1749,12 @@ class DownloadScreen(Screen):
 
     def finish_ok(self, path: Path) -> None:
         self.app.state.saved_path = path
+        job = self.app.state.job
+        attachments = list(getattr(job, "attachments", []))
         self.app.state.job = None
         if not self._has_a_screen():
             return
-        self.app.push_screen(ResultScreen(saved_path=path))
+        self.app.push_screen(ResultScreen(saved_path=path, attachments=attachments))
 
     def finish_error(self, error: ToolError) -> None:
         self.app.state.job = None
@@ -1743,11 +1888,14 @@ class ResultScreen(Screen):
         self,
         saved_path: Optional[Path] = None,
         error: Optional[ToolError] = None,
+        attachments: Optional[List[Path]] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.saved_path = saved_path
         self.error = error
+        # Pictures saved beside the file by the extras (F5).
+        self.attachments = list(attachments or [])
 
     def compose(self) -> ComposeResult:
         with Vertical(id="result-panel"):
@@ -1780,7 +1928,13 @@ class ResultScreen(Screen):
         option = self.app.state.option
         label = option.label if option is not None else "File"
         size = human_size(path.stat().st_size) if path.exists() else "?"
-        self.query_one("#result-sub", Static).update(_plain(f"{label}  ·  {size}"))
+        sub = f"{label}  ·  {size}"
+        if self.attachments:
+            # The image is beside the file, so it is named rather than left to
+            # be discovered in the folder later (F5).
+            names = ", ".join(attachment.name for attachment in self.attachments)
+            sub += f"  ·  with {names}"
+        self.query_one("#result-sub", Static).update(_plain(sub))
         self.query_one("#result-path", Static).update(_plain(path))
 
     # -- actions ------------------------------------------------------------
@@ -1951,10 +2105,15 @@ def run(
     url: str = "",
     audio: bool = False,
     cookies: str = "",
+    extras: Optional[Extras] = None,
     services: Optional[Services] = None,
 ) -> None:
     """Start the terminal app."""
     app = ViddlApp(
-        initial_url=url, prefer_audio=audio, cookies=cookies, services=services
+        initial_url=url,
+        prefer_audio=audio,
+        cookies=cookies,
+        extras=extras,
+        services=services,
     )
     app.run()

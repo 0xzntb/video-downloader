@@ -19,6 +19,7 @@ from . import appdata
 from .cookies import cookies_args
 from .engine import Engine, ToolError, is_windows
 from .errors import explain
+from .extras import Extras
 from .formats import MediaInfo, MediaOption, Playlist, parse_info, parse_playlist
 
 # The line prefix yt-dlp prints our progress on.
@@ -41,6 +42,12 @@ _DESTINATION_RE = re.compile(r"Destination:\s*(.+?)\s*$")
 _MERGE_RE = re.compile(r'Merging formats into "(.+)"')
 _ALREADY_RE = re.compile(r"^\[download\]\s+(.+?)\s+has already been downloaded")
 _BAD_SUFFIXES = (".part", ".ytdl", ".temp", ".tmp")
+#: Files beside the media that are part of a download but are not it (F5):
+#: the cover picture, and the captions before they are embedded. They must
+#: never be mistaken for the video — a download that reported its own cover as
+#: "the file you asked for" would hand the user a 23 KB JPEG.
+_ATTACHMENT_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
+_CAPTION_SUFFIXES = (".vtt", ".srt", ".ass", ".ssa", ".ttml", ".json3", ".lrc")
 # yt-dlp names the separate streams it merges "Title [id].f137.mp4".
 _FRAGMENT_RE = re.compile(r"\.f\d+$|\.temp$", re.IGNORECASE)
 
@@ -131,6 +138,11 @@ def _is_intermediate(path: Path) -> bool:
     """True for a stream that only exists to be merged into the real file."""
     stem = path.name.rsplit(".", 1)[0]
     return bool(_FRAGMENT_RE.search(stem)) or path.name.endswith(_BAD_SUFFIXES)
+
+
+def _is_attachment(path: Path) -> bool:
+    """True for something downloaded *around* the media, not the media (F5)."""
+    return path.suffix.lower() in _ATTACHMENT_SUFFIXES + _CAPTION_SUFFIXES
 
 
 @dataclass
@@ -544,6 +556,7 @@ class DownloadJob:
         retry_delay: float = RETRY_BASE_SECONDS,
         cookies: str = "",
         playlist_item: Optional[int] = None,
+        extras: Optional[Extras] = None,
     ):
         self.engine = engine
         self.url = url
@@ -558,6 +571,13 @@ class DownloadJob:
         # is used when the listing gave an identifier rather than an address,
         # so the playlist itself has to be asked again for that item.
         self.playlist_item = playlist_item
+        # What is being added to the media besides the media itself (F5).
+        # Nothing, unless it was asked for: ``Extras()`` is the default.
+        self.extras = extras or Extras()
+        # Filled in by ``_deliver``: the cover picture is saved beside the
+        # finished file, and the screen says so instead of leaving an
+        # unexplained image in the folder.
+        self.attachments: List[Path] = []
         self.on_progress = on_progress
         self.on_log = on_log
         # Keeping what a stopped download fetched is what makes resuming
@@ -603,11 +623,31 @@ class DownloadJob:
         return self._work_dir
 
     def _identity(self) -> str:
-        """A stable, short name for this link at this quality."""
+        """A stable, short name for this link at this quality.
+
+        The extras are part of it because they change what a run writes: two
+        windows taking the same video with different extras are two different
+        jobs and must not share a working folder.
+        """
         raw = "|".join(
-            (self.url, self.option.format_selector, self.option.merge_container or "")
+            (
+                self.url,
+                self.option.format_selector,
+                self.option.merge_container or "",
+                self.extras.signature(),
+            )
         )
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+
+    @property
+    def needs_ffmpeg(self) -> bool:
+        """True when this download cannot finish without ffmpeg.
+
+        Either the quality itself needs it (a merge or a conversion) or the
+        extras do (they are written by ffmpeg). One answer from one place, so
+        the app, the plain path and the failure message cannot disagree.
+        """
+        return self.option.needs_ffmpeg or self.extras.needs_ffmpeg_for(self.option)
 
     def _enter_work_dir(self) -> Path:
         """Claim a working folder for this run, and remember which one.
@@ -730,6 +770,10 @@ class DownloadJob:
             self.option.format_selector,
         ]
         args += list(self.option.extra_args)
+        # The extras that were switched on for this download (F5). Appended
+        # after the quality's own arguments so a conversion happens first and
+        # the extras are written into the converted file.
+        args += self.extras.args_for(self.option)
         # The browser's own cookies, when the person asked for a signed-in
         # download (F1). Read in place by yt-dlp: nothing is copied, and
         # nothing is written down.
@@ -933,7 +977,7 @@ class DownloadJob:
 
         finished = self._find_output(before)
         if finished is None:
-            if self.option.needs_ffmpeg:
+            if self.needs_ffmpeg:
                 # Measured, not assumed: yt-dlp exits 0 having downloaded both
                 # streams when ffmpeg is missing and only the merge fails, so
                 # "it finished" is not the same as "there is a file". The
@@ -978,11 +1022,44 @@ class DownloadJob:
             # run have it back rather than keeping the folder claimed for ever.
             self._release_claim()
             raise
+        self._deliver_attachments(source, target)
         self._discard_work()
         self.progress = Progress(status="Done", percent=100.0, phase="done")
         if self.on_progress:
             self.on_progress(self.progress)
         return target
+
+    def _deliver_attachments(self, source: Path, target: Path) -> None:
+        """Move the cover picture beside the finished file (F5).
+
+        The picture is not part of the media and must not replace it, so it is
+        moved *after* the media and named after the name the media actually
+        got (``Title (2).mp4`` gets ``Title (2).jpg``). A picture that cannot
+        be moved is a reason to say so in the log, never to fail a download
+        that otherwise worked: the video is what was asked for.
+        """
+        self.attachments = []
+        try:
+            siblings = list(self.work_dir().iterdir())
+        except OSError:
+            return
+        for sibling in siblings:
+            if sibling == source or sibling.suffix.lower() not in _ATTACHMENT_SUFFIXES:
+                continue
+            if sibling.stem != source.stem:
+                continue
+            claimed = self._claim_name(f"{target.stem}{sibling.suffix.lower()}")
+            try:
+                os.replace(sibling, claimed)
+            except OSError as exc:
+                try:
+                    claimed.unlink()
+                except OSError:
+                    pass
+                if self.on_log:
+                    self.on_log(f"Could not save the cover image: {exc}")
+                continue
+            self.attachments.append(claimed)
 
     def _claim_name(self, filename: str) -> Path:
         """Reserve the first free name for ``filename`` in the output folder.
@@ -1147,6 +1224,16 @@ class DownloadJob:
             if match:
                 self._remember_path(match.group(1))
             self._emit(status="Merging video and audio…", percent=None, phase="merge")
+        elif line.startswith("[EmbedSubtitle]"):
+            self._emit(status="Adding the subtitles…", percent=None, speed="", eta="", phase="extras")
+        elif line.startswith("[Metadata]"):
+            self._emit(status="Adding the details…", percent=None, speed="", eta="", phase="extras")
+        elif line.startswith(("[ThumbnailsConvertor]", "[Thumbnails]")):
+            self._emit(status="Saving the cover image…", percent=None, speed="", eta="", phase="extras")
+        elif line.startswith("[EmbedThumbnail]"):
+            # Not a flag Viddl sets (see ``extras.py``), but a user's own
+            # ``VIDDL_YTDLP_ARGS`` can still ask for it.
+            self._emit(status="Adding the cover image…", percent=None, speed="", eta="", phase="extras")
         elif line.startswith("[ExtractAudio]"):
             # The container depends on the row that was chosen (F4), so the
             # sentence names it instead of assuming an MP3.
@@ -1196,6 +1283,10 @@ class DownloadJob:
         path = Path(candidate)
         if path.suffix.lower() in (".part", ".ytdl") or path.name.endswith(".part"):
             return
+        if _is_attachment(path):
+            # The cover picture and the caption files are announced exactly
+            # like the video is, but they are not what was asked for (F5).
+            return
         if path not in self._paths:
             self._paths.append(path)
 
@@ -1213,7 +1304,7 @@ class DownloadJob:
         # be reported as "the file you just downloaded".
         existing = [path for path in self._paths if path.exists() and path.is_file()]
         for path in reversed(existing):
-            if not _is_intermediate(path):
+            if not _is_intermediate(path) and not _is_attachment(path):
                 return path
         # Nothing but the streams a merge was supposed to join: that is not a
         # finished download, and returning one here is how a leftover audio
@@ -1228,7 +1319,7 @@ class DownloadJob:
             for entry in self.work_dir().iterdir():
                 if not entry.is_file() or entry.name.endswith(_BAD_SUFFIXES):
                     continue
-                if _is_intermediate(entry):
+                if _is_intermediate(entry) or _is_attachment(entry):
                     continue
                 try:
                     mtime = entry.stat().st_mtime

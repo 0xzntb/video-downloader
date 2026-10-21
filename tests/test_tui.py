@@ -21,6 +21,7 @@ from textual.widgets import Button, Static
 
 from viddl.download import DownloadCancelled, ProbeCancelled, Progress
 from viddl.engine import Tool, ToolError
+from viddl.extras import Extras
 from viddl.formats import MediaInfo, MediaOption, parse_info
 from viddl.protocol import build_scheme_url
 from viddl.tui.app import (
@@ -34,7 +35,7 @@ from viddl.tui.app import (
     ViddlApp,
     _open_folder,
 )
-from viddl.tui.widgets import ChoiceList, ChoiceRow
+from viddl.tui.widgets import ChoiceList, ChoiceRow, ExtraToggle
 
 URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
@@ -100,13 +101,24 @@ class FakeJob:
     """Writes a real file so the result screen can show its size."""
 
     def __init__(
-        self, engine, url, option, out_dir, on_progress=None, on_log=None, cookies=""
+        self,
+        engine,
+        url,
+        option,
+        out_dir,
+        on_progress=None,
+        on_log=None,
+        cookies="",
+        extras=None,
     ):
         self.option = option
         self.out_dir = Path(out_dir)
         self.on_progress = on_progress
         # What the job would have asked the browser for (F1).
         self.cookies = cookies
+        # What was added to the download besides the media (F5).
+        self.extras = extras
+        self.attachments = []
         self.cancelled = False
 
     def run(self):
@@ -1074,6 +1086,213 @@ async def test_the_ffmpeg_offer_keeps_quiet_when_the_size_is_unknown(tmp_path):
         assert "needs ffmpeg" in note
         assert "about" not in note
         assert "MB" not in note
+
+
+# ---------------------------------------------------------------------------
+# extras: subtitles, details and a cover (F5)
+# ---------------------------------------------------------------------------
+
+
+def extra_toggle(screen, key: str) -> ExtraToggle:
+    return screen.query_one(f"#extra-{key}", ExtraToggle)
+
+
+def extra_label(toggle: ExtraToggle) -> str:
+    return toggle.plain
+
+
+@pytest.mark.asyncio
+async def test_the_extras_start_off_and_are_on_screen(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        assert not app.state.extras
+        assert shown(app.screen, "#extras-label") == "Extras"
+        assert extra_label(extra_toggle(app.screen, "subs")) == "[ ] Subtitles"
+        assert extra_label(extra_toggle(app.screen, "details")) == "[ ] Details"
+        assert extra_label(extra_toggle(app.screen, "cover")) == "[ ] Cover image"
+        # Off means off: the note says nothing about adding anything.
+        assert "Also adding" not in shown(app.screen, "#options-note")
+
+
+@pytest.mark.asyncio
+async def test_clicking_an_extra_switches_it_on(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        await pilot.click("#extra-subs")
+        await pilot.pause()
+
+        assert app.state.extras.has("subs")
+        toggle = extra_toggle(app.screen, "subs")
+        assert extra_label(toggle) == "[x] Subtitles"
+        # The tick is in the label, so a terminal without colour still says it.
+        assert toggle.has_class("on")
+        assert "Also adding: subtitles" in shown(app.screen, "#options-note")
+
+        await pilot.click("#extra-subs")
+        await pilot.pause()
+        assert not app.state.extras
+        assert extra_label(toggle) == "[ ] Subtitles"
+
+
+@pytest.mark.asyncio
+async def test_the_keyboard_switches_the_same_extras(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        for key in ("s", "m", "t"):
+            await pilot.press(key)
+            await pilot.pause()
+
+        assert app.state.extras.keys == frozenset({"subs", "details", "cover"})
+        assert extra_label(extra_toggle(app.screen, "details")) == "[x] Details"
+        assert "Also adding: subtitles, details and cover image" in shown(
+            app.screen, "#options-note"
+        )
+
+        await pilot.press("s")
+        await pilot.pause()
+        assert not app.state.extras.has("subs")
+
+
+@pytest.mark.asyncio
+async def test_a_toggle_can_be_reached_with_tab_and_pressed(tmp_path):
+    """One line is clickable; it must also work without a mouse."""
+
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        extra_toggle(app.screen, "details").focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.state.extras.has("details")
+
+        await pilot.press("space")
+        await pilot.pause()
+        assert not app.state.extras.has("details")
+
+
+@pytest.mark.asyncio
+async def test_the_cover_is_named_as_a_file_beside_the_video(tmp_path):
+    """The row must not promise a picture inside a file it cannot put there."""
+
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        await pilot.press("t")
+        await pilot.pause()
+
+        note = shown(app.screen, "#options-note")
+        assert "cover image" in note
+        assert "beside the file" in note
+        assert "inside it" in note
+
+
+@pytest.mark.asyncio
+async def test_extras_that_need_ffmpeg_offer_to_set_it_up(tmp_path):
+    """A row that needs nothing still needs ffmpeg for details (F5)."""
+
+    engine = FakeEngine(ffmpeg=False)
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path, engine=engine))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        app.screen.query_one("#choices", ChoiceList).select_index(row_index_of(app.screen, "v360"))
+        await pilot.pause()
+        assert app.screen.query_one("#get-ffmpeg").has_class("hidden")
+
+        await pilot.press("m")
+        await pilot.pause()
+
+        note = shown(app.screen, "#options-note")
+        assert "The extras you ticked need ffmpeg" in note
+        assert not app.screen.query_one("#get-ffmpeg").has_class("hidden")
+
+
+@pytest.mark.asyncio
+async def test_subtitles_say_they_cannot_go_into_an_audio_download(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        app.screen.query_one("#choices", ChoiceList).select_index(row_index_of(app.screen, "orig"))
+        await pilot.pause()
+
+        with captured_notifications(app) as toasts:
+            await pilot.press("s")
+            await pilot.pause()
+
+        assert app.state.extras.has("subs")
+        assert "audio" in shown(app.screen, "#options-note")
+        assert any("only go into a video" in message for message in toasts.messages)
+
+        # Details are still useful in an audio file, so they are still offered.
+        await pilot.press("m")
+        await pilot.pause()
+        assert "Also adding: details" in shown(app.screen, "#options-note")
+
+
+@pytest.mark.asyncio
+async def test_the_download_is_given_the_extras_that_were_ticked(tmp_path):
+    RecordingJob.started.clear()
+    app = ViddlApp(
+        initial_url=URL, services=make_services(tmp_path, job_class=RecordingJob)
+    )
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        await pilot.press("s", "t")
+        await pilot.pause()
+        await pilot.press("enter")
+        await settle(pilot)
+
+        assert len(RecordingJob.started) == 1
+        assert RecordingJob.started[0].extras.keys == frozenset({"subs", "cover"})
+
+
+@pytest.mark.asyncio
+async def test_extras_named_on_the_command_line_start_switched_on(tmp_path):
+    app = ViddlApp(
+        initial_url=URL,
+        extras=Extras.parse("subs"),
+        services=make_services(tmp_path),
+    )
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        assert extra_label(extra_toggle(app.screen, "subs")) == "[x] Subtitles"
+        assert extra_label(extra_toggle(app.screen, "cover")) == "[ ] Cover image"
+
+
+class CoverJob(FakeJob):
+    """Saves a picture beside the file, as the real job does (F5)."""
+
+    def run(self):
+        path = super().run()
+        cover = self.out_dir / "A Very Real Video [dQw4w9WgXcQ].jpg"
+        cover.write_bytes(b"picture")
+        self.attachments = [cover]
+        return path
+
+
+@pytest.mark.asyncio
+async def test_the_result_screen_names_the_cover_that_came_with_it(tmp_path):
+    app = ViddlApp(
+        initial_url=URL, services=make_services(tmp_path, job_class=CoverJob)
+    )
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        await pilot.press("t")
+        await pilot.press("enter")
+        await settle(pilot)
+
+        assert isinstance(app.screen, ResultScreen)
+        assert "A Very Real Video [dQw4w9WgXcQ].jpg" in shown(app.screen, "#result-sub")
 
 
 class SlowProbe:

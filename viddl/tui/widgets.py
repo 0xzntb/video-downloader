@@ -79,6 +79,65 @@ class ChoiceRow(Static):
         self.post_message(self.Chosen(self.row_index))
 
 
+class ExtraToggle(Static, can_focus=True):
+    """A one-line switch for an extra: ``[ ] Subtitles`` (F5).
+
+    A button is three rows tall with its border, and three of them would have
+    pushed the qualities screen past the height of an ordinary terminal. This
+    is a row of chips instead: one line, clickable, reachable with Tab, and with
+    the tick written into the label so colour is not the only thing saying it.
+    """
+
+    BINDINGS = [
+        ("enter", "toggle", "Toggle"),
+        ("space", "toggle", "Toggle"),
+    ]
+
+    class Pressed(Message):
+        """Posted when the switch is clicked or pressed with the keyboard."""
+
+        def __init__(self, key: str) -> None:
+            super().__init__()
+            self.key = key
+
+    def __init__(
+        self, key: str, label: str, tooltip: str = "", **kwargs: Any
+    ) -> None:
+        # ``tooltip`` is taken here rather than passed on: not every Textual
+        # release accepts it in ``Static.__init__``, though every one has the
+        # attribute.
+        super().__init__(**kwargs)
+        self.extra_key = key
+        self.extra_label = label
+        self.is_on = False
+        self._refresh_content()
+        if tooltip:
+            self.tooltip = tooltip
+
+    @property
+    def plain(self) -> str:
+        return f"[{'x' if self.is_on else ' '}] {self.extra_label}"
+
+    def _refresh_content(self) -> None:
+        # A Text, not a markup string: "[ ]" is a tag to Rich's markup parser,
+        # which would draw the tick as nothing at all.
+        self.update(Text(self.plain, style="bold" if self.is_on else ""))
+
+    def set_on(self, on: bool) -> None:
+        if on != self.is_on:
+            self.is_on = on
+            self._refresh_content()
+        self.set_class(on, "on")
+
+    def action_toggle(self) -> None:
+        self.post_message(self.Pressed(self.extra_key))
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        self.focus()
+        self.post_message(self.Pressed(self.extra_key))
+
+
 class ChoiceList(VerticalScroll):
     """A vertical list of :class:`ChoiceRow` widgets."""
 

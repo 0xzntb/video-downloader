@@ -31,6 +31,7 @@ from .download import (
     probe_video,
 )
 from .engine import Engine, ToolError
+from .extras import Extras
 from .formats import AUDIO_FORMATS, ORIGINAL_AUDIO_KEY, MediaInfo, MediaOption
 from .queue import QueueJob
 from .util import human_duration, human_size
@@ -393,6 +394,7 @@ def _run_playlist_plain(
     *,
     playlist_url: str,
     cookies: str,
+    extras: Extras,
     assume_yes: bool,
     make_job: Callable[..., DownloadJob],
     downloads_dir: Callable[[], Path],
@@ -427,8 +429,11 @@ def _run_playlist_plain(
             "long. Split it into shorter playlists to take the rest.",
         )
     _say(stderr, f"Every video will be downloaded at {chosen.label}.")
+    if extras and extras.applicable(chosen):
+        _say(stderr, f"Extras: {extras.summary(chosen)}.")
 
-    if chosen.needs_ffmpeg and engine.find_ffmpeg() is None:
+    needs_ffmpeg = chosen.needs_ffmpeg or extras.needs_ffmpeg_for(chosen)
+    if needs_ffmpeg and engine.find_ffmpeg() is None:
         answer = _set_up_ffmpeg(engine, chosen, stderr, stdin, assume_yes)
         if answer is not None:
             return answer
@@ -465,6 +470,8 @@ def _run_playlist_plain(
             except OSError:  # pragma: no cover - a file that vanished
                 size = "?"
             _say(stderr, f"Saved ({size})")
+            for attachment in item.attachments:
+                _say(stderr, f"Also saved: {Path(attachment).name}")
             # One path per line, and nothing else: this is what a script reads.
             stdout.write(f"{item.path}\n")
             stdout.flush()
@@ -482,6 +489,7 @@ def _run_playlist_plain(
         chosen,
         downloads_dir(),
         cookies=cookies,
+        extras=extras,
         make_job=make_job,
         on_start=on_start,
         on_progress=on_progress,
@@ -511,6 +519,7 @@ def run_plain(
     assume_yes: bool = False,
     cookies: str = "",
     playlist: bool = False,
+    extras: Optional[Extras] = None,
     engine: Optional[Engine] = None,
     probe: Callable[..., MediaInfo] = probe_video,
     make_job: Callable[..., DownloadJob] = DownloadJob,
@@ -533,6 +542,7 @@ def run_plain(
     err = stderr or sys.stderr
     stdin = stdin or sys.stdin
     engine = engine or Engine()
+    extras = extras or Extras()
 
     if cookies:
         _say(err, cookies_mod.active_note(cookies_mod.label_for(cookies)))
@@ -553,6 +563,19 @@ def run_plain(
 
     _menu(info, chosen, err)
     _say(err, f"Selected: {chosen.label}  {chosen.size_text}")
+    if extras:
+        # What else is going into the file is part of what was asked for, so
+        # a log records it before anything is fetched (F5). "none" is not
+        # printed: the line below already says what was left out and why.
+        if extras.applicable(chosen):
+            _say(err, f"Extras: {extras.summary(chosen)}.")
+        skipped = extras.skipped(chosen)
+        if skipped:
+            _say(
+                err,
+                f"Skipped: {skipped[0].label.lower()} - an audio download has "
+                "nowhere to put them.",
+            )
 
     if info.playlist is not None:
         # A playlist link was read as its first video, which is the safe
@@ -566,6 +589,7 @@ def run_plain(
                 chosen,
                 playlist_url=url,
                 cookies=cookies,
+                extras=extras,
                 assume_yes=assume_yes,
                 make_job=make_job,
                 downloads_dir=downloads_dir,
@@ -580,7 +604,8 @@ def run_plain(
         # passes it should keep working when a link happens not to be a list.
         _say(err, "This link is one video, not a playlist; downloading it.")
 
-    if chosen.needs_ffmpeg and engine.find_ffmpeg() is None:
+    needs_ffmpeg = chosen.needs_ffmpeg or extras.needs_ffmpeg_for(chosen)
+    if needs_ffmpeg and engine.find_ffmpeg() is None:
         # ffmpeg is what joins the two streams; without it yt-dlp downloads both
         # and stops, and there is no finished video to report.
         answer = _set_up_ffmpeg(engine, chosen, err, stdin, assume_yes)
@@ -606,7 +631,13 @@ def run_plain(
     job = None
     try:
         job = make_job(
-            engine, url, chosen, downloads_dir(), on_progress=on_progress, cookies=cookies
+            engine,
+            url,
+            chosen,
+            downloads_dir(),
+            on_progress=on_progress,
+            cookies=cookies,
+            extras=extras,
         )
         path = job.run()
     except KeyboardInterrupt:
@@ -630,6 +661,9 @@ def run_plain(
     except OSError:  # pragma: no cover - a file that vanished after the move
         size = "?"
     _say(err, f"Saved ({size})")
+    for attachment in getattr(job, "attachments", []):
+        # Beside the file, never instead of it (F5).
+        _say(err, f"Also saved: {Path(attachment).name}")
     # The path goes out exactly as it is: this line is what a script uses, and
     # a transliterated filename would point at a file that is not there.
     out.write(f"{path}\n")

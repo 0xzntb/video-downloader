@@ -35,6 +35,8 @@ machine except the download itself.
 │   Audio only · Opus 160 kbps       ~301.0 KB   Opus · source is 130 kbps · needs … │
 │   Audio only · FLAC                  ~1.6 MB   lossless file · needs ffmpeg        │
 │                                                                                    │
+│  Extras  [ ] Subtitles   [ ] Details   [ ] Cover image                             │
+│                                                                                    │
 │                          Download        Set up ffmpeg        Back                 │
 │                                                                                    │
 │  Saves to /home/you/Downloads  ·  492.7 KB                                         │
@@ -112,6 +114,7 @@ Nothing is installed system-wide and no configuration files are created.
 | Use it in a script, an old console or over SSH | `viddl --plain --yes <link>` |
 | Pick the quality without a menu | `viddl --plain --quality 720 <link>` |
 | Take a whole playlist, or just some of it | Choose **Choose videos…** on the qualities screen (`p`), or `viddl --plain --playlist --yes <link>` |
+| Add subtitles, details or a cover image | Tick them in the **Extras** row on the qualities screen (`s`, `m`, `t`), or `viddl --extras subs,details,cover <link>` |
 | See what qualities a link has, without downloading | `viddl --list-qualities <link>` |
 | Save somewhere else for one run | `viddl --download-dir ~/Videos <link>` |
 | Check that everything is set up | `viddl --doctor` |
@@ -123,7 +126,8 @@ In the app:
 * **Mouse** — click a quality to download it, click any button. Rows highlight
   as you move over them.
 * **Keyboard** — `↑`/`↓` or `j`/`k` to move, `Enter` to download, `Tab` between
-  buttons, `Esc` to go back, `Ctrl+Q` to quit.
+  buttons, `Esc` to go back, `Ctrl+Q` to quit. On the qualities screen `s`,
+  `m` and `t` switch subtitles, details and the cover image on and off.
 * Paste with `Ctrl+V` / `Cmd+V`, or just type the link.
 
 When the link is a **playlist**, the qualities screen says so and offers
@@ -217,6 +221,41 @@ where the sound came from — a bigger file that cannot sound better. FLAC and W
 take their size from the length of the audio rather than the source bitrate, so a
 130 kbps source becomes a much bigger file; neither adds quality that was never
 there.
+
+## Subtitles, details and cover images
+
+Three extra things can go with a download. All are **off** until they are
+clicked, on the qualities screen, because a download should not quietly contain
+more than it said it would.
+
+| Extra | What it adds |
+| --- | --- |
+| **Subtitles** (`s`) | English captions, including the auto-generated ones, embedded in the video. |
+| **Details** (`m`) | The title, channel, date, description and chapters, embedded as tags. |
+| **Cover image** (`t`) | The site's picture, saved as a `.jpg` **beside** the file. |
+
+Subtitles are only added to a video: an audio download has nowhere to show
+them, and the screen says so instead of pretending. All three need ffmpeg, so
+the same **Set up ffmpeg** button appears when one is ticked and ffmpeg is not
+there yet. From a script, name them with `--extras`:
+
+```sh
+viddl --plain --yes --extras subs,cover "https://www.youtube.com/watch?v=..."
+```
+
+`--extras all` takes the three; without `--plain`, the same words open the app
+with those switches already on. A cover lands beside the file under the same
+name, `Me at the zoo [jNQXAC9IVRw].jpg`, and the result screen says so.
+
+Two notes about the shape of this feature, both from measuring the toolchain
+Viddl installs. The cover is a file of its own rather than art inside the media
+because the yt-dlp release Viddl downloads carries no mutagen and the ffmpeg it
+downloads carries no ffprobe: yt-dlp's attempt to embed a picture in an MP4 then
+fails the *whole download* with "Unable to embed using ffprobe & ffmpeg".
+Writing the picture beside the file works for every link and every container.
+And **Details** is one switch, not two, because yt-dlp always embeds chapters
+when it embeds metadata — a separate chapters switch would do nothing while
+details were on.
 
 ## Sites that want you to sign in
 
@@ -381,6 +420,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 | `viddl/tui/` | The terminal interface (Textual). Screens for home, qualities, the playlist checklist, progress, stopped, and the result. |
 | `viddl/engine.py` | Finds yt-dlp and ffmpeg, or downloads its own copy into `~/.local/share/viddl/bin` — in pieces that survive an interruption, checked against a published checksum and only then unpacked. |
 | `viddl/formats.py` | Turns site metadata into the quality menu, with size estimates. |
+| `viddl/extras.py` | The optional additions — subtitles, details, cover image — what each one really asks yt-dlp for, and where it goes. |
 | `viddl/download.py` | Reads what a link offers — in a process of its own, so a slow site can be stopped and its answer is remembered for a few minutes — and runs yt-dlp in a per-download working folder, reads its progress, and moves the finished file out under a name reserved before the move, so two windows cannot collide. A failure worth a second attempt is retried after a doubling wait; stopping it stops the whole tree yt-dlp started — the ffmpeg merge included — and keeps what was fetched so it can be resumed. |
 | `viddl/queue.py` | Several videos, one at a time: which one is running, a count that is honest at the end, and a bad video that costs one item rather than the list. |
 | `viddl/plain.py` | The line-oriented `--plain` path: ASCII-only text, one progress line, the saved path alone on stdout. |

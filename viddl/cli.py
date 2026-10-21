@@ -9,6 +9,7 @@ piece is also reachable from the command line:
 * ``viddl --doctor``          show where everything lives and whether it works
 * ``viddl --update``          fetch the newest video engine (yt-dlp)
 * ``viddl --update-ffmpeg``   fetch the newest ffmpeg build
+* ``viddl --extras subs <link>``  also add subtitles, details or a cover image
 * ``viddl --plain <link>``    download a line at a time, in plain ASCII
 * ``viddl --register-protocol``          wire up the ``viddl://`` hand-off
 * ``viddl --install-browser-extension``  copy the extension out for loading
@@ -26,6 +27,7 @@ from typing import Optional, Sequence
 from . import APP_TITLE, __version__
 from . import appdata, cookies as cookies_mod, logfile
 from .engine import Engine, Tool, ToolError, staleness_advice
+from .extras import Extras
 from .formats import format_rows
 from . import protocol
 from .protocol import (
@@ -106,6 +108,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes",
         action="store_true",
         help="with --plain: download without asking first (for scripts)",
+    )
+    parser.add_argument(
+        "--extras",
+        metavar="LIST",
+        help=(
+            "also add subtitles, details (title, channel, date and chapters) "
+            "or a cover image: subs, details, cover, or all"
+        ),
     )
     parser.add_argument(
         "--playlist",
@@ -285,6 +295,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             hint,
         )
 
+    # What to add besides the media (F5). Read here rather than in the two
+    # download paths, so a typo gets one answer and not two different ones.
+    extras = Extras()
+    if args.extras:
+        try:
+            extras = Extras.parse(args.extras)
+        except ValueError as exc:
+            return _fail(str(exc), "For example: viddl --extras subs,cover <link>")
+
     if args.download_dir:
         os.environ["VIDDL_DOWNLOAD_DIR"] = str(Path(args.download_dir).expanduser())
 
@@ -420,6 +439,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 assume_yes=bool(args.yes),
                 cookies=cookies,
                 playlist=bool(args.playlist),
+                extras=extras,
             )
         except KeyboardInterrupt:  # pragma: no cover - interactive
             return 130
@@ -427,7 +447,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     from .tui.app import run
 
     try:
-        run(url=url, audio=audio, cookies=cookies)
+        run(url=url, audio=audio, cookies=cookies, extras=extras)
     except KeyboardInterrupt:  # pragma: no cover - interactive
         return 130
     except OSError as exc:

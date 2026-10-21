@@ -323,11 +323,15 @@ class RecordingJob:
         on_log=None,
         cookies="",
         playlist_item=None,
+        extras=None,
     ):
         self.url = url
         self.option = option
         self.on_progress = on_progress
         self.playlist_item = playlist_item
+        # What was added to each download besides the media (F5).
+        self.extras = extras
+        self.attachments = []
         self.out_dir = Path(out_dir)
         self.cancelled = False
         RecordingJob.started.append(self)

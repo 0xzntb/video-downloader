@@ -359,7 +359,7 @@ def _capture_run(monkeypatch) -> dict:
     seen: dict = {}
     monkeypatch.setattr(
         "viddl.tui.app.run",
-        lambda *, url, audio, cookies="": seen.update(url=url, audio=audio),
+        lambda *, url, audio, cookies="", extras=None: seen.update(url=url, audio=audio),
     )
     return seen
 
@@ -432,6 +432,35 @@ def test_a_bare_site_is_upgraded_before_it_is_used(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# extras reach the app as switches that are already on (F5)
+# ---------------------------------------------------------------------------
+
+
+def test_extras_named_on_the_command_line_reach_the_app(monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(
+        "viddl.tui.app.run",
+        lambda *, url, audio, cookies="", extras=None: seen.update(extras=extras),
+    )
+
+    assert main(["--extras", "subs,cover", URL]) == 0
+
+    assert seen["extras"].keys == frozenset({"subs", "cover"})
+
+
+def test_no_extras_means_the_app_starts_with_none(monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(
+        "viddl.tui.app.run",
+        lambda *, url, audio, cookies="", extras=None: seen.update(extras=extras),
+    )
+
+    assert main([URL]) == 0
+
+    assert not seen["extras"]
+
+
+# ---------------------------------------------------------------------------
 # nothing option-shaped gets through
 # ---------------------------------------------------------------------------
 
@@ -470,7 +499,7 @@ def test_a_scheme_shaped_argument_is_refused(monkeypatch, capsys):
 
 
 def test_no_real_terminal_is_explained(monkeypatch, capsys):
-    def no_terminal(*, url, audio, cookies=""):
+    def no_terminal(*, url, audio, cookies="", extras=None):
         raise OSError("Inappropriate ioctl for device")
 
     monkeypatch.setattr("viddl.tui.app.run", no_terminal)
@@ -523,7 +552,7 @@ def _capture_cookies(monkeypatch) -> dict:
     seen: dict = {}
     monkeypatch.setattr(
         "viddl.tui.app.run",
-        lambda *, url, audio, cookies="": seen.update(cookies=cookies),
+        lambda *, url, audio, cookies="", extras=None: seen.update(cookies=cookies),
     )
     return seen
 

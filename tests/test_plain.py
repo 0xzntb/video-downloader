@@ -19,6 +19,7 @@ import pytest
 from viddl import cli, plain
 from viddl.download import DownloadCancelled, Progress
 from viddl.engine import Tool, ToolError
+from viddl.extras import Extras
 from viddl.formats import MediaInfo, MediaOption, parse_info
 
 REPO = Path(__file__).resolve().parent.parent
@@ -95,13 +96,24 @@ class FakeJob:
     made: list = []
 
     def __init__(
-        self, engine, url, option, out_dir, on_progress=None, on_log=None, cookies=""
+        self,
+        engine,
+        url,
+        option,
+        out_dir,
+        on_progress=None,
+        on_log=None,
+        cookies="",
+        extras=None,
     ):
         self.option = option
         self.out_dir = Path(out_dir)
         self.on_progress = on_progress
         # The browser the download was told to read, if any (F1).
         self.cookies = cookies
+        # What was added to the download besides the media (F5).
+        self.extras = extras
+        self.attachments = []
         self.cancelled = False
         self.force_cancelled = False
         FakeJob.made.append(self)
@@ -527,6 +539,76 @@ def test_a_quality_that_needs_no_ffmpeg_is_not_asked_about_ffmpeg():
     assert out.strip()
 
 
+# ---------------------------------------------------------------------------
+# extras: subtitles, details and a cover image (F5)
+# ---------------------------------------------------------------------------
+
+
+def test_the_plain_path_says_what_is_being_added():
+    code, out, err = run(assume_yes=True, extras=Extras.parse("subs,details"))
+
+    assert code == 0
+    assert "Extras: subtitles and details." in err
+    assert FakeJob.made[0].extras.keys == frozenset({"subs", "details"})
+    # Named before anything is saved, so a log records what was asked for.
+    assert err.index("Extras:") < err.index("Saved (")
+    assert out.strip().endswith(".mp4")
+
+
+def test_without_extras_nothing_is_claimed():
+    code, _, err = run(assume_yes=True)
+
+    assert code == 0
+    assert "Extras:" not in err
+
+
+def test_extras_that_need_ffmpeg_are_set_up_first():
+    """A progressive row needs nothing; its details still need ffmpeg."""
+    engine = FakeEngine(ffmpeg=False)
+    code, out, err = run(
+        assume_yes=True, engine=engine, quality="720", extras=Extras.parse("details")
+    )
+
+    assert code == 0
+    assert engine.fetched == 1
+    assert "Fetching ffmpeg" in err
+    assert out.strip().endswith(".mp4")
+
+
+def test_an_audio_row_that_only_asked_for_subtitles_stays_ffmpeg_free():
+    """Subtitles are the only extra this download asks for, and cannot apply."""
+    engine = FakeEngine(ffmpeg=False)
+    code, out, err = run(
+        assume_yes=True, engine=engine, quality="audio", extras=Extras.parse("subs")
+    )
+
+    assert code == 0
+    assert engine.fetched == 0
+    assert "Skipped: subtitles" in err
+    assert "nowhere to put them" in err
+    # Not "Extras: none", which would read as if something had failed.
+    assert "Extras: none" not in err
+    assert FakeJob.made[0].extras.has("subs"), "the choice is still recorded"
+    assert out.strip().endswith(".mp4")
+
+
+def test_a_cover_image_that_was_saved_beside_the_file_is_named():
+    class CoverJob(FakeJob):
+        def run(self):
+            path = super().run()
+            cover = self.out_dir / "A Very Real Video [dQw4w9WgXcQ].jpg"
+            cover.write_bytes(b"picture")
+            self.attachments = [cover]
+            return path
+
+    code, out, err = run(assume_yes=True, job_class=CoverJob, extras=Extras.parse("cover"))
+
+    assert code == 0
+    assert "Also saved: A Very Real Video [dQw4w9WgXcQ].jpg" in err
+    # Standard output stays the media path and nothing else.
+    assert ".jpg" not in out
+
+
 def test_a_failed_ffmpeg_fetch_is_a_sentence_not_a_traceback():
     code, out, err = run(assume_yes=True, engine=BrokenFfmpegEngine())
 
@@ -566,6 +648,24 @@ def test_quality_and_yes_are_refused_without_plain(capsys):
     assert "only work with --plain" in capsys.readouterr().err
 
 
+def test_the_cli_reads_the_extras_before_anything_is_downloaded(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(plain, "run_plain", lambda url, **kwargs: seen.update(kwargs) or 0)
+
+    assert cli.main(["--plain", "--yes", "--extras", "subs, cover", URL]) == 0
+
+    assert seen["extras"].keys == frozenset({"subs", "cover"})
+
+
+def test_a_mistyped_extra_is_refused_with_the_list(capsys):
+    assert cli.main(["--plain", "--extras", "subtitel", URL]) == 1
+
+    err = capsys.readouterr().err
+    assert "Unknown extra 'subtitel'" in err
+    assert "subs, details or cover" in err
+    assert "For example: viddl --extras subs,cover" in err
+
+
 def test_the_cli_hands_the_choices_to_the_plain_path(monkeypatch):
     seen = {}
 
@@ -584,6 +684,8 @@ def test_the_cli_hands_the_choices_to_the_plain_path(monkeypatch):
         "assume_yes": True,
         "cookies": "",
         "playlist": False,
+        # Nothing is added to the download unless it was asked for (F5).
+        "extras": Extras(),
     }
 
 

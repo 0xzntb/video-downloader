@@ -10,7 +10,7 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **24 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F4
+Progress so far: **25 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F5
 in section 3, U4 in section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -1253,7 +1253,7 @@ throws quality away for no reason.
 > conversions were exercised against a real source through the same arguments a
 > real run builds, not through a site whose own sound is opus (none was to hand).
 
-### F5 — Subtitles, thumbnails and metadata · **P2** · M
+### F5 — Subtitles, thumbnails and metadata · **P2** · M · ✅ **Done**
 
 `--write-subs`, `--embed-subs`, `--embed-thumbnail`, `--embed-metadata` and
 `--embed-chapters` are all one flag each, and the app already owns the ffmpeg
@@ -1261,6 +1261,81 @@ prompt that these need.
 
 **Do:** a small "extras" toggles row on the qualities screen, off by default,
 with "needs ffmpeg" surfaced the same way the quality rows already do it.
+
+> **Done, as three switches rather than four, because yt-dlp has three
+> behaviours.** A one-line `Extras` row sits under the quality list —
+> `[ ] Subtitles  [ ] Details  [ ] Cover image` — and starts off. Click it,
+> Tab to it and press Enter or Space, or use `s`, `m` and `t`; the tick is in
+> the label, not only in the colour. `--extras subs,details,cover` names the
+> same set from a script (and opens the app with those switches already on),
+> `--extras all` takes the three, and a mistyped word is refused with the list
+> of real ones.
+>
+> `--embed-metadata` **already embeds the chapters**: yt-dlp sets `addchapters`
+> whenever `addmetadata` is set, so a separate chapters switch would do nothing
+> while details were on. The two are one row. `--write-subs` and
+> `--embed-subs` are one decision too, so they are one row.
+>
+> **Subtitles ask for English only.** Measured first with `--sub-langs "en.*"`:
+> YouTube matched `en`, `en-en` and `en-de`, the last answered **HTTP 429**,
+> and yt-dlp ended the whole run with `ERROR` before it had fetched the video
+> at all. One language is one request, and it is embedded (`mov_text` in MP4).
+> An audio download skips the row and says why rather than asking ffmpeg for a
+> stream nothing can show.
+>
+> **The cover image is saved beside the file, not inside it — and that is the
+> measurement.** yt-dlp's own embedding needs mutagen or AtomicParsley; the
+> release Viddl installs has **neither**, and the ffmpeg it installs is the
+> binary **without ffprobe**. On a real MP4, `--embed-thumbnail` therefore
+> failed the *entire download* with `Unable to embed using ffprobe & ffmpeg`
+> after the video had already downloaded. `--write-thumbnail
+> --convert-thumbnails jpg` works with the tools that are actually there, so
+> the row promises exactly that: a JPEG next to `Title [id].mp4`, named
+> `Title [id].jpg`, moved out of the working folder by the job and named on the
+> result screen. When the name is already taken and the video becomes
+> `Title (2).mp4`, the picture becomes `Title (2).jpg` to match. A picture that
+> cannot be moved is logged, never a reason to fail a saved video.
+>
+> **A picture is not the download.** yt-dlp announces the thumbnail and the
+> caption files with the same `[download] Destination:` line as the video, and
+> a thumbnail can be announced last — enough for the old "newest file in the
+> folder" fallback to report a 23 KB JPEG as the finished video. Attachments
+> are now filtered out of the remembered paths and of both output scans, which
+> is held by tests. The download also reports `Adding the subtitles…`,
+> `Adding the details…` and `Saving the cover image…` while it happens, and the
+> extras are part of `needs_ffmpeg`, of the one-time ffmpeg prompt and of the
+> working-folder identity, so two runs with different extras cannot share a
+> folder.
+>
+> **Measured end to end with real yt-dlp 2026.08.19 and ffmpeg 7.0.2** (the
+> same binary-only ffmpeg Viddl downloads), on “Me at the zoo”. 144p with all
+> three extras took **14 s** and produced a **508,685-byte** MP4 with an `eng`
+> `mov_text` subtitle stream, `title`/`artist`/`date`/`description` tags, **3
+> chapters** (Intro, The cool thing, End) and a **23,688-byte 480×360** JPEG
+> beside it; stdout was the MP4 path alone and stderr said
+> `Also saved: … .jpg`. `--quality mp3-192 --extras all` took **7 s**, wrote a
+> **121,718-byte** MP3 with the same tags and chapters in ID3, put the JPEG
+> beside it, and printed `Skipped: subtitles - an audio download has nowhere
+> to put them.` Both exited 0. The real app was driven headlessly too, with the
+> real engine and the real download: the look-up took **3.2 s**, `s` + `t`
+> put `[x] Subtitles   [x] Cover image` on the one-line row, Enter saved the
+> file in a further 3.4 s, and the result screen read `240p · 728.0 KB ·
+> with Me at the zoo [jNQXAC9IVRw].jpg` with an `eng` `mov_text` stream in
+> the MP4 and the JPEG beside it.
+>
+> **44 new tests** (719 → 763), `pyflakes` clean, coverage 93 % overall and
+> 100 % on `extras.py`; the screen's own tests cover clicking, `s`/`m`/`t`,
+> Tab + Enter/Space, the audio-row warning, the ffmpeg prompt the extras create
+> on their own, the extras reaching the job, and the result screen naming the
+> picture.
+>
+> **Not done:** the subtitle language is English, with no picker; cover art is
+> never *inside* the media — that needs mutagen shipped with yt-dlp, or ffprobe
+> plus container-specific work, and neither is a toggle's worth of work; a link
+> the site has no thumbnail for silently adds no picture (there is nothing to
+> say without a second request); and the one-line row has been measured (27-row
+> panel at 80×24, the row hit-tested and not overlapping the buttons) and
+> driven by the pilot, but not looked at by a human eye.
 
 ### F6 — Download archive and a recent-downloads list · **P2** · M
 

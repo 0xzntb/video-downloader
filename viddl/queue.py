@@ -23,6 +23,7 @@ from typing import Callable, List, Optional, Sequence
 
 from .download import DownloadCancelled, DownloadJob, Progress
 from .engine import Engine, ToolError
+from .extras import Extras
 from .formats import MediaOption, Playlist, PlaylistEntry
 from .util import safe_video_link
 
@@ -51,6 +52,8 @@ class QueueItem:
     state: str = WAITING
     path: Optional[Path] = None
     error: Optional[ToolError] = None
+    #: Pictures saved beside the file by this item's extras (F5).
+    attachments: List[Path] = field(default_factory=list)
 
     @property
     def title(self) -> str:
@@ -116,6 +119,7 @@ class QueueJob:
         option: MediaOption,
         out_dir: Path,
         cookies: str = "",
+        extras: Optional[Extras] = None,
         make_job: Callable[..., DownloadJob] = DownloadJob,
         on_start: Optional[Callable[[QueueItem], None]] = None,
         on_progress: Optional[Callable[[QueueItem, Progress], None]] = None,
@@ -126,6 +130,9 @@ class QueueJob:
         self.option = option
         self.out_dir = Path(out_dir)
         self.cookies = cookies
+        # The extras every video in the queue gets (F5). Chosen once, on the
+        # qualities screen, and applied to each download the queue starts.
+        self.extras = extras or Extras()
         self._make_job = make_job
         self.on_start = on_start
         self.on_progress = on_progress
@@ -204,6 +211,7 @@ class QueueJob:
         kwargs = {
             "on_progress": lambda progress: self._notify(self.on_progress, item, progress),
             "cookies": self.cookies,
+            "extras": self.extras,
         }
         if link is not None:
             job = self._make_job(self.engine, link, self.option, self.out_dir, **kwargs)
@@ -223,7 +231,11 @@ class QueueJob:
                 self.engine, playlist_link, self.option, self.out_dir, **kwargs
             )
         self._job = job
-        return job.run()
+        path = job.run()
+        # Kept so the summary can say a cover picture landed beside the file,
+        # rather than leaving an unexplained image in the folder (F5).
+        item.attachments = list(getattr(job, "attachments", []))
+        return path
 
     def summary(self) -> QueueSummary:
         counts = {state: 0 for state in (DONE, FAILED, SKIPPED, STOPPED)}
