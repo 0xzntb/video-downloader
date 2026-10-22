@@ -22,6 +22,7 @@ from .engine import Engine, ToolError, is_windows
 from .errors import explain
 from .extras import Extras
 from .formats import MediaInfo, MediaOption, Playlist, parse_info, parse_playlist
+from .network import NetworkOptions
 
 # The line prefix yt-dlp prints our progress on.
 _PROGRESS_MARKER = "VIDDLPROGRESS"
@@ -580,6 +581,7 @@ class DownloadJob:
         extras: Optional[Extras] = None,
         archive: Optional[Path] = None,
         title: str = "",
+        network: Optional[NetworkOptions] = None,
     ):
         self.engine = engine
         self.url = url
@@ -608,6 +610,10 @@ class DownloadJob:
         # file name cannot always give back cleanly (a title that was itself
         # ``Name [abc].mp4``), so a caller that knows it passes it in.
         self.title = title
+        # How this download uses the network (F11): a speed limit, a proxy, a
+        # fragment count, a throttle to give up on. Every default is the
+        # behaviour that came before the options existed.
+        self.network = network or NetworkOptions()
         # True once this run turned out to be a video an earlier download had
         # already put on disk (F6). The file is real and where it always was;
         # the flag only stops the app from claiming it just fetched it.
@@ -786,8 +792,10 @@ class DownloadJob:
             "5",
             "--socket-timeout",
             str(socket_timeout()),
-            "--concurrent-fragments",
-            "4",
+            # The fragment count, a speed limit, a proxy, a throttle (F11) —
+            # in that order, and before the user's own options (R3), so that
+            # where they disagree the person who asked last wins.
+            *self.network.args(),
             "--progress",
             "--progress-template",
             _PROGRESS_TEMPLATE,

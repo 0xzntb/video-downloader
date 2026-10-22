@@ -21,6 +21,7 @@ from viddl.download import DownloadCancelled, Progress
 from viddl.engine import Tool, ToolError
 from viddl.extras import Extras
 from viddl.formats import MediaInfo, MediaOption, parse_info
+from viddl.network import NetworkOptions
 
 REPO = Path(__file__).resolve().parent.parent
 URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -107,11 +108,14 @@ class FakeJob:
         extras=None,
         archive=None,
         title="",
+        network=None,
     ):
         # The download archive and the video's title, both passed on for the
         # recent list (F6); a test asserts they arrived.
         self.archive = archive
         self.title = title
+        # How the download was told to use the network (F11).
+        self.network = network
         self.option = option
         self.out_dir = Path(out_dir)
         self.on_progress = on_progress
@@ -701,6 +705,8 @@ def test_the_cli_hands_the_choices_to_the_plain_path(monkeypatch):
         "extras": Extras(),
         # No archive either, unless the run asked for one (F6).
         "archive": None,
+        # Nor any network choices, unless the flags said so (F11).
+        "network": NetworkOptions(),
         # And nothing quiet: the menu and the notes are what a person reads
         # when they did not ask for silence (F10).
         "quiet": False,
@@ -811,4 +817,51 @@ def test_quiet_still_says_what_went_wrong():
     assert code == 1
     assert out == ""
     assert "not available any more" in err
+
+
+# ---------------------------------------------------------------------------
+# the network choices a run was given (F11)
+# ---------------------------------------------------------------------------
+
+
+def test_the_log_records_the_network_terms_before_anything_is_fetched():
+    """A proxy or a ceiling is part of what was asked for."""
+    network = NetworkOptions.parse(limit_rate="2M", concurrent_fragments=8)
+
+    code, out, err = run(network=network, assume_yes=True)
+
+    assert code == 0
+    assert "Network: no faster than 2M/s, 8 pieces at a time." in err
+    assert FakeJob.made[0].network == network
+    # Said before the file is written, so a log records the terms and not only
+    # the result.
+    assert err.index("Network:") < err.index("Saved")
+
+
+def test_a_run_with_no_network_choices_says_nothing_about_the_network():
+    code, out, err = run(assume_yes=True)
+
+    assert code == 0
+    assert "Network:" not in err
+    assert FakeJob.made[0].network == NetworkOptions()
+
+
+def test_the_proxy_password_never_reaches_the_log():
+    network = NetworkOptions.parse(proxy="http://me:hunter2@proxy.example:3128")
+
+    code, out, err = run(network=network, assume_yes=True)
+
+    assert code == 0
+    assert "proxy.example:3128" in err
+    assert "hunter2" not in err
+
+
+def test_quiet_leaves_the_network_note_out_too():
+    """``--quiet`` is the path and nothing else, notes included (F10)."""
+    code, out, err = run(
+        network=NetworkOptions.parse(limit_rate="1M"), assume_yes=True, quiet=True
+    )
+
+    assert code == 0
+    assert err == ""
 

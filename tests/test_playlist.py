@@ -30,6 +30,7 @@ from viddl.formats import (
     parse_info,
     parse_playlist,
 )
+from viddl.network import NetworkOptions
 from viddl.queue import DONE, FAILED, SKIPPED, STOPPED, QueueJob
 from viddl.tui.app import (
     DownloadScreen,
@@ -326,13 +327,16 @@ class RecordingJob:
         extras=None,
         archive=None,
         title="",
+        network=None,
     ):
         self.url = url
         self.option = option
         self.on_progress = on_progress
         self.playlist_item = playlist_item
-        # What was added to each download besides the media (F5).
+        # What was added to each download besides the media (F5), and how it
+        # was told to use the network (F11).
         self.extras = extras
+        self.network = network
         # The archive each item shares, and the title each one is recorded
         # under in the recent list (F6).
         self.archive = archive
@@ -828,6 +832,31 @@ def test_every_item_gets_the_archive_and_its_own_title(tmp_path):
     assert [job.title for job in RecordingJob.started] == [
         entry.title for entry in playlist.entries
     ]
+
+
+def test_every_item_uses_the_same_network_choices(tmp_path):
+    """A playlist through a proxy is still one proxy (F11).
+
+    A queue that applied the limit to the first video only would be a limit on
+    nothing, and the person who asked for it would never find out.
+    """
+    playlist = listing()
+    network = NetworkOptions.parse(limit_rate="1M", concurrent_fragments=2)
+    queue = QueueJob(
+        FakeEngine(),
+        playlist,
+        playlist.entries,
+        video_option(),
+        Path("/tmp/viddl-queue-tests"),
+        network=network,
+        make_job=RecordingJob,
+    )
+
+    queue.run()
+
+    assert [job.network for job in RecordingJob.started] == [network] * len(
+        playlist.entries
+    )
 
 
 def test_an_item_the_archive_already_had_is_reported_as_had():

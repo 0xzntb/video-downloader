@@ -33,6 +33,7 @@ from .download import (
 from .engine import Engine, ToolError
 from .extras import Extras
 from .formats import AUDIO_FORMATS, ORIGINAL_AUDIO_KEY, MediaInfo, MediaOption
+from .network import NetworkOptions
 from .queue import QueueJob
 from .util import human_duration, human_size
 
@@ -416,6 +417,7 @@ def _run_playlist_plain(
     cookies: str,
     extras: Extras,
     archive: Optional[Path],
+    network: Optional[NetworkOptions],
     assume_yes: bool,
     make_job: Callable[..., DownloadJob],
     downloads_dir: Callable[[], Path],
@@ -520,6 +522,7 @@ def _run_playlist_plain(
         cookies=cookies,
         extras=extras,
         archive=archive,
+        network=network,
         make_job=make_job,
         on_start=on_start,
         on_progress=on_progress,
@@ -551,6 +554,7 @@ def run_plain(
     playlist: bool = False,
     extras: Optional[Extras] = None,
     archive: Optional[Path] = None,
+    network: Optional[NetworkOptions] = None,
     quiet: bool = False,
     engine: Optional[Engine] = None,
     probe: Callable[..., MediaInfo] = probe_video,
@@ -586,6 +590,7 @@ def run_plain(
     stdin = stdin or sys.stdin
     engine = engine or Engine()
     extras = extras or Extras()
+    network = network or NetworkOptions()
 
     if cookies:
         _say(report, cookies_mod.active_note(cookies_mod.label_for(cookies)))
@@ -619,6 +624,11 @@ def run_plain(
                 f"Skipped: {skipped[0].label.lower()} - an audio download has "
                 "nowhere to put them.",
             )
+    if network:
+        # What this run was told about the network (F11), said before anything
+        # is fetched: a proxy or a ceiling is part of what was asked for, so a
+        # log that records the download should record the terms as well.
+        _say(report, f"Network: {network.summary()}.")
 
     if info.playlist is not None:
         # A playlist link was read as its first video, which is the safe
@@ -634,6 +644,7 @@ def run_plain(
                 cookies=cookies,
                 extras=extras,
                 archive=archive,
+                network=network,
                 assume_yes=assume_yes,
                 make_job=make_job,
                 downloads_dir=downloads_dir,
@@ -684,6 +695,7 @@ def run_plain(
             cookies=cookies,
             extras=extras,
             archive=archive,
+            network=network,
             title=info.title,
         )
         path = job.run()

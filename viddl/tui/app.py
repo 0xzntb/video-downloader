@@ -59,6 +59,7 @@ from ..download import (
 from ..engine import Engine, Tool, ToolError
 from ..extras import EXTRAS, Extras
 from ..formats import MediaInfo, MediaOption, Playlist, PlaylistEntry
+from ..network import NetworkOptions
 from ..queue import QueueItem, QueueJob, QueueSummary
 from ..util import human_duration, human_size, redact, safe_video_link, shorten
 from .widgets import ChoiceList, ExtraToggle
@@ -148,6 +149,10 @@ class State:
     #: ``None`` is every run that did not: skipping a download is a promise
     #: to keep, not a surprise to spring.
     archive: Optional[Path] = None
+    #: How every download in this session uses the network (F11): a speed
+    #: limit, a proxy, a fragment count, a throttle. All defaults unless the
+    #: command line said otherwise — there is no settings screen to ask.
+    network: NetworkOptions = field(default_factory=NetworkOptions)
     #: Several links collected on the links screen, in the order they will be
     #: taken (F7). One decision — the quality — is asked of the first of them
     #: and used for all; empty means the ordinary one-video flow.
@@ -419,6 +424,7 @@ class ViddlApp(App):
         cookies: str = "",
         extras: Optional[Extras] = None,
         archive: Optional[Path] = None,
+        network: Optional[NetworkOptions] = None,
         services: Optional[Services] = None,
     ) -> None:
         super().__init__()
@@ -436,6 +442,9 @@ class ViddlApp(App):
             extras=extras or Extras(),
             # The download archive for every job this session starts (F6).
             archive=archive,
+            # And how it uses the network (F11): the same answer for every
+            # video, a playlist included.
+            network=network or NetworkOptions(),
         )
         problem = appdata.ensure_dirs()
         if problem is not None:
@@ -1542,7 +1551,23 @@ class OptionsScreen(Screen):
             extras_note = self.extras_note(option)
             if extras_note:
                 lines.append(extras_note)
+            network_note = self.network_note()
+            if network_note:
+                lines.append(network_note)
             note.update(_plain("\n".join(lines)))
+
+    def network_note(self) -> str:
+        """How this session was told to use the network, when it was (F11).
+
+        The flags that set it arrive on the command line, before any screen is
+        drawn, so the only place they can be read back is here — and a download
+        that is slower than expected should say why somewhere other than the
+        shell that launched it.
+        """
+        network = self.app.state.network
+        if not network:
+            return ""
+        return f"Network: {network.summary()}."
 
     def extras_note(self, option: Optional[MediaOption]) -> str:
         """What the ticked extras will do to this row, in one sentence (F5)."""
@@ -1893,6 +1918,10 @@ class PlaylistScreen(Screen):
             # Chosen on the previous screen, so it is repeated here: a queue
             # of nine downloads should not surprise anyone (F5).
             lines.append(f"Also adding: {extras.summary(self.option)}.")
+        network = self.app.state.network
+        if network:
+            # Likewise for the network terms the run was launched with (F11).
+            lines.append(f"Network: {network.summary()}.")
         if playlist.truncated:
             lines.append(
                 f"Viddl lists the first {total} of {playlist.count} videos in this "
@@ -2024,6 +2053,7 @@ class DownloadScreen(Screen):
                 # for the recent list (F6): the screen has both, and a job
                 # left to guess the title would have only the file name.
                 archive=app.state.archive,
+                network=app.state.network,
                 title=app.state.info.title if app.state.info else "",
             )
             app.state.job = job
@@ -2076,6 +2106,7 @@ class DownloadScreen(Screen):
             cookies=app.state.cookies_browser,
             extras=app.state.extras,
             archive=app.state.archive,
+            network=app.state.network,
             make_job=app.services.make_job,
             on_start=lambda item: app._post(self.on_item_start, item),
             on_progress=lambda item, progress: app._post(
@@ -2736,6 +2767,7 @@ def run(
     cookies: str = "",
     extras: Optional[Extras] = None,
     archive: Optional[Path] = None,
+    network: Optional[NetworkOptions] = None,
     services: Optional[Services] = None,
 ) -> None:
     """Start the terminal app."""
@@ -2745,6 +2777,7 @@ def run(
         cookies=cookies,
         extras=extras,
         archive=archive,
+        network=network,
         services=services,
     )
     app.run()

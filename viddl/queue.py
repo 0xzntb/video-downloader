@@ -25,6 +25,7 @@ from .download import DownloadCancelled, DownloadJob, Progress
 from .engine import Engine, ToolError
 from .extras import Extras
 from .formats import MediaOption, Playlist, PlaylistEntry
+from .network import NetworkOptions
 from .util import safe_video_link
 
 #: A video the queue has not reached yet.
@@ -125,6 +126,7 @@ class QueueJob:
         cookies: str = "",
         extras: Optional[Extras] = None,
         archive: Optional[Path] = None,
+        network: Optional[NetworkOptions] = None,
         make_job: Callable[..., DownloadJob] = DownloadJob,
         on_start: Optional[Callable[[QueueItem], None]] = None,
         on_progress: Optional[Callable[[QueueItem, Progress], None]] = None,
@@ -142,6 +144,10 @@ class QueueJob:
         # queue is what makes it incremental: the videos already in it are
         # skipped, and only the ones never fetched are downloaded.
         self.archive = Path(archive) if archive is not None else None
+        # One set of network choices for the whole queue (F11). A playlist
+        # through a proxy is still one proxy, and a speed limit that applied to
+        # only the first video would be a limit on nothing.
+        self.network = network or NetworkOptions()
         self._make_job = make_job
         self.on_start = on_start
         self.on_progress = on_progress
@@ -228,6 +234,7 @@ class QueueJob:
             # "Video 3" is a position, not a name to remember a file by.
             "archive": self.archive,
             "title": item.entry.title,
+            "network": self.network,
         }
         if link is not None:
             job = self._make_job(self.engine, link, self.option, self.out_dir, **kwargs)

@@ -121,6 +121,8 @@ Nothing is installed system-wide and no configuration files are created.
 | See what qualities a link has, without downloading | `viddl --list-qualities <link>` |
 | Save somewhere else for one run | `viddl --download-dir ~/Videos <link>` |
 | Skip videos you have already downloaded | `viddl --download-archive <link>` (see [What is remembered](#what-is-remembered-between-runs)) |
+| Keep a call, a game or a stream usable while it downloads | `viddl --limit-rate 2M <link>` (see [A slow connection, a busy one, or a proxy](#a-slow-connection-a-busy-one-or-a-proxy)) |
+| Download through a proxy | `viddl --proxy socks5://127.0.0.1:1080 <link>` |
 | See what you have downloaded lately | Press `r` (or **Recent**) on the home screen |
 | Use the link you already copied | Click **Paste link** on the home screen (or press `p` when the box is not focused) |
 | Download several links in one go | Paste them into the link box separated by spaces, then **Download all** on the links screen |
@@ -318,6 +320,38 @@ Writing the picture beside the file works for every link and every container.
 And **Details** is one switch, not two, because yt-dlp always embeds chapters
 when it embeds metadata — a separate chapters switch would do nothing while
 details were on.
+
+## A slow connection, a busy one, or a proxy
+
+Four flags describe how a download may use the network. They work in the app
+and with `--plain`, cover every video of a playlist or a batch, and are off
+unless you pass one.
+
+| You want to… | Do this |
+| --- | --- |
+| Leave room for everything else on the connection | `viddl --limit-rate 2M <link>` |
+| Download through a proxy | `viddl --proxy socks5://127.0.0.1:1080 <link>` |
+| Ask for fewer pieces of a video at once | `viddl --concurrent-fragments 2 <link>` |
+| Give up on a source that crawls, and try another | `viddl --throttled-rate 100K <link>` |
+
+A speed is what yt-dlp reads: a number with an optional `K`, `M` or `G` —
+`500K`, `2M`, `1.5M` — or plain bytes per second. A proxy needs its scheme
+(`http`, `https`, `socks4`, `socks4a`, `socks5`, `socks5h`) and a host; an
+address that needs a sign-in keeps it (`http://you:secret@proxy.example:3128`),
+but the sentence Viddl writes names only `proxy.example:3128`, so a password
+never reaches a log. All four are checked before anything runs: `--limit-rate
+fast` is refused with the shape it wants, and `--proxy 127.0.0.1:8080` — a
+value that would otherwise look like an option or an argument to the engine —
+is refused rather than passed on. The default fragment count is 4.
+
+The app repeats whatever you set on the qualities screen and on the playlist
+checklist (*Network: through 127.0.0.1:1080, no faster than 2M/s, 4 pieces at a
+time*), and `--plain` prints one `Network:` line before the download starts, so
+a log records the terms and not only the result. `--quiet` leaves that line out
+with the rest of the notes. For anything not covered here, `VIDDL_YTDLP_ARGS`
+still passes options straight to yt-dlp (see [Environment
+variables](#environment-variables)).
+
 
 ## Sites that want you to sign in
 

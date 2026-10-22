@@ -19,6 +19,7 @@ from viddl import download as download_mod
 from viddl import history
 from viddl.download import DownloadCancelled, DownloadJob, ProbeCancelled, probe_video
 from viddl.engine import Tool, ToolError
+from viddl.network import NetworkOptions
 from viddl.formats import MediaOption
 
 SUCCESS_SCRIPT = """\
@@ -1915,6 +1916,44 @@ def test_no_archive_is_asked_for_when_none_was_wanted(tmp_path):
     engine = engine_for(tmp_path, "fake_ok.py", SUCCESS_SCRIPT)
     args = DownloadJob(engine, ARCHIVE_URL, video_option(), tmp_path / "out").build_args()
     assert "--download-archive" not in args
+
+
+def test_the_engine_gets_viddls_own_fragment_count_by_default(tmp_path):
+    """The default is Viddl's choice, and it is asked for exactly once (F11)."""
+    args = DownloadJob(
+        FakeEngine(["/fake/yt-dlp"]), "u", video_option(), tmp_path
+    ).build_args()
+
+    assert args[args.index("--concurrent-fragments") + 1] == "4"
+    assert args.count("--concurrent-fragments") == 1
+    # Nothing else about the network was asked for, so nothing else is passed.
+    for flag in ("--limit-rate", "--throttled-rate", "--proxy"):
+        assert flag not in args
+
+
+def test_a_speed_limit_a_proxy_and_a_fragment_count_reach_the_engine(tmp_path):
+    network = NetworkOptions.parse(
+        limit_rate="2M",
+        proxy="socks5://127.0.0.1:1080",
+        concurrent_fragments=8,
+        throttled_rate="100K",
+    )
+
+    args = DownloadJob(
+        FakeEngine(["/fake/yt-dlp"]), "https://x.invalid/v", video_option(), tmp_path,
+        network=network,
+    ).build_args()
+
+    assert args[args.index("--limit-rate") + 1] == "2M"
+    assert args[args.index("--throttled-rate") + 1] == "100K"
+    assert args[args.index("--proxy") + 1] == "socks5://127.0.0.1:1080"
+    assert args[args.index("--concurrent-fragments") + 1] == "8"
+    # One count, not two: the default must not be handed over beside it.
+    assert args.count("--concurrent-fragments") == 1
+    # Before Viddl's own paths and the end-of-options marker, so these are
+    # options of the run and the link is still the only thing after ``--``.
+    assert args.index("--limit-rate") < args.index("-P")
+    assert args.index("--proxy") < args.index("--")
 
 
 def test_a_video_the_archive_already_had_is_handed_back_not_fetched(tmp_path):

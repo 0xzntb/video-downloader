@@ -12,6 +12,7 @@ piece is also reachable from the command line:
 * ``viddl --update-ffmpeg``   fetch the newest ffmpeg build
 * ``viddl --extras subs <link>``  also add subtitles, details or a cover image
 * ``viddl --download-archive <link>``  skip videos already downloaded (F6)
+* ``viddl --limit-rate 2M <link>``  a speed limit, a proxy, fewer pieces (F11)
 * ``viddl --plain <link>``    download a line at a time, in plain ASCII
 * ``viddl --register-protocol``          wire up the ``viddl://`` hand-off
 * ``viddl --install-browser-extension``  copy the extension out for loading
@@ -31,6 +32,7 @@ from . import appdata, cookies as cookies_mod, logfile
 from .engine import Engine, Tool, ToolError, staleness_advice
 from .extras import Extras
 from .formats import format_rows
+from .network import NetworkOptions
 from . import protocol
 from .protocol import (
     extension_source_dir,
@@ -143,6 +145,38 @@ def build_parser() -> argparse.ArgumentParser:
             "remember what has been downloaded (in Viddl's own folder) and skip "
             "videos you already have; also makes re-running a playlist take "
             "only the videos it has not fetched yet"
+        ),
+    )
+    parser.add_argument(
+        "--limit-rate",
+        metavar="SPEED",
+        help=(
+            "download no faster than this, so other things on the connection "
+            "still work: 500K, 2M, or a number of bytes per second"
+        ),
+    )
+    parser.add_argument(
+        "--proxy",
+        metavar="ADDRESS",
+        help=(
+            "send downloads through a proxy: http://host:port, "
+            "socks5://host:port, or with an address that needs a sign-in"
+        ),
+    )
+    parser.add_argument(
+        "--concurrent-fragments",
+        metavar="N",
+        help=(
+            "how many pieces of one video to fetch at once, 1 to 32 "
+            "(default 4); lower it when a site or a proxy complains"
+        ),
+    )
+    parser.add_argument(
+        "--throttled-rate",
+        metavar="SPEED",
+        help=(
+            "give up on a source that stays slower than this and try another: "
+            "100K, 1M"
         ),
     )
     parser.add_argument(
@@ -343,6 +377,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except ValueError as exc:
             return _fail(str(exc), "For example: viddl --extras subs,cover <link>")
 
+    # How these downloads use the network (F11). Checked once, here, so that a
+    # value that is not a speed or not a proxy is refused with a sentence
+    # rather than reaching an engine's command line and being read as an option
+    # of its own.
+    try:
+        network = NetworkOptions.parse(
+            limit_rate=args.limit_rate or "",
+            proxy=args.proxy or "",
+            concurrent_fragments=args.concurrent_fragments,
+            throttled_rate=args.throttled_rate or "",
+        )
+    except ValueError as exc:
+        return _fail(
+            str(exc),
+            "For example: viddl --limit-rate 2M --proxy "
+            "socks5://127.0.0.1:1080 <link>",
+        )
+
     if args.download_dir:
         os.environ["VIDDL_DOWNLOAD_DIR"] = str(Path(args.download_dir).expanduser())
 
@@ -510,6 +562,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 playlist=bool(args.playlist),
                 extras=extras,
                 archive=archive,
+                network=network,
                 # Only the path, for a script (F10). Failures still speak.
                 quiet=bool(args.quiet),
             )
@@ -519,7 +572,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     from .tui.app import run
 
     try:
-        run(url=url, audio=audio, cookies=cookies, extras=extras, archive=archive)
+        run(
+            url=url,
+            audio=audio,
+            cookies=cookies,
+            extras=extras,
+            archive=archive,
+            network=network,
+        )
     except KeyboardInterrupt:  # pragma: no cover - interactive
         return 130
     except OSError as exc:

@@ -24,6 +24,7 @@ from viddl.engine import Tool, ToolError
 from viddl.extras import Extras
 from viddl.formats import MediaInfo, MediaOption, PlaylistSummary, parse_info
 from viddl.history import Entry
+from viddl.network import NetworkOptions
 from viddl.protocol import build_scheme_url
 from viddl.tui.app import (
     DownloadScreen,
@@ -117,6 +118,7 @@ class FakeJob:
         extras=None,
         archive=None,
         title="",
+        network=None,
     ):
         # What the job was asked to fetch (F7): a queue is checked by the order
         # its links were taken in, not only by what it saved.
@@ -132,6 +134,8 @@ class FakeJob:
         # is recorded under in the recent list (F6).
         self.archive = archive
         self.title = title
+        # How the download was told to use the network (F11).
+        self.network = network
         self.attachments = []
         self.cancelled = False
 
@@ -1142,6 +1146,58 @@ async def test_the_extras_start_off_and_are_on_screen(tmp_path):
         assert extra_label(extra_toggle(app.screen, "cover")) == "[ ] Cover image"
         # Off means off: the note says nothing about adding anything.
         assert "Also adding" not in shown(app.screen, "#options-note")
+
+
+@pytest.mark.asyncio
+async def test_the_options_screen_says_how_the_run_was_told_to_use_the_network(tmp_path):
+    """A download slower than expected should say why, inside the app (F11)."""
+    network = NetworkOptions.parse(limit_rate="2M", concurrent_fragments=8)
+    app = ViddlApp(initial_url=URL, network=network, services=make_services(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        note = shown(app.screen, "#options-note")
+        assert "Network: no faster than 2M/s, 8 pieces at a time." in note
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_no_network_choices_says_nothing_about_it(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        assert "Network:" not in shown(app.screen, "#options-note")
+        assert app.state.network == NetworkOptions()
+
+
+@pytest.mark.asyncio
+async def test_the_download_gets_the_network_choices_the_run_was_launched_with(tmp_path):
+    network = NetworkOptions.parse(proxy="socks5://127.0.0.1:1080", limit_rate="1M")
+
+    class WatchingJob(FakeJob):
+        made: list = []
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            WatchingJob.made.append(self)
+
+    WatchingJob.made.clear()
+    app = ViddlApp(
+        initial_url=URL,
+        network=network,
+        services=make_services(tmp_path, job_class=WatchingJob),
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+
+        assert isinstance(app.screen, ResultScreen)
+        assert len(WatchingJob.made) == 1
+        assert WatchingJob.made[0].network == network
 
 
 @pytest.mark.asyncio

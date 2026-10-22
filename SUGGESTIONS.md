@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **29 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F8
-and F10 in section 3, U4 in section 4, D2–D3 in section 6.
+Progress so far: **30 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F11 in section 3, U4 in section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
 down keeps a secret, and a web page can no longer start it *doing* anything —
@@ -1616,10 +1616,74 @@ it multiplies the project's usefulness.
 > `environment` list carries the raw values, exactly as the text form already
 > prints them.
 
-### F11 — Bandwidth and network control · **P3** · S
+### F11 — Bandwidth and network control · **P3** · S · ✅ **Done**
 
 `--limit-rate`, `--proxy`, `--concurrent-fragments` tuning, `--throttled-rate`
 for slow hosts. Worth exposing behind an "Advanced" row once **F13** exists.
+
+> **Done as four flags, on both front doors, with no settings screen to wait
+> for.** A new `viddl/network.py` holds one frozen `NetworkOptions` — a speed
+> limit, a proxy, a fragment count, a throttle — and turns it into the engine's
+> own arguments in a fixed order. Every value is checked at the front door
+> rather than passed on, because these strings *are* argv: `--limit-rate fast`
+> is refused with the shape it wants, and a proxy must start with `http`,
+> `https`, `socks4`, `socks4a`, `socks5` or `socks5h` and have a host, a port in
+> range, no whitespace and no control characters — so `--proxy 127.0.0.1:8080`
+> (no scheme, and shaped like an argument) and
+> `http://host:8080` + a newline + `--exec=rm` are mistakes, not flags. Speeds
+> are normalised (`2m` → `2M`, `2MB` → `2M`), which is also what the sentence in
+> the log says.
+>
+> The choices are carried by `DownloadJob`, `QueueJob`, `run_plain` and the
+> app's `State`, so one proxy and one ceiling cover every video of a playlist or
+> a batch — a limit on the first of nine would be a limit on nothing. They are
+> emitted where the fragment count already was (before the user's own yt-dlp
+> options, R3, and before the `--` that ends the options), and the hard-coded
+> `--concurrent-fragments 4` became `NetworkOptions.fragments`, so the flag is
+> still passed exactly once. In the app the qualities screen and the playlist
+> checklist repeat the terms (*Network: through 127.0.0.1:1080, no faster than
+> 2M/s*), and `--plain` prints one `Network:` line before anything is fetched;
+> `--quiet` drops it with the other notes.
+>
+> **A proxy password is a password**, so `summary()` names the host and port and
+> never the credentials, while the engine still gets the whole address — the one
+> place it is needed. Tested in both the plain log and the app's note.
+>
+> **Measured against real yt-dlp 2026.10.21** on a 4 MB MP4 served over local
+> HTTP, one run each: no flags **1.75 s**, `--limit-rate 4M` **2.75 s**,
+> `--limit-rate 2M` **3.83 s** — the extra seconds are the file at the rate that
+> was asked for, on top of the same start-up. A run at `1M` with
+> `--concurrent-fragments 2` took **5.69 s** and exited 0, and the same command
+> with `--throttled-rate 100K --limit-rate 8M` printed its `Network:` line and
+> exited 0. Through a local forwarding proxy (`--proxy http://127.0.0.1:8899`)
+> the download exited **0**, the file was 4 MB exactly, and the proxy's own log
+> held its two GETs (own look-up first, then the download); pointed at a closed
+> port the same command failed with exit **1** after the usual three tries, so
+> the flag is used and not ignored. `--limit-rate fast` and
+> `--proxy 127.0.0.1:8080` were refused with exit **1** and a sentence, before
+> anything ran.
+>
+> **65 new tests** (862 → 927): 52 in `tests/test_network.py` (every value read,
+> every refusal, an option-shaped speed, a proxy with a password, an IPv6 proxy,
+> the fixed argument order, the note in words, the flags reaching `run_plain`
+> and the app, four bad values refused before anything is downloaded), two on
+> the job's arguments (Viddl's own count by default; all four flags in place
+> once, before `-P` and `--`), one on the queue (every item gets the same
+> network choices), four on `--plain` (the note, no note without flags, no
+> password in the log, nothing under `--quiet`) and three on the app (the note
+> on the qualities screen, nothing without flags, and the job the download
+> gets). `pyflakes` clean; coverage **93 %** overall (`network.py` **100 %**,
+> `download.py` **95 %**, `queue.py` **94 %**, `cli.py` **98 %**,
+> `tui/app.py` **90 %**).
+>
+> **Not done** (and not asked for here): there is no **Advanced** row in the
+> app, so the four choices come from the command line only — that row is what
+> **F13** (a config file) or a settings screen would make possible, and this
+> item says to expose it only once F13 exists; there is no env-var spelling of
+> these four (`VIDDL_YTDLP_ARGS` already passes any yt-dlp option, including
+> these); the fragment count is clamped to 1–32, so a site that wants more is
+> not served; and `--throttled-rate` only *can* help where a site offers more
+> than one source, since it is the engine that decides to try another.
 
 ### F12 — Live streams · **P3** · M
 
