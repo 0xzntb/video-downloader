@@ -102,6 +102,23 @@ def _say(stream: TextIO, text: object = "") -> None:
     stream.flush()
 
 
+class _Quiet:
+    """A stream that takes what is written and shows nothing (F10).
+
+    ``--quiet`` means "the path and nothing else", but it must not mean "and no
+    word about why it failed": failures keep going to the real stderr, and only
+    the sentences that are progress, menus and notes come here. Being a stream
+    rather than a flag through twenty functions is what keeps the difference
+    between the two kinds of line in exactly one place.
+    """
+
+    def write(self, text: str) -> int:
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
 class _Line:
     """One line of progress, overwritten in place.
 
@@ -331,6 +348,7 @@ def _set_up_ffmpeg(
     err: TextIO,
     stdin: TextIO,
     assume_yes: bool,
+    report: Optional[TextIO] = None,
 ) -> Optional[int]:
     """Fetch ffmpeg when the chosen quality needs it. ``None`` means carry on.
 
@@ -339,6 +357,8 @@ def _set_up_ffmpeg(
     the way a script agrees in advance. Without a terminal to ask on, it
     refuses rather than opening a 150 MB download nobody agreed to.
     """
+    # What it needs and how big it is: progress, not a failure (F10).
+    report = report or err
     about = _size_hint(engine)
     if chosen.kind == "audio":
         # A conversion, not a join: ffmpeg is what writes the new container, and
@@ -346,7 +366,7 @@ def _set_up_ffmpeg(
         need = f"{chosen.label} needs ffmpeg to write the {chosen.audio_format} file."
     else:
         need = f"{chosen.label} needs ffmpeg to join the video and audio streams."
-    _say(err, need)
+    _say(report, need)
 
     if not assume_yes:
         if not _is_interactive(stdin):
@@ -363,8 +383,8 @@ def _set_up_ffmpeg(
             _say(err, "Nothing was downloaded.")
             return 0
 
-    _say(err, f"Fetching ffmpeg{about} - this is a one-time download...")
-    line = _Line(err)
+    _say(report, f"Fetching ffmpeg{about} - this is a one-time download...")
+    line = _Line(report)
 
     def on_progress(done: int, total: Optional[int]) -> None:
         if total:
@@ -374,7 +394,7 @@ def _set_up_ffmpeg(
 
     try:
         tool = engine.ensure_ffmpeg(
-            on_status=lambda message: _say(err, message), on_progress=on_progress
+            on_status=lambda message: _say(report, message), on_progress=on_progress
         )
     except ToolError as exc:
         line.clear()
@@ -383,7 +403,7 @@ def _set_up_ffmpeg(
             _say(err, f"  {exc.hint}")
         return 1
     line.clear()
-    _say(err, f"ffmpeg is ready ({tool.version or 'ok'}).")
+    _say(report, f"ffmpeg is ready ({tool.version or 'ok'}).")
     return None
 
 
@@ -402,6 +422,7 @@ def _run_playlist_plain(
     stdin: TextIO,
     stdout: TextIO,
     stderr: TextIO,
+    report: Optional[TextIO] = None,
 ) -> int:
     """Download every video of a playlist, one at a time (F2).
 
@@ -409,7 +430,10 @@ def _run_playlist_plain(
     path of each saved file on stdout — so ``viddl --plain --playlist --yes``
     gives a script a list it can act on, in the order the site keeps them.
     """
-    _say(stderr, "Looking up the videos in the playlist...")
+    # Repetition of the sentence above: everything that is progress goes to
+    # ``report``, so ``--quiet`` can drop it while failures stay on stderr (F10).
+    report = report or stderr
+    _say(report, "Looking up the videos in the playlist...")
     try:
         listing = probe_playlist(engine, playlist_url, cookies=cookies)
     except ProbeCancelled:
@@ -420,22 +444,22 @@ def _run_playlist_plain(
         return 1
 
     entries = listing.entries
-    _say(stderr, listing.heading)
+    _say(report, listing.heading)
     if listing.truncated:
         # Saying so matters: a script that expects 900 files and gets 200 should
         # be able to find out why without reading the source.
         _say(
-            stderr,
+            report,
             f"  Viddl lists the first {len(entries)} videos of a playlist this "
             "long. Split it into shorter playlists to take the rest.",
         )
-    _say(stderr, f"Every video will be downloaded at {chosen.label}.")
+    _say(report, f"Every video will be downloaded at {chosen.label}.")
     if extras and extras.applicable(chosen):
-        _say(stderr, f"Extras: {extras.summary(chosen)}.")
+        _say(report, f"Extras: {extras.summary(chosen)}.")
 
     needs_ffmpeg = chosen.needs_ffmpeg or extras.needs_ffmpeg_for(chosen)
     if needs_ffmpeg and engine.find_ffmpeg() is None:
-        answer = _set_up_ffmpeg(engine, chosen, stderr, stdin, assume_yes)
+        answer = _set_up_ffmpeg(engine, chosen, stderr, stdin, assume_yes, report=report)
         if answer is not None:
             return answer
 
@@ -451,14 +475,14 @@ def _run_playlist_plain(
             _say(stderr, "Nothing was downloaded.")
             return 0
 
-    line = _Line(stderr)
+    line = _Line(report)
     # One piece of engine advice per run, not one per failed video: a playlist
     # of forty with a broken extractor must not print the same sentence forty
     # times.
     advised = {"done": False}
 
     def on_start(item) -> None:
-        _say(stderr, f"[{item.position}/{item.total}] {item.title}")
+        _say(report, f"[{item.position}/{item.total}] {item.title}")
 
     def on_progress(item, progress: Progress) -> None:
         line.show(_progress_line(progress))
@@ -474,9 +498,9 @@ def _run_playlist_plain(
             # it is on disk either way, but a script's log should be able to
             # tell a fetch from a recall.
             word = "Already had" if getattr(item, "already_had", False) else "Saved"
-            _say(stderr, f"{word} ({size})")
+            _say(report, f"{word} ({size})")
             for attachment in item.attachments:
-                _say(stderr, f"Also saved: {Path(attachment).name}")
+                _say(report, f"Also saved: {Path(attachment).name}")
             # One path per line, and nothing else: this is what a script reads.
             stdout.write(f"{item.path}\n")
             stdout.flush()
@@ -510,9 +534,9 @@ def _run_playlist_plain(
         return 130
 
     line.clear()
-    _say(stderr, result.headline)
+    _say(report, result.headline)
     if result.stopped:
-        _say(stderr, "Run the same command again to carry on from here.")
+        _say(report, "Run the same command again to carry on from here.")
         return 130
     return 0 if result.failed == 0 else 1
 
@@ -527,6 +551,7 @@ def run_plain(
     playlist: bool = False,
     extras: Optional[Extras] = None,
     archive: Optional[Path] = None,
+    quiet: bool = False,
     engine: Optional[Engine] = None,
     probe: Callable[..., MediaInfo] = probe_video,
     make_job: Callable[..., DownloadJob] = DownloadJob,
@@ -548,16 +573,23 @@ def run_plain(
     ``archive`` names a download archive to record in and skip from (F6):
     ``None`` — the default — is every run that did not ask for one, since
     skipping a download is a promise to keep, not a surprise to spring.
+
+    ``quiet`` keeps the stdout contract and drops the rest: the menu, the notes
+    and the progress line go nowhere, so a script that only wants the path gets
+    only the path (F10). Failures are not "the rest" — they still go to stderr,
+    because a command that fails silently is a command nobody can debug.
     """
     out = stdout or sys.stdout
     err = stderr or sys.stderr
+    # What the person reads while it works, as opposed to what went wrong.
+    report: TextIO = _Quiet() if quiet else err
     stdin = stdin or sys.stdin
     engine = engine or Engine()
     extras = extras or Extras()
 
     if cookies:
-        _say(err, cookies_mod.active_note(cookies_mod.label_for(cookies)))
-    _say(err, f"Looking up {url}")
+        _say(report, cookies_mod.active_note(cookies_mod.label_for(cookies)))
+    _say(report, f"Looking up {url}")
     try:
         info = probe(engine, url, cookies=cookies)
     except ToolError as exc:
@@ -572,18 +604,18 @@ def run_plain(
             _say(err, f"  {exc.hint}")
         return 1
 
-    _menu(info, chosen, err)
-    _say(err, f"Selected: {chosen.label}  {chosen.size_text}")
+    _menu(info, chosen, report)
+    _say(report, f"Selected: {chosen.label}  {chosen.size_text}")
     if extras:
         # What else is going into the file is part of what was asked for, so
         # a log records it before anything is fetched (F5). "none" is not
         # printed: the line below already says what was left out and why.
         if extras.applicable(chosen):
-            _say(err, f"Extras: {extras.summary(chosen)}.")
+            _say(report, f"Extras: {extras.summary(chosen)}.")
         skipped = extras.skipped(chosen)
         if skipped:
             _say(
-                err,
+                report,
                 f"Skipped: {skipped[0].label.lower()} - an audio download has "
                 "nowhere to put them.",
             )
@@ -608,19 +640,20 @@ def run_plain(
                 stdin=stdin,
                 stdout=out,
                 stderr=err,
+                report=report,
             )
-        _say(err, f"  Viddl will download the first of the {info.playlist.count} videos.")
-        _say(err, "  Add --playlist to download all of them.")
+        _say(report, f"  Viddl will download the first of the {info.playlist.count} videos.")
+        _say(report, "  Add --playlist to download all of them.")
     elif playlist:
         # --playlist on a single video is not an error: a script that always
         # passes it should keep working when a link happens not to be a list.
-        _say(err, "This link is one video, not a playlist; downloading it.")
+        _say(report, "This link is one video, not a playlist; downloading it.")
 
     needs_ffmpeg = chosen.needs_ffmpeg or extras.needs_ffmpeg_for(chosen)
     if needs_ffmpeg and engine.find_ffmpeg() is None:
         # ffmpeg is what joins the two streams; without it yt-dlp downloads both
         # and stops, and there is no finished video to report.
-        answer = _set_up_ffmpeg(engine, chosen, err, stdin, assume_yes)
+        answer = _set_up_ffmpeg(engine, chosen, err, stdin, assume_yes, report=report)
         if answer is not None:
             return answer
 
@@ -632,10 +665,10 @@ def run_plain(
         err.write(ascii_text(f"Download {chosen.label}? [y/N] "))
         err.flush()
         if stdin.readline().strip().lower() not in ("y", "yes"):
-            _say(err, "Nothing was downloaded.")
+            _say(report, "Nothing was downloaded.")
             return 0
 
-    line = _Line(err)
+    line = _Line(report)
 
     def on_progress(progress: Progress) -> None:
         line.show(_progress_line(progress))
@@ -678,12 +711,12 @@ def run_plain(
     # on stdout is the same either way — it is the file the user asked for —
     # but the log should be able to tell a fetch from a recall.
     if getattr(job, "already_had", False):
-        _say(err, f"Already had ({size})")
+        _say(report, f"Already had ({size})")
     else:
-        _say(err, f"Saved ({size})")
+        _say(report, f"Saved ({size})")
     for attachment in getattr(job, "attachments", []):
         # Beside the file, never instead of it (F5).
-        _say(err, f"Also saved: {Path(attachment).name}")
+        _say(report, f"Also saved: {Path(attachment).name}")
     # The path goes out exactly as it is: this line is what a script uses, and
     # a transliterated filename would point at a file that is not there.
     out.write(f"{path}\n")

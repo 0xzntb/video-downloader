@@ -157,6 +157,13 @@ class MergeJob(FakeJob):
         return super().run()
 
 
+class FailingJob(FakeJob):
+    """The site said no: the one thing --quiet must not swallow (F10)."""
+
+    def run(self):
+        raise ToolError("That video is not available any more.", "It may have been deleted.")
+
+
 class InterruptedJob(FakeJob):
     def run(self):
         raise KeyboardInterrupt()
@@ -694,6 +701,9 @@ def test_the_cli_hands_the_choices_to_the_plain_path(monkeypatch):
         "extras": Extras(),
         # No archive either, unless the run asked for one (F6).
         "archive": None,
+        # And nothing quiet: the menu and the notes are what a person reads
+        # when they did not ask for silence (F10).
+        "quiet": False,
     }
 
 
@@ -778,3 +788,27 @@ def test_a_video_the_archive_already_had_says_so_in_the_log():
     # The path on stdout is the same either way: that line is what a script
     # reads, and the file is the file.
     assert out.strip().endswith("A Very Real Video [dQw4w9WgXcQ].mp4")
+
+
+# ---------------------------------------------------------------------------
+# --quiet: the path, and nothing else (F10)
+# ---------------------------------------------------------------------------
+
+
+def test_quiet_prints_only_the_path_and_nothing_on_stderr():
+    """`path=$(viddl --plain --yes --quiet <link>)` should need no filtering."""
+    code, out, err = run(assume_yes=True, quiet=True)
+
+    assert code == 0
+    assert out == f"{DEST / 'A Very Real Video [dQw4w9WgXcQ].mp4'}\n"
+    assert err == ""
+
+
+def test_quiet_still_says_what_went_wrong():
+    """A silent failure is a command nobody can debug."""
+    code, out, err = run(job_class=FailingJob, assume_yes=True, quiet=True)
+
+    assert code == 1
+    assert out == ""
+    assert "not available any more" in err
+

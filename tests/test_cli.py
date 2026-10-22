@@ -648,3 +648,78 @@ def test_the_doctor_says_which_overrides_include_the_archive(capsys, monkeypatch
     monkeypatch.setenv("VIDDL_ARCHIVE", "1")
     assert main(["--doctor"]) == 0
     assert "VIDDL_ARCHIVE=1 (in use)" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# answers a script can read (F10)
+# ---------------------------------------------------------------------------
+
+
+def test_list_qualities_as_json_is_one_parseable_object(monkeypatch, capsys):
+    info = MediaInfo(
+        url=URL,
+        title="A Very Real Video",
+        uploader="Some Channel",
+        options=[
+            MediaOption(key="1080", label="1080p", size_bytes=20_000_000),
+            MediaOption(key="360", label="360p"),
+        ],
+    )
+    monkeypatch.setattr(
+        "viddl.download.probe_video", lambda engine, url, cookies="": info
+    )
+
+    assert main(["--json", "--list-qualities", URL]) == 0
+
+    out = capsys.readouterr().out
+    report = json.loads(out)
+    assert report["url"] == URL
+    assert report["title"] == "A Very Real Video"
+    assert [row["key"] for row in report["qualities"]] == ["1080", "360"]
+    assert report["qualities"][0]["size_bytes"] == 20_000_000
+    # An unknown size stays unknown, not zero.
+    assert report["qualities"][1]["size_bytes"] is None
+    # Nothing of the human layout leaked into the machine answer.
+    assert "A Very Real Video" in out
+    assert ":" + " " * 8 not in out
+
+
+def test_the_doctor_as_json_has_the_facts_and_no_sentences(capsys):
+    assert main(["--doctor", "--json"]) == 0
+
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert report["name"] == "Viddl"
+    assert "folders" in report and "ytdlp" in report and "ffmpeg" in report
+    assert captured.err == ""
+    # The human report's labels are not in the object.
+    assert "App folder:" not in captured.out
+
+
+def test_json_without_one_of_the_two_answers_is_refused(capsys):
+    assert main(["--json", URL]) == 1
+
+    err = capsys.readouterr().err
+    assert "--json works with --doctor or --list-qualities" in err
+    assert "--plain --yes --quiet" in err
+
+
+def test_quiet_without_plain_is_refused(capsys):
+    assert main(["--quiet", URL]) == 1
+
+    err = capsys.readouterr().err
+    assert "--quiet only work with --plain" in err
+    assert "viddl --plain --yes --quiet" in err
+
+
+def test_quiet_is_handed_to_the_plain_path(monkeypatch):
+    seen = {}
+
+    def fake_run_plain(url, **kwargs):
+        seen.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(plain, "run_plain", fake_run_plain)
+
+    assert main(["--plain", "--yes", "--quiet", URL]) == 0
+    assert seen["quiet"] is True

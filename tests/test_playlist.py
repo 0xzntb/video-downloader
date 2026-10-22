@@ -898,3 +898,27 @@ def test_an_unnamed_entry_is_not_given_a_made_up_title(tmp_path):
 
     assert [job.title for job in RecordingJob.started] == ["", ""]
     assert [item.title for item in summary.items] == ["Video 1", "Video 2"]
+
+
+def test_quiet_leaves_a_playlist_with_nothing_but_its_paths(monkeypatch):
+    """A script asking for silence gets the list of files and no commentary."""
+    RecordingJob.started.clear()
+    monkeypatch.setattr(plain, "probe_playlist", lambda *a, **k: listing())
+    out, err = io.StringIO(), io.StringIO()
+
+    code = plain.run_plain(
+        URL,
+        playlist=True,
+        assume_yes=True,
+        quiet=True,
+        engine=FakeEngine(),
+        probe=lambda engine, link, cookies="": media(),
+        make_job=RecordingJob,
+        downloads_dir=lambda: Path("/tmp/viddl-plain-playlist"),
+        stdout=out,
+        stderr=err,
+    )
+
+    assert code == 0
+    assert len(out.getvalue().splitlines()) == len(listing().entries)
+    assert err.getvalue() == ""

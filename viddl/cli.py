@@ -5,8 +5,9 @@ piece is also reachable from the command line:
 
 * ``viddl <link>``            open the app with the link already loaded
 * ``viddl --audio <link>``    open it on the audio options
-* ``viddl --uri viddl://…``   what the browser extension calls
-* ``viddl --doctor``          show where everything lives and whether it works
+* ``viddl --uri viddl://…``   what the browser extension calls  * ``viddl --doctor``          show where everything lives and whether it works
+  * ``viddl --json --list-qualities <link>``  the same answers, for a script (F10)
+
 * ``viddl --update``          fetch the newest video engine (yt-dlp)
 * ``viddl --update-ffmpeg``   fetch the newest ffmpeg build
 * ``viddl --extras subs <link>``  also add subtitles, details or a cover image
@@ -148,6 +149,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--doctor",
         action="store_true",
         help="show where Viddl keeps things and whether the tools are ready",
+    )
+    parser.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help=(
+            "with --doctor or --list-qualities: print one JSON object instead of "
+            "sentences, for scripts"
+        ),
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help=(
+            "with --plain: print only the saved path — progress and notes are "
+            "left out, failures still go to stderr"
+        ),
     )
     parser.add_argument(
         "--update",
@@ -296,13 +314,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _prepare_console()
     _enable_log_file()
 
-    if not args.plain and (args.quality or args.yes or args.playlist):
+    if not args.plain and (args.quality or args.yes or args.playlist or args.quiet):
         hint = "Try: viddl --plain --quality 720 <link>"
         if args.playlist and not (args.quality or args.yes):
             hint = "Try: viddl --plain --playlist <link>"
+        if args.quiet and not (args.quality or args.yes or args.playlist):
+            hint = "Try: viddl --plain --yes --quiet <link>"
         return _fail(
-            "--quality, --yes and --playlist only work with --plain.",
+            "--quality, --yes, --playlist and --quiet only work with --plain.",
             hint,
+        )
+
+    # --json is a shape for two read-only answers, not a download mode: the
+    # download path already has --quiet for scripts, and progress as JSON lines
+    # would be a second format to keep in step with the first (F10).
+    if args.json_output and not (args.doctor or args.list_qualities):
+        return _fail(
+            "--json works with --doctor or --list-qualities.",
+            "For a scripted download, use: viddl --plain --yes --quiet <link>",
         )
 
     # What to add besides the media (F5). Read here rather than in the two
@@ -341,6 +370,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
 
     if args.doctor:
+        if args.json_output:
+            # One object, the same facts, for a script (F10). Built from the
+            # places the sentences are built from, not from parsing them.
+            from . import machine
+
+            print(machine.dumps(machine.doctor_report()), end="")
+            return 0
         # The report says which overrides are set, what Viddl is actually
         # waiting for whether or not one is (R11), what it remembers between
         # runs (F6), and which browsers it could read a sign-in from (F1).
@@ -400,6 +436,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if advice:
                 hint = f"{hint}\n{advice}" if hint else advice
             return _fail(exc.message, hint)
+        if args.json_output:
+            from . import machine
+
+            print(machine.dumps(machine.qualities_report(info)), end="")
+            return 0
         print(info.heading)
         if info.uploader:
             print(info.uploader)
@@ -469,6 +510,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 playlist=bool(args.playlist),
                 extras=extras,
                 archive=archive,
+                # Only the path, for a script (F10). Failures still speak.
+                quiet=bool(args.quiet),
             )
         except KeyboardInterrupt:  # pragma: no cover - interactive
             return 130

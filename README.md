@@ -112,6 +112,9 @@ Nothing is installed system-wide and no configuration files are created.
 | Start on the audio options | `viddl --audio <link>` |
 | Download something that needs a sign-in | Choose **Sign in with my browser** on the qualities screen, or `viddl --cookies-from-browser auto <link>` |
 | Use it in a script, an old console or over SSH | `viddl --plain --yes <link>` |
+| Get only the saved path, for a script | `viddl --plain --yes --quiet <link>` |
+| See a link's qualities as JSON | `viddl --json --list-qualities <link>` |
+| Check the setup as JSON | `viddl --doctor --json` |
 | Pick the quality without a menu | `viddl --plain --quality 720 <link>` |
 | Take a whole playlist, or just some of it | Choose **Choose videos…** on the qualities screen (`p`), or `viddl --plain --playlist --yes <link>` |
 | Add subtitles, details or a cover image | Tick them in the **Extras** row on the qualities screen (`s`, `m`, `t`), or `viddl --extras subs,details,cover <link>` |
@@ -218,6 +221,40 @@ The run ends with `Saved all 9 videos.`; if one video fails the rest are still
 tried, its error is printed, and the exit code is 1 rather than 0 — a partial
 result never looks like a complete one. On a link that is a single video,
 `--playlist` changes nothing.
+
+`--quiet` keeps that contract and drops the rest: the menu, the notes and the
+progress line go nowhere, so **stdout is the path and stderr is empty** — no
+filtering needed:
+
+```sh
+path=$(viddl --plain --yes --quiet "https://www.youtube.com/watch?v=...")
+```
+
+What went wrong still goes to stderr, so a failure can be read afterwards; the
+exit code stays 0/1/130 as above.
+
+### For scripts: JSON
+
+`--json` prints one object instead of lined-up sentences. It works with the two
+read-only answers — `viddl --json --list-qualities <link>` and
+`viddl --doctor --json` — and is refused for anything else, because a download
+already has `--quiet`.
+
+```sh
+viddl --json --list-qualities "https://www.youtube.com/watch?v=..." | jq -r '.qualities[].key'
+```
+
+The shapes, with every key always present:
+
+| Object | Keys |
+| --- | --- |
+| qualities | `url`, `title`, `uploader`, `duration` (seconds, or `null`), `extractor`, `live`, `playlist` (`title`, `count`, `url`, `note`, or `null`), `qualities` |
+| each quality | `key` (what `--quality` accepts), `label`, `kind` (`video`/`audio`), `height`, `size_bytes` (`null` when unknown — never `0`), `size_is_estimate`, `needs_ffmpeg`, `format_selector`, `merge_container`, `audio_format`, `keeps_source_audio`, `note` |
+| doctor | `name`, `version`, `folders` (`app`, `downloads`, `log`), `problem`, `ytdlp` and `ffmpeg` (`path`, `version`, `origin`, `origin_text`, or `null`), `ytdlp_note`, `environment` (`name`, `value`, `problem`), `timeout_seconds` (`null` when unset), `archive` (`enabled`, `path`), `recent` (`path`), `cookies` (`browsers`: `key`, `label`), `platform` |
+
+The rows are in the order the app shows them, so `qualities[0]` is what pressing
+Enter would pick. Failures are still human sentences on stderr with exit code 1,
+and nothing is printed on stdout when there is no answer.
 
 ## Audio only
 

@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **28 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F8
-in section 3, U4 in section 4, D2–D3 in section 6.
+Progress so far: **29 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F8
+and F10 in section 3, U4 in section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
 down keeps a secret, and a web page can no longer start it *doing* anything —
@@ -1557,7 +1557,7 @@ from. There is no desktop notification and no terminal bell.
 **Do:** opt-in notifications (`notify-send`, `osascript`, PowerShell toast) with a
 terminal-bell fallback, plus a "when done" toggle on the progress screen.
 
-### F10 — Machine-readable output · **P2** · M
+### F10 — Machine-readable output · **P2** · M · ✅ **Done**
 
 `--list-qualities` prints human text. `--doctor` prints human text. Neither is
 parseable, which blocks scripts and the Playwright/desktop front-ends people
@@ -1566,6 +1566,55 @@ build on top of tools like this.
 **Do:** `--json` for `--list-qualities`, `--doctor` and (optionally) download
 progress as JSON lines; a `--quiet` that prints only the final path. Small, and
 it multiplies the project's usefulness.
+
+> **Done, in two pieces that answer the same question differently.** `--json`
+> prints one object instead of lined-up sentences, for the two read-only
+> answers a script actually asks for: `viddl --json --list-qualities <link>` and
+> `viddl --doctor --json`. Both are built in a new `viddl/machine.py` from the
+> same places the sentences are built from — not by parsing the text — so the
+> two cannot drift apart, and the shapes are documented in the README with
+> every key always present. A missing size is `null` and never `0`, a missing
+> engine is `null` and never an empty string, and rows are in the order the app
+> shows them, so `qualities[0]` is what pressing Enter would pick. Output is
+> sorted, indented and UTF-8 (a Japanese title survives), which makes it
+> diffable and testable.
+>
+> `--quiet` is the download half: with `--plain` it keeps the stdout contract
+> and drops everything else, so **stdout is the path and stderr is empty**. The
+> split is one stream (`plain._Quiet`) rather than a flag in twenty functions:
+> progress, the menu and the notes go there, while failures keep the real
+> stderr — a command that fails silently is a command nobody can debug. It
+> works for a playlist too (one path per line, nothing else).
+>
+> **Measured against the real CLI and real yt-dlp 2026.10.21** on an MP4 served
+> over local HTTP: `--doctor --json` produced a parseable object with **0 bytes
+> on stderr**; `--json --list-qualities` gave `title: first`, rows
+> `[('best','video',None), ('mp3-320','audio',None), …]` and `playlist: null`,
+> parsed with `json.load` and nothing on stderr; `--plain --yes --quiet
+> --quality best` exited **0** with `stdout` exactly
+> `/tmp/f10e2e/out/first [first].mp4` and **stderr 0 bytes**, while the same
+> run without `--quiet` wrote **16 stderr lines** (menu, `Selected:`, progress,
+> `Saved`).
+>
+> **15 new tests** (847 → 862): seven on the objects (the list is the screen's
+> order, a `null` size stays `null`, a playlist summary carries its count, the
+> doctor carries the facts the sentences carry, a missing engine is `null`,
+> `dumps` is sorted and ends with one newline, non-ASCII survives), five on the
+> CLI (`--list-qualities --json` parses, `--doctor --json` has no human labels,
+> `--json` alone is refused with the `--quiet` hint, `--quiet` alone is
+> refused, `--quiet` reaches `run_plain`), two on the quiet download path (path
+> only, and failures still speak) and one on a quiet playlist. `pyflakes` clean;
+> coverage **93 %** overall (`machine.py` **100 %**, `cli.py` **98 %**,
+> `plain.py` **88 %**).
+>
+> **Not done:** download progress as JSON lines — deliberately, because
+> `--quiet` already gives a script the one thing it needs and a second format
+> would be a second contract to keep in step; `--json` does not cover failures
+> (they stay sentences on stderr with exit code 1) or `--update`; the flag has
+> to come *before* `--list-qualities` (`viddl --json --list-qualities <link>`)
+> because argparse reads the value that follows the option; and the doctor's
+> `environment` list carries the raw values, exactly as the text form already
+> prints them.
 
 ### F11 — Bandwidth and network control · **P3** · S
 
