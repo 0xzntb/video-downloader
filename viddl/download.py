@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from . import appdata
+from . import history
 from .cookies import cookies_args
 from .engine import Engine, ToolError, is_windows
 from .errors import explain
@@ -41,6 +42,14 @@ _OUTPUT_TEMPLATE = "%(title)s [%(id)s].%(ext)s"
 _DESTINATION_RE = re.compile(r"Destination:\s*(.+?)\s*$")
 _MERGE_RE = re.compile(r'Merging formats into "(.+)"')
 _ALREADY_RE = re.compile(r"^\[download\]\s+(.+?)\s+has already been downloaded")
+#: yt-dlp's words when the download archive already holds this video (F6).
+#: Two shapes, both measured against the real tool: after extraction it is
+#: ``[download] <id>: <title> has already been recorded in the archive``, and
+#: when the id can be read straight from the link it is the same line without
+#: the title. The id is the first field either way.
+_ARCHIVED_RE = re.compile(
+    r"^\[download\] (.+?): (?:.* )?has already been recorded in the archive$"
+)
 _BAD_SUFFIXES = (".part", ".ytdl", ".temp", ".tmp")
 #: Files beside the media that are part of a download but are not it (F5):
 #: the cover picture, and the captions before they are embedded. They must
@@ -143,6 +152,18 @@ def _is_intermediate(path: Path) -> bool:
 def _is_attachment(path: Path) -> bool:
     """True for something downloaded *around* the media, not the media (F5)."""
     return path.suffix.lower() in _ATTACHMENT_SUFFIXES + _CAPTION_SUFFIXES
+
+
+def _title_from_name(path: Path) -> str:
+    """The video's title as the file name spells it: ``Title [id].mp4`` -> ``Title``.
+
+    Used for the recent list when the caller had no title of its own: the
+    output template is what named the file, so it is what can name it back.
+    """
+    stem = path.stem
+    if stem.endswith("]") and " [" in stem:
+        return stem.rsplit(" [", 1)[0].strip()
+    return stem
 
 
 @dataclass
@@ -557,6 +578,8 @@ class DownloadJob:
         cookies: str = "",
         playlist_item: Optional[int] = None,
         extras: Optional[Extras] = None,
+        archive: Optional[Path] = None,
+        title: str = "",
     ):
         self.engine = engine
         self.url = url
@@ -574,6 +597,21 @@ class DownloadJob:
         # What is being added to the media besides the media itself (F5).
         # Nothing, unless it was asked for: ``Extras()`` is the default.
         self.extras = extras or Extras()
+        # The download archive, when the run asked for one (F6). yt-dlp
+        # records each finished video in it and refuses to fetch one it
+        # already holds — which is what makes the same link, or the rest of a
+        # playlist, cost nothing the second time. ``None`` is every run that
+        # did not ask, which is the default: skipping a download is a promise
+        # to keep, not a surprise to spring.
+        self.archive = Path(archive) if archive is not None else None
+        # The video's own title, for the recent list. It is the one thing the
+        # file name cannot always give back cleanly (a title that was itself
+        # ``Name [abc].mp4``), so a caller that knows it passes it in.
+        self.title = title
+        # True once this run turned out to be a video an earlier download had
+        # already put on disk (F6). The file is real and where it always was;
+        # the flag only stops the app from claiming it just fetched it.
+        self.already_had = False
         # Filled in by ``_deliver``: the cover picture is saved beside the
         # finished file, and the screen says so instead of leaving an
         # unexplained image in the folder.
@@ -759,6 +797,13 @@ class DownloadJob:
         if self.option.merge_container and self.option.needs_ffmpeg:
             args += ["--merge-output-format", self.option.merge_container]
         args += self.engine.ffmpeg_location_args()
+        if self.archive is not None:
+            # What has already been fetched is remembered across runs (F6):
+            # yt-dlp records a finished video here and skips it next time,
+            # which is also what makes re-running a playlist take only the
+            # videos it has not seen. It comes before Viddl's own paths so a
+            # user's extra options (R3) cannot point it somewhere else.
+            args += ["--download-archive", str(self.archive)]
         args += [
             # Down into the job's own folder, not straight into the downloads
             # folder: another window may be writing there.
@@ -891,7 +936,10 @@ class DownloadJob:
                         raise self._after_failure(exc, attempt) from exc
                     raise
                 else:
-                    return self._deliver(finished)
+                    path, already_had = finished
+                    if already_had:
+                        return self._deliver_existing(path)
+                    return self._deliver(path)
         except DownloadCancelled:
             # Stopped by the user: what was fetched stays, so running this
             # download again carries on from it rather than starting over.
@@ -904,18 +952,93 @@ class DownloadJob:
         raise AssertionError("unreachable: every path returns or raises")  # pragma: no cover
 
     # -- one attempt ---------------------------------------------------------
-    def _attempt(self, args: List[str], before: Dict[Path, float]) -> Path:
-        """Run the downloader once, exactly as a single-attempt run would."""
-        # Each attempt speaks for itself: lines from the attempt that failed are
-        # not evidence about this one, and carrying them over would both grow
-        # without bound and report the wrong reason if this one fails too.
-        self._lines.clear()
-        if self.progress.phase == "retry":
-            # The wait is over. Saying so matters: the screen decides whether to
-            # move the bar from the phase, so leaving it on "retry" would keep
-            # the download looking paused for as long as it took to report.
-            self._emit(status="Downloading…", speed="", eta="", phase="download")
+    def _attempt(self, args: List[str], before: Dict[Path, float]) -> Tuple[Path, bool]:
+        """Run the downloader once; the finished file, and whether it was already here.
 
+        The second half is the download archive (F6). A video it already holds
+        is not fetched again — but the file from the earlier download is in
+        the downloads folder, not in this run's working folder, so "the run
+        produced no file" can mean *you already have it* rather than *it
+        broke*. The difference is found here, where the only evidence either
+        way lives: the line yt-dlp printed, and the folder the first run
+        delivered to.
+        """
+        # A second go happens only after the archive gave up a line for a
+        # video whose file has since been deleted from disk.
+        skipped_by_archive = False
+        for round_number in (0, 1):
+            # Each attempt speaks for itself: lines from the attempt that failed are
+            # not evidence about this one, and carrying them over would both grow
+            # without bound and report the wrong reason if this one fails too.
+            self._lines.clear()
+            if self.progress.phase == "retry":
+                # The wait is over. Saying so matters: the screen decides whether to
+                # move the bar from the phase, so leaving it on "retry" would keep
+                # the download looking paused for as long as it took to report.
+                self._emit(status="Downloading…", speed="", eta="", phase="download")
+
+            code = self._run_once(args)
+            if code != 0:
+                raw = "\n".join(self._lines[-60:])
+                friendly = explain(raw, code)
+                # ``temporary`` is what ``run`` decides from: it is the single
+                # place that says whether trying again is worth the wait.
+                raise ToolError(
+                    friendly.message,
+                    friendly.hint,
+                    raw=raw,
+                    temporary=friendly.temporary,
+                )
+
+            finished = self._find_output(before)
+            if finished is not None:
+                return finished, False
+
+            video_id = self._archived_video_id()
+            if video_id is None:
+                break
+            skipped_by_archive = True
+            existing = self._existing_download(video_id)
+            if existing is not None:
+                return existing, True
+            if round_number == 0 and history.forget_video(self.archive, video_id):
+                # The archive said this video was downloaded, but the file is
+                # not there any more. Forget the line and ask once more: a
+                # memory that blocks a download the user asked for is worse
+                # than no memory at all.
+                continue
+            break
+
+        if self.needs_ffmpeg and not skipped_by_archive:
+            # Measured, not assumed: yt-dlp exits 0 having downloaded both
+            # streams when ffmpeg is missing and only the merge fails, so
+            # "it finished" is not the same as "there is a file". The
+            # streams it left are not the video the menu promised, and
+            # reporting one of them would hand the user an audio fragment
+            # with a .mp4-shaped name.
+            #
+            # A run the archive skipped is exempt: nothing was fetched, so
+            # ffmpeg never had the chance to fail, and naming it here would
+            # send the user to set up a tool that was not the problem.
+            raise ToolError(
+                "The video and audio could not be joined into one file.",
+                "That needs ffmpeg, which is not available. Run "
+                "`viddl --update-ffmpeg` (about 150 MB), or choose a quality "
+                "that does not need it.",
+                raw="\n".join(self._lines[-60:]),
+            )
+        raise ToolError(
+            "The download finished but the file could not be found.",
+            f"Look in your Downloads folder: {self.out_dir}",
+        )
+
+    def _run_once(self, args: List[str]) -> int:
+        """Start the downloader, read what it says, and wait for it to end.
+
+        The exit code is the answer. Split out of :meth:`_attempt` because
+        that method may run this twice: once against the archive's answer, and
+        once after the archive has been corrected (F6).
+        """
         options: Dict[str, object] = {}
         if is_windows():
             # A group of its own, so taskkill can find the whole tree.
@@ -963,39 +1086,97 @@ class DownloadJob:
                 self._cleanup_partial()
             raise DownloadCancelled()
 
-        if code != 0:
-            raw = "\n".join(self._lines[-60:])
-            friendly = explain(raw, code)
-            # ``temporary`` is what ``run`` decides from: it is the single
-            # place that says whether trying again is worth the wait.
-            raise ToolError(
-                friendly.message,
-                friendly.hint,
-                raw=raw,
-                temporary=friendly.temporary,
-            )
+        return code or 0
 
-        finished = self._find_output(before)
-        if finished is None:
-            if self.needs_ffmpeg:
-                # Measured, not assumed: yt-dlp exits 0 having downloaded both
-                # streams when ffmpeg is missing and only the merge fails, so
-                # "it finished" is not the same as "there is a file". The
-                # streams it left are not the video the menu promised, and
-                # reporting one of them would hand the user an audio fragment
-                # with a .mp4-shaped name.
-                raise ToolError(
-                    "The video and audio could not be joined into one file.",
-                    "That needs ffmpeg, which is not available. Run "
-                    "`viddl --update-ffmpeg` (about 150 MB), or choose a quality "
-                    "that does not need it.",
-                    raw="\n".join(self._lines[-60:]),
-                )
-            raise ToolError(
-                "The download finished but the file could not be found.",
-                f"Look in your Downloads folder: {self.out_dir}",
-            )
-        return finished
+    # -- what the archive already had (F6) -----------------------------------
+    def _archived_video_id(self) -> Optional[str]:
+        """The video the download archive says it already holds, if it refused.
+
+        yt-dlp exits 0 for a skip — from the outside it looks like a success —
+        so this line is the only thing telling the run that no file was ever
+        going to appear.
+        """
+        if self.archive is None:
+            return None
+        for line in reversed(self._lines):
+            match = _ARCHIVED_RE.match(line.strip())
+            if match:
+                return match.group(1).strip()
+        return None
+
+    def _existing_download(self, video_id: str) -> Optional[Path]:
+        """The file an earlier download of this video left in the output folder.
+
+        The output template names every file after its video
+        (``Title [id].mp4``), so the bracketed id is the thing to look for —
+        and the brackets are what keep a short id from matching the end of a
+        longer one. Attachments and half-finished files are skipped, the same
+        as anywhere else a file is reported as "the download": a cover image
+        is not the video, and a ``.part`` file is not finished (F5).
+
+        Several can exist — the same video at another quality, or the same
+        quality downloaded twice — and the newest is the one to show: it is
+        what the most recent run would have delivered.
+        """
+        marker = f"[{video_id}]"
+        newest: Optional[Tuple[float, Path]] = None
+        try:
+            candidates = list(self.out_dir.iterdir())
+        except OSError:
+            return None
+        for entry in candidates:
+            try:
+                if not entry.is_file() or marker not in entry.name:
+                    continue
+            except OSError:  # pragma: no cover - a file that vanished mid-scan
+                continue
+            if _is_intermediate(entry) or _is_attachment(entry):
+                continue
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:  # pragma: no cover - a file that vanished mid-scan
+                continue
+            if newest is None or mtime > newest[0]:
+                newest = (mtime, entry)
+        return newest[1] if newest else None
+
+    def _deliver_existing(self, path: Path) -> Path:
+        """Report a file an earlier download already put there (F6).
+
+        Nothing is moved: the file is where the user left it, and claiming a
+        fresh name for it would litter the folder with a copy of a copy. The
+        working folder goes — it held nothing — and the recent list is told,
+        so the file floats back to the top of it, where the eye expects the
+        thing just asked for.
+        """
+        self.already_had = True
+        self._discard_work()
+        self.progress = Progress(
+            status="Already downloaded — using the file you have.",
+            percent=100.0,
+            phase="done",
+        )
+        if self.on_progress:
+            self.on_progress(replace(self.progress))
+        self._remember(path)
+        return path
+
+    # -- the recent list (F6) ------------------------------------------------
+    def _remember(self, path: Path) -> None:
+        """Tell the recent list about a file this job is delivering.
+
+        Called for both endings — freshly fetched, and already on disk —
+        because both are the user getting the file they asked for, and the
+        list remembers what they *have*, not what the network carried.
+        ``history.record`` never raises (see that module), so this needs no
+        guard: a list that cannot be written is a lost nicety, never a reason
+        to fail a download that worked.
+        """
+        history.record(
+            url=self.url,
+            path=path,
+            title=self.title or _title_from_name(path),
+        )
 
     # -- delivering the result ----------------------------------------------
     def _deliver(self, source: Path) -> Path:
@@ -1027,6 +1208,9 @@ class DownloadJob:
         self.progress = Progress(status="Done", percent=100.0, phase="done")
         if self.on_progress:
             self.on_progress(self.progress)
+        # Told what just landed, while the size and the folder are all here
+        # (F6): the recent list is built from this, not from guessing later.
+        self._remember(target)
         return target
 
     def _deliver_attachments(self, source: Path, target: Path) -> None:

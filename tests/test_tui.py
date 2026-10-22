@@ -17,17 +17,19 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
-from textual.widgets import Button, Static
+from textual.widgets import Button, Input, Static
 
 from viddl.download import DownloadCancelled, ProbeCancelled, Progress
 from viddl.engine import Tool, ToolError
 from viddl.extras import Extras
 from viddl.formats import MediaInfo, MediaOption, parse_info
+from viddl.history import Entry
 from viddl.protocol import build_scheme_url
 from viddl.tui.app import (
     DownloadScreen,
     HomeScreen,
     OptionsScreen,
+    RecentScreen,
     ResultScreen,
     Services,
     SignIn,
@@ -110,6 +112,8 @@ class FakeJob:
         on_log=None,
         cookies="",
         extras=None,
+        archive=None,
+        title="",
     ):
         self.option = option
         self.out_dir = Path(out_dir)
@@ -118,6 +122,10 @@ class FakeJob:
         self.cookies = cookies
         # What was added to the download besides the media (F5).
         self.extras = extras
+        # The download archive this run asked for, and the title the video
+        # is recorded under in the recent list (F6).
+        self.archive = archive
+        self.title = title
         self.attachments = []
         self.cancelled = False
 
@@ -291,10 +299,10 @@ class StubProbe:
 
 
 def make_services(
-    tmp_path: Path, engine=None, info=None, job_class=FakeJob, browsers=()
+    tmp_path: Path, engine=None, info=None, job_class=FakeJob, browsers=(), recent=None
 ) -> Services:
     info = info if info is not None else parse_info(INFO_JSON)
-    return Services(
+    services = Services(
         engine=engine or FakeEngine(),
         probe=StubProbe(info),
         make_job=job_class,
@@ -303,6 +311,11 @@ def make_services(
         # running the suite must not change what the suite sees (F1).
         browsers=lambda: list(browsers),
     )
+    if recent is not None:
+        # What the recent list holds (F6), said by the test rather than read
+        # from a file: the screen is what is being tested, not the file.
+        services.recent = recent
+    return services
 
 
 async def settle(pilot, rounds: int = 6) -> None:
@@ -2048,3 +2061,245 @@ async def test_a_failed_look_up_with_no_browser_offers_nothing_to_choose(tmp_pat
         note = shown(app.screen, "#options-note")
         assert "needs a browser on this computer" in note
         assert "Sign in with my browser" not in note
+
+
+# ---------------------------------------------------------------------------
+# the recent list (F6)
+#
+# What was saved lately, with the three things anybody does with it: look at
+# where the file is, open its folder or copy the path, and take it again —
+# which is the same road a pasted link takes, no more and no less.
+# ---------------------------------------------------------------------------
+
+
+def recent_entries(tmp_path: Path):
+    """Two rows, one of them an hour old, standing in for the file on disk."""
+    now = time.time()
+    return [
+        Entry(
+            path=tmp_path / "Downloads" / "A Very Real Video [dQw4w9WgXcQ].mp4",
+            title="A Very Real Video",
+            url=URL,
+            size=2048,
+            when=now,
+        ),
+        Entry(
+            path=tmp_path / "Downloads" / "Another Video [abc123].mp4",
+            title="Another Video",
+            url="https://www.youtube.com/watch?v=abc123",
+            size=1024,
+            when=now - 3600,
+        ),
+    ]
+
+
+class AlreadyHadJob(FakeJob):
+    """A download the archive recognised: the file is real, no fetch happened."""
+
+    def run(self):
+        path = super().run()
+        self.already_had = True
+        return path
+
+
+@pytest.mark.asyncio
+async def test_the_home_screen_offers_the_recent_list(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        assert isinstance(app.screen, HomeScreen)
+
+        await pilot.click("#recent")
+        await settle(pilot)
+        assert isinstance(app.screen, RecentScreen)
+
+
+@pytest.mark.asyncio
+async def test_the_recent_key_belongs_to_the_screen_not_the_link_box(tmp_path):
+    """`r` opens the list — and while the link box is being typed in, it is
+    a letter somebody is typing."""
+    app = ViddlApp(services=make_services(tmp_path, recent=lambda: recent_entries(tmp_path)))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        # Typing into the link box is typing into the link box.
+        await pilot.press("r")
+        assert isinstance(app.screen, HomeScreen)
+        assert app.screen.query_one("#url-input", Input).value == "r"
+
+        # Away from the box, the key is the shortcut the footer promises.
+        app.screen.query_one("#url-input", Input).value = ""
+        app.screen.query_one("#recent", Button).focus()
+        await pilot.press("r")
+        await settle(pilot)
+        assert isinstance(app.screen, RecentScreen)
+
+
+@pytest.mark.asyncio
+async def test_the_recent_screen_lists_what_was_saved(tmp_path):
+    entries = recent_entries(tmp_path)
+    app = ViddlApp(services=make_services(tmp_path, recent=lambda: entries))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.click("#recent")
+        await settle(pilot)
+
+        rows = list(app.screen.query(".choice-row"))
+        assert [row.row_label for row in rows] == ["A Very Real Video", "Another Video"]
+        assert rows[0].row_size == "2.0 KB"
+        assert "1 h ago" in rows[1].row_note
+        assert "2 saved downloads" in shown(app.screen, "#recent-sub")
+        # The question this screen answers, answered for the highlighted row.
+        assert str(entries[0].path) in shown(app.screen, "#recent-note")
+
+
+@pytest.mark.asyncio
+async def test_a_recent_row_takes_the_link_back_to_the_qualities(tmp_path):
+    """The same road a pasted link takes: probed and offered, never fetched."""
+    services = make_services(tmp_path, recent=lambda: recent_entries(tmp_path))
+    probe = services.probe
+    app = ViddlApp(services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.click("#recent")
+        await settle(pilot)
+
+        await pilot.press("enter")
+        await settle(pilot)
+
+        assert isinstance(app.screen, OptionsScreen)
+        assert app.state.url == URL
+        assert probe.calls and probe.calls[0]["url"] == URL
+        assert app.state.job is None, "a row started a download of its own"
+
+
+@pytest.mark.asyncio
+async def test_a_recent_row_whose_file_is_gone_is_shown_and_marked(tmp_path):
+    entries = [
+        Entry(
+            path=tmp_path / "Downloads" / "Deleted Film [gone].mp4",
+            title="Deleted Film",
+            url=URL,
+            size=1024,
+            when=time.time(),
+            missing=True,
+        )
+    ]
+    app = ViddlApp(services=make_services(tmp_path, recent=lambda: entries))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.click("#recent")
+        await settle(pilot)
+
+        rows = list(app.screen.query(".choice-row"))
+        assert len(rows) == 1, "a row whose file is gone is history, not nothing"
+        assert "file is gone" in rows[0].row_note
+        assert "no longer on disk" in shown(app.screen, "#recent-note")
+
+
+@pytest.mark.asyncio
+async def test_the_empty_recent_list_says_so(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path, recent=lambda: []))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.click("#recent")
+        await settle(pilot)
+
+        assert shown(app.screen, "#recent-sub") == "Nothing saved yet."
+        assert "Download something and it will appear" in shown(app.screen, "#recent-note")
+        for button_id in ("redownload", "open", "copy"):
+            assert app.screen.query_one(f"#{button_id}", Button).disabled
+
+
+@pytest.mark.asyncio
+async def test_an_entry_without_a_link_says_so_rather_than_opening_an_empty_box(tmp_path):
+    """Only reachable through a hand-edited list — and it still must not lie."""
+    entries = [
+        Entry(path=tmp_path / "Downloads" / "Old [file].mp4", title="Old", url="", size=1)
+    ]
+    app = ViddlApp(services=make_services(tmp_path, recent=lambda: entries))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.click("#recent")
+        await settle(pilot)
+
+        with captured_notifications(app) as toasts:
+            await pilot.press("enter")
+            await settle(pilot)
+
+        assert isinstance(app.screen, RecentScreen), "an empty box was opened instead"
+        assert app.state.url == ""
+        assert any("does not remember its link" in message for message in toasts.messages)
+
+
+@pytest.mark.asyncio
+async def test_a_recent_row_opens_its_folder_and_copies_its_path(tmp_path, monkeypatch):
+    opened = []
+    monkeypatch.setattr(
+        "viddl.tui.app._open_folder", lambda path: opened.append(path) or None
+    )
+    entries = recent_entries(tmp_path)
+    app = ViddlApp(services=make_services(tmp_path, recent=lambda: entries))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.click("#recent")
+        await settle(pilot)
+
+        await pilot.press("o")
+        assert opened == [entries[0].path]
+
+        copied = []
+        app.copy_to_clipboard = lambda text: copied.append(text)
+        await pilot.press("c")
+        await settle(pilot)
+        assert copied == [str(entries[0].path)]
+
+        # And the second row is the second row's file, not the first's.
+        await pilot.press("down")
+        await settle(pilot)
+        await pilot.press("o")
+        assert opened == [entries[0].path, entries[1].path]
+
+
+@pytest.mark.asyncio
+async def test_opening_the_recent_list_never_touches_the_engine(tmp_path):
+    """Looking at what you have is not asking the site for anything."""
+    engine = FakeEngine()
+    app = ViddlApp(
+        services=make_services(tmp_path, engine=engine, recent=lambda: recent_entries(tmp_path))
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        calls = engine.ytdlp_calls
+        await pilot.click("#recent")
+        await settle(pilot)
+
+        assert isinstance(app.screen, RecentScreen)
+        assert engine.ytdlp_calls == calls
+
+
+@pytest.mark.asyncio
+async def test_the_result_screen_says_already_had_rather_than_a_quality_it_lacks(tmp_path):
+    """The archive handed back a file fetched at some other quality; the row
+    would otherwise claim a quality the file never had."""
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path, job_class=AlreadyHadJob))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+
+        assert isinstance(app.screen, ResultScreen)
+        sub = shown(app.screen, "#result-sub")
+        assert sub.startswith("Already had")
+        assert "1080p" not in sub
+        assert "2.0 KB" in sub

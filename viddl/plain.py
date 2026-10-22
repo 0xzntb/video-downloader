@@ -395,6 +395,7 @@ def _run_playlist_plain(
     playlist_url: str,
     cookies: str,
     extras: Extras,
+    archive: Optional[Path],
     assume_yes: bool,
     make_job: Callable[..., DownloadJob],
     downloads_dir: Callable[[], Path],
@@ -469,7 +470,11 @@ def _run_playlist_plain(
                 size = human_size(Path(item.path).stat().st_size)
             except OSError:  # pragma: no cover - a file that vanished
                 size = "?"
-            _say(stderr, f"Saved ({size})")
+            # "Already had" for a file the download archive recognised (F6):
+            # it is on disk either way, but a script's log should be able to
+            # tell a fetch from a recall.
+            word = "Already had" if getattr(item, "already_had", False) else "Saved"
+            _say(stderr, f"{word} ({size})")
             for attachment in item.attachments:
                 _say(stderr, f"Also saved: {Path(attachment).name}")
             # One path per line, and nothing else: this is what a script reads.
@@ -490,6 +495,7 @@ def _run_playlist_plain(
         downloads_dir(),
         cookies=cookies,
         extras=extras,
+        archive=archive,
         make_job=make_job,
         on_start=on_start,
         on_progress=on_progress,
@@ -520,6 +526,7 @@ def run_plain(
     cookies: str = "",
     playlist: bool = False,
     extras: Optional[Extras] = None,
+    archive: Optional[Path] = None,
     engine: Optional[Engine] = None,
     probe: Callable[..., MediaInfo] = probe_video,
     make_job: Callable[..., DownloadJob] = DownloadJob,
@@ -537,6 +544,10 @@ def run_plain(
     ``cookies`` names a browser whose own cookie store yt-dlp may read for this
     one download (F1). The sentence saying so is printed before anything is
     fetched, because a script's log should record what was asked of the site.
+
+    ``archive`` names a download archive to record in and skip from (F6):
+    ``None`` — the default — is every run that did not ask for one, since
+    skipping a download is a promise to keep, not a surprise to spring.
     """
     out = stdout or sys.stdout
     err = stderr or sys.stderr
@@ -590,6 +601,7 @@ def run_plain(
                 playlist_url=url,
                 cookies=cookies,
                 extras=extras,
+                archive=archive,
                 assume_yes=assume_yes,
                 make_job=make_job,
                 downloads_dir=downloads_dir,
@@ -638,6 +650,8 @@ def run_plain(
             on_progress=on_progress,
             cookies=cookies,
             extras=extras,
+            archive=archive,
+            title=info.title,
         )
         path = job.run()
     except KeyboardInterrupt:
@@ -660,7 +674,13 @@ def run_plain(
         size = human_size(Path(path).stat().st_size)
     except OSError:  # pragma: no cover - a file that vanished after the move
         size = "?"
-    _say(err, f"Saved ({size})")
+    # "Already had" for a file the download archive recognised (F6): the path
+    # on stdout is the same either way — it is the file the user asked for —
+    # but the log should be able to tell a fetch from a recall.
+    if getattr(job, "already_had", False):
+        _say(err, f"Already had ({size})")
+    else:
+        _say(err, f"Saved ({size})")
     for attachment in getattr(job, "attachments", []):
         # Beside the file, never instead of it (F5).
         _say(err, f"Also saved: {Path(attachment).name}")

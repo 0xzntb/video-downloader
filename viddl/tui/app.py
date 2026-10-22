@@ -7,6 +7,10 @@ Four screens, in the order you meet them:
 3. **Download** - progress, speed and ETA, cancellable at any time
 4. **Done** - the full path of the saved file
 
+And one beside that order: **Recent** (F6), reached from the home screen,
+listing what has been saved lately with a way to open it, copy its path or
+take it again.
+
 Everything is driveable with the mouse (click a quality, click a button) and
 with the keyboard (arrows, Enter, Tab, Escape).
 """
@@ -36,6 +40,7 @@ from .. import cookies as cookies_mod
 from .. import download as download_mod
 from .. import engine as engine_mod
 from .. import errors
+from .. import history as history_mod
 from ..download import (
     DownloadCancelled,
     DownloadJob,
@@ -85,6 +90,9 @@ class Services:
     #: Fetches the newest engine, returning what was there before and after
     #: (F3). Swappable so an update can be tested without downloading 3 MB.
     update_engine: Callable[..., Tuple[Optional[Tool], Tool]] = _update_engine
+    #: What the recent list holds (F6). Swappable, so a test says what was
+    #: downloaded instead of reading a file from the machine running it.
+    recent: Callable[[], List[history_mod.Entry]] = history_mod.entries
 
 
 @dataclass
@@ -125,6 +133,10 @@ class State:
     #: screen so going to the playlist and back, or resuming a stopped
     #: download, keeps the same answer.
     extras: Extras = field(default_factory=Extras)
+    #: Where the download archive lives, when this run asked for one (F6).
+    #: ``None`` is every run that did not: skipping a download is a promise
+    #: to keep, not a surprise to spring.
+    archive: Optional[Path] = None
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +216,8 @@ class ViddlApp(App):
         background: $background;
     }
 
-    #home-panel, #options-panel, #download-panel, #stopped-panel, #result-panel {
+    #home-panel, #options-panel, #download-panel, #stopped-panel, #result-panel,
+    #recent-panel {
         width: 86;
         max-width: 98%;
         height: auto;
@@ -382,6 +395,7 @@ class ViddlApp(App):
         prefer_audio: bool = False,
         cookies: str = "",
         extras: Optional[Extras] = None,
+        archive: Optional[Path] = None,
         services: Optional[Services] = None,
     ) -> None:
         super().__init__()
@@ -397,6 +411,8 @@ class ViddlApp(App):
             # Extras named on the command line arrive switched on; the screen
             # can still switch them off, because they are the same toggles (F5).
             extras=extras or Extras(),
+            # The download archive for every job this session starts (F6).
+            archive=archive,
         )
         problem = appdata.ensure_dirs()
         if problem is not None:
@@ -620,6 +636,10 @@ class HomeScreen(Screen):
     BINDINGS = [
         Binding("escape", "quit_app", "Quit", show=True),
         Binding("tab", "focus_next", "Next", show=False),
+        # The recent list is one key away, because "where did that file go?"
+        # is asked with the app already open (F6). It cannot clash with
+        # typing: while the link box has the focus, every letter goes there.
+        Binding("r", "recent", "Recent", show=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -633,6 +653,7 @@ class HomeScreen(Screen):
             )
             with Horizontal(classes="buttons"):
                 yield Button("Find qualities", variant="primary", id="go")
+                yield Button("Recent", id="recent")
                 yield Button("Update engine", id="update-engine")
                 yield Button("Quit", id="quit")
             yield Static("", id="engine-status")
@@ -711,10 +732,16 @@ class HomeScreen(Screen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "go":
             self.submit_url()
+        elif event.button.id == "recent":
+            self.action_recent()
         elif event.button.id == "update-engine":
             self.action_update_engine()
         elif event.button.id == "quit":
             self.app.action_quit_app()
+
+    def action_recent(self) -> None:
+        """Show what has been saved lately (F6)."""
+        self.app.push_screen(RecentScreen())
 
     def action_update_engine(self) -> None:
         self.query_one("#update-engine", Button).disabled = True
@@ -1595,6 +1622,11 @@ class DownloadScreen(Screen):
                 on_progress=lambda progress: app._post(self.on_progress, progress),
                 cookies=app.state.cookies_browser,
                 extras=app.state.extras,
+                # The archive this run asked for, and the video's own title
+                # for the recent list (F6): the screen has both, and a job
+                # left to guess the title would have only the file name.
+                archive=app.state.archive,
+                title=app.state.info.title if app.state.info else "",
             )
             app.state.job = job
             path = job.run()
@@ -1645,6 +1677,7 @@ class DownloadScreen(Screen):
             app.services.downloads_dir(),
             cookies=app.state.cookies_browser,
             extras=app.state.extras,
+            archive=app.state.archive,
             make_job=app.services.make_job,
             on_start=lambda item: app._post(self.on_item_start, item),
             on_progress=lambda item, progress: app._post(
@@ -1689,8 +1722,11 @@ class DownloadScreen(Screen):
 
     def on_item_end(self, item: QueueItem) -> None:
         if item.path is not None:
+            # "Already had" for a file the download archive recognised (F6):
+            # the file is real either way, and only the word differs.
+            word = "Already had" if item.already_had else "Saved"
             self.query_one("#download-detail", Static).update(
-                _plain(f"Saved {Path(item.path).name}")
+                _plain(f"{word} {Path(item.path).name}")
             )
 
     def finish_queue(self, summary: QueueSummary) -> None:
@@ -1751,10 +1787,13 @@ class DownloadScreen(Screen):
         self.app.state.saved_path = path
         job = self.app.state.job
         attachments = list(getattr(job, "attachments", []))
+        already_had = bool(getattr(job, "already_had", False))
         self.app.state.job = None
         if not self._has_a_screen():
             return
-        self.app.push_screen(ResultScreen(saved_path=path, attachments=attachments))
+        self.app.push_screen(
+            ResultScreen(saved_path=path, attachments=attachments, already_had=already_had)
+        )
 
     def finish_error(self, error: ToolError) -> None:
         self.app.state.job = None
@@ -1889,6 +1928,7 @@ class ResultScreen(Screen):
         saved_path: Optional[Path] = None,
         error: Optional[ToolError] = None,
         attachments: Optional[List[Path]] = None,
+        already_had: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -1896,6 +1936,10 @@ class ResultScreen(Screen):
         self.error = error
         # Pictures saved beside the file by the extras (F5).
         self.attachments = list(attachments or [])
+        # True when the download archive recognised the video and handed back
+        # the file from an earlier download (F6). The file is real and where
+        # it always was; the word "fetched" would not be.
+        self.already_had = already_had
 
     def compose(self) -> ComposeResult:
         with Vertical(id="result-panel"):
@@ -1928,7 +1972,10 @@ class ResultScreen(Screen):
         option = self.app.state.option
         label = option.label if option is not None else "File"
         size = human_size(path.stat().st_size) if path.exists() else "?"
-        sub = f"{label}  ·  {size}"
+        # "Already had" instead of the quality, when the archive recognised
+        # the video (F6): the row would otherwise claim a quality for a file
+        # that was fetched at some other one, and this screen does not lie.
+        sub = f"{'Already had' if self.already_had else label}  ·  {size}"
         if self.attachments:
             # The image is beside the file, so it is named rather than left to
             # be discovered in the folder later (F5).
@@ -1976,6 +2023,168 @@ class ResultScreen(Screen):
                 self.app.go_home()
             else:
                 self.app.action_quit_app()
+
+
+class RecentScreen(Screen):
+    """What Viddl has saved lately (F6): open it, copy the path, take it again.
+
+    The list comes from a small file in the app's own folder, so it survives
+    restarts and needs nothing running to keep it up. A row whose file has
+    since been deleted still appears — with that said out loud — because
+    hiding it would be a second surprise on top of the missing file.
+
+    **Download again** is the one action that leaves this screen, and it puts
+    the link back in the box and opens the qualities, exactly as a pasted
+    link would. Nothing is downloaded by pressing it: the promise the app
+    makes to any link arriving from outside (S5) is kept here too.
+    """
+
+    BINDINGS = [
+        Binding("escape", "go_back", "Back", show=True),
+        Binding("enter", "redownload", "Download again", show=False),
+        Binding("o", "open_folder", "Open folder", show=False),
+        Binding("c", "copy_path", "Copy path", show=False),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="recent-panel"):
+            yield Static("Recent downloads", id="brand")
+            yield Static("", classes="sub", id="recent-sub")
+            yield ChoiceList(id="choices")
+            with Horizontal(classes="buttons"):
+                yield Button("Download again", variant="primary", id="redownload")
+                yield Button("Open folder", id="open")
+                yield Button("Copy path", id="copy")
+                yield Button("Back", id="back")
+            yield Static("", id="recent-note")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.entries = list(self.app.services.recent())
+        table = self.query_one("#choices", ChoiceList)
+        rows: List[Tuple[str, str, str, Any]] = []
+        for entry in self.entries:
+            rows.append((entry.title or entry.path.name, entry.size_text, entry.row_note, entry))
+        table.set_choices(rows)
+        empty = not rows
+        for button_id in ("redownload", "open", "copy"):
+            self.query_one(f"#{button_id}", Button).disabled = empty
+        if empty:
+            self.query_one("#recent-sub", Static).update("Nothing saved yet.")
+            self.query_one("#recent-note", Static).update(
+                _plain(
+                    "Files you download with Viddl are listed here, newest first, "
+                    "with a way to open the folder, copy the path, or take one "
+                    "again. Download something and it will appear."
+                )
+            )
+            return
+        count = len(rows)
+        self.query_one("#recent-sub", Static).update(
+            f"{count} saved download{'s' if count != 1 else ''}  ·  newest first"
+        )
+        self._show_row(self.entries[0])
+        table.focus()
+
+    def _show_row(self, entry: history_mod.Entry) -> None:
+        """Say where the highlighted file is — the question this screen answers."""
+        lines = [str(entry.path)]
+        if entry.missing:
+            lines.append("That file is no longer on disk — only this row is left.")
+        lines.append("Enter takes it again  ·  o opens its folder  ·  c copies the path")
+        self.query_one("#recent-note", Static).update(_plain("\n".join(lines)))
+
+    def _entry(self) -> Optional[history_mod.Entry]:
+        value = self.query_one("#choices", ChoiceList).highlighted_value
+        return value if isinstance(value, history_mod.Entry) else None
+
+    # -- interaction --------------------------------------------------------
+    def on_choice_list_highlighted(self, message: ChoiceList.Highlighted) -> None:
+        if isinstance(message.value, history_mod.Entry):
+            self._show_row(message.value)
+
+    def on_choice_list_selected(self, message: ChoiceList.Selected) -> None:
+        """Clicking a row is the same as the button under it, not a download.
+
+        The list takes Enter and a click while it has the focus, which is the
+        road most people will take; the button is for the mouse that is
+        already down there. Either way this is one action, and it is only
+        ever *asking* for the qualities (S5).
+        """
+        message.stop()
+        self.action_redownload()
+
+    # -- actions ------------------------------------------------------------
+    def action_go_back(self) -> None:
+        self.app.pop_screen()
+
+    def action_redownload(self) -> None:
+        """Put the link back in the box and ask for its qualities (F6).
+
+        The same road a pasted link takes: the qualities screen probes the
+        link and offers the rows, and nothing is downloaded until one is
+        chosen. A row whose link was never recorded — only reachable through
+        a hand-edited list — says so instead of opening an empty box.
+        """
+        entry = self._entry()
+        if entry is None:
+            self.notify("Nothing to download again.", severity="warning")
+            return
+        link = safe_video_link(entry.url)
+        if link is None:
+            self.notify(
+                "That entry does not remember its link, so it cannot be fetched again.",
+                severity="warning",
+                timeout=6,
+            )
+            return
+        state = self.app.state
+        state.url = link
+        state.info = None
+        state.option = None
+        state.saved_path = None
+        state.playlist = None
+        state.playlist_entries = []
+        self.app.push_screen(OptionsScreen())
+
+    def action_open_folder(self) -> None:
+        entry = self._entry()
+        if entry is None:
+            return
+        problem = _open_folder(entry.path)
+        if problem:
+            self.notify(problem, severity="warning")
+
+    def action_copy_path(self) -> None:
+        entry = self._entry()
+        if entry is None:
+            return
+        # Copying can be asynchronous, so it has to run in a worker: calling
+        # the coroutine directly would silently do nothing at all.
+        self.run_worker(self._copy(str(entry.path)))
+
+    async def _copy(self, text: str) -> None:
+        try:
+            result = self.app.copy_to_clipboard(text)
+            if inspect.isawaitable(result):
+                await result
+            self.notify("Full path copied to the clipboard.", timeout=3)
+        except Exception as exc:  # pragma: no cover - terminal dependent
+            self.notify(
+                f"Could not copy automatically ({exc}). The path is shown above.",
+                severity="warning",
+            )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        button_id = event.button.id
+        if button_id == "redownload":
+            self.action_redownload()
+        elif button_id == "open":
+            self.action_open_folder()
+        elif button_id == "copy":
+            self.action_copy_path()
+        elif button_id == "back":
+            self.action_go_back()
 
 
 class QueueResultScreen(Screen):
@@ -2106,6 +2315,7 @@ def run(
     audio: bool = False,
     cookies: str = "",
     extras: Optional[Extras] = None,
+    archive: Optional[Path] = None,
     services: Optional[Services] = None,
 ) -> None:
     """Start the terminal app."""
@@ -2114,6 +2324,7 @@ def run(
         prefer_audio=audio,
         cookies=cookies,
         extras=extras,
+        archive=archive,
         services=services,
     )
     app.run()

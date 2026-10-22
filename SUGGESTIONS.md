@@ -10,7 +10,7 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **25 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F5
+Progress so far: **26 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F6
 in section 3, U4 in section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -1337,7 +1337,7 @@ with "needs ffmpeg" surfaced the same way the quality rows already do it.
 > panel at 80×24, the row hit-tested and not overlapping the buttons) and
 > driven by the pilot, but not looked at by a human eye.
 
-### F6 — Download archive and a recent-downloads list · **P2** · M
+### F6 — Download archive and a recent-downloads list · **P2** · M · ✅ **Done**
 
 Re-downloading something already on disk is a common frustration; the app notices
 only via yt-dlp's own "has already been downloaded" line (`_ALREADY_RE`), which
@@ -1347,6 +1347,75 @@ it handles — but nothing is remembered between runs.
 playlist downloads incremental), plus a "Recent" screen built from a small JSON
 file (path, title, size, when) with Reveal/Copy/Re-download actions. That is also
 the natural home for **F9** notifications.
+
+> **Done, and the archive turned out to be two features and a bug-fix.** A new
+> `viddl/history.py` owns both memories: `recent.json` (link, path, title, size,
+> when — the last fifty) and `download-archive.txt` (yt-dlp's own format, one
+> `extractor id` per finished video). `--download-archive` turns the second on
+> for a run, as does `VIDDL_ARCHIVE=1`; **off is the default**, because skipping
+> a download you asked for is a promise to keep, not a surprise to spring. Both
+> front doors read it (`DownloadJob(archive=…)`, threaded through `QueueJob`,
+> `plain.run_plain` and `State`), so the app and `--plain` agree about what
+> "already have this" means, and `--doctor` prints the archive's state and where
+> the recent list lives.
+>
+> **The bug the archive exposed: a skip looked like a broken download.** yt-dlp
+> exits **0** when the archive refuses a video, so `DownloadJob` saw success, no
+> file in its working folder, no ffmpeg merge and raised *"the download finished
+> but the file could not be found"* — for a run that did exactly what it was
+> told. `_attempt` now reads the skip line the tool prints (`[download] <id>:
+> <title> has already been recorded in the archive`, measured on 2026.10.21),
+> joins it with the id in the file name (`Title [id].mp4`, the output template's
+> own marker), and hands back the newest file in the Downloads folder whose name
+> carries it — attachments and `.part` files excluded, as everywhere else. That
+> path is then reported as **"Already had"** instead of "Saved": in `--plain`,
+> on the queue's per-item line, and on the result screen, which also drops the
+> quality label for such a file, since it was fetched at some other quality.
+>
+> **A memory that blocks a download is worse than no memory.** If the archive
+> remembers a video but the file is gone (tidied Downloads folder), the run drops
+> that line with `history.forget_video()` and asks **once** more — the archive
+> catching up with the disk rather than the disk being asked to prove itself.
+>
+> **The Recent screen** is one key from the home screen (`r`, or the **Recent**
+> button) and lists the last fifty newest-first with size and "12 min ago" /
+> "3 days ago"; `Enter` or a click asks for the qualities screen with the link
+> refilled (nothing downloads, same promise as a link from outside, **S5**),
+> `o` opens the folder, `c` copies the path. A row whose file has since been
+> deleted stays in the list marked *"file is gone"* — hiding it would be a
+> second surprise on top of the missing file — and a hand-edited `recent.json`
+> (every field coerced, a bad row skipped) degrades the list, never the screen.
+> Both files are written through a temporary name and `os.replace` under one
+> lock, so a read never sees half a list and two downloads finishing in the same
+> second cannot lose a row.
+>
+> **Measured end to end with real yt-dlp 2026.10.21** (no ffmpeg; a
+> 200,020-byte MP4 served over local HTTP), through the real CLI front door
+> (`--plain --yes --download-archive`): run 1 printed **`Saved (195.3 KB)`** and
+> wrote `generic clip` to the archive; run 2 printed **`Already had
+> (195.3 KB)`**, exited 0, and left **one** file in the folder; `recent.json`
+> held **one** row (the same path de-duplicated, not a second line). Deleting
+> the file and running again dropped the archive line, re-downloaded, and
+> reported **`Saved`** with the file back on disk — 200,020 bytes, same name. At
+> the job level the same link twice gave `already_had=False` then `True` with
+> the identical path, and the skip line was read from the tool's own output
+> rather than from a stub. The files came out **0600** for `recent.json` and
+> **0644** for `download-archive.txt` — yt-dlp's own mode, inside the app's
+> **0700** folder — which is what the module docstring now says, instead of
+> claiming both.
+>
+> **58 new tests** (763 → 821), `pyflakes` clean, coverage **93 %** overall
+> (`history.py` **95 %**, `download.py` **95 %**, `tui/app.py` **89 %**), and the
+> README has a "What is remembered between runs" section, the flag in its table,
+> and `VIDDL_ARCHIVE` in the environment table.
+>
+> **Not done:** the archive cannot be switched on from inside the app — there is
+> no settings screen yet (**F13**), so it is a flag or an environment variable;
+> the recent list has no search, no "clear", and no way to remove one row from
+> the app; **F9** notifications were not built on top of it; and incremental
+> playlists are held by tests through `QueueJob` with a fake job, not measured on
+> a real playlist link (the archive arguments are the same ones the single-video
+> run used, and that part *was* measured).
 
 ### F7 — Batch queue · **P2** · L
 
@@ -1715,7 +1784,9 @@ project's "nothing leaves your machine" promise.
 7. **F1** (cookies) — turns a documented dead end into a feature.
 8. **E7** (one real end-to-end test) + **E10** (coverage floor).
 9. **U1**/**U2**/**U3** (theme, title, done screen) — visible quality.
-10. **F6**/**F9** (archive + recents + notifications) — the features that make it a daily tool.
+10. ✅ **F6** (archive + recents) — **done**; **F9** (notifications) is the other
+    half of the same "make it a daily tool" idea, and now has a natural home
+    to hang off.
 
 ---
 

@@ -10,6 +10,7 @@ piece is also reachable from the command line:
 * ``viddl --update``          fetch the newest video engine (yt-dlp)
 * ``viddl --update-ffmpeg``   fetch the newest ffmpeg build
 * ``viddl --extras subs <link>``  also add subtitles, details or a cover image
+* ``viddl --download-archive <link>``  skip videos already downloaded (F6)
 * ``viddl --plain <link>``    download a line at a time, in plain ASCII
 * ``viddl --register-protocol``          wire up the ``viddl://`` hand-off
 * ``viddl --install-browser-extension``  copy the extension out for loading
@@ -132,6 +133,15 @@ def build_parser() -> argparse.ArgumentParser:
             "let the download use the cookies your browser already has, for a "
             "site that asks you to sign in: chrome, firefox, edge, brave, "
             "safari, or auto for whichever is installed"
+        ),
+    )
+    parser.add_argument(
+        "--download-archive",
+        action="store_true",
+        help=(
+            "remember what has been downloaded (in Viddl's own folder) and skip "
+            "videos you already have; also makes re-running a playlist take "
+            "only the videos it has not fetched yet"
         ),
     )
     parser.add_argument(
@@ -307,6 +317,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.download_dir:
         os.environ["VIDDL_DOWNLOAD_DIR"] = str(Path(args.download_dir).expanduser())
 
+    # The download archive is switched on for the whole session the same way
+    # the download folder is: both are read where a job is built, deep in the
+    # stack, and neither is worth a parameter threaded through every screen
+    # (F6). The variable is checked like every other one, so a value that is
+    # not a yes or no is refused in ``--doctor`` rather than guessed at.
+    if args.download_archive:
+        os.environ[appdata.ENV_ARCHIVE] = "1"
+
     # One browser name, checked before it reaches a command line (F1). What
     # comes back is a key from the closed list, or nothing at all.
     cookies = ""
@@ -324,9 +342,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if args.doctor:
         # The report says which overrides are set, what Viddl is actually
-        # waiting for whether or not one is (R11), and which browsers it could
-        # read a sign-in from (F1).
-        for line in [*Engine().report(), appdata.timeout_note(), cookies_mod.doctor_note()]:
+        # waiting for whether or not one is (R11), what it remembers between
+        # runs (F6), and which browsers it could read a sign-in from (F1).
+        for line in [
+            *Engine().report(),
+            appdata.archive_note(),
+            appdata.recent_note(),
+            appdata.timeout_note(),
+            cookies_mod.doctor_note(),
+        ]:
             print(line)
         return 0
 
@@ -387,6 +411,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Anything else opens the app.
     url = ""
     audio = bool(args.audio)
+    # What remembers what has already been downloaded, when the run asked for
+    # one (F6). Both front doors get the same answer, so the app and --plain
+    # agree about what "already have this" means.
+    archive = appdata.archive_path() if appdata.archive_enabled() else None
 
     raw = args.uri or args.target or ""
     if raw.lower().startswith("viddl:"):
@@ -440,6 +468,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 cookies=cookies,
                 playlist=bool(args.playlist),
                 extras=extras,
+                archive=archive,
             )
         except KeyboardInterrupt:  # pragma: no cover - interactive
             return 130
@@ -447,7 +476,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     from .tui.app import run
 
     try:
-        run(url=url, audio=audio, cookies=cookies, extras=extras)
+        run(url=url, audio=audio, cookies=cookies, extras=extras, archive=archive)
     except KeyboardInterrupt:  # pragma: no cover - interactive
         return 130
     except OSError as exc:

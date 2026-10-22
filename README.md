@@ -117,6 +117,8 @@ Nothing is installed system-wide and no configuration files are created.
 | Add subtitles, details or a cover image | Tick them in the **Extras** row on the qualities screen (`s`, `m`, `t`), or `viddl --extras subs,details,cover <link>` |
 | See what qualities a link has, without downloading | `viddl --list-qualities <link>` |
 | Save somewhere else for one run | `viddl --download-dir ~/Videos <link>` |
+| Skip videos you have already downloaded | `viddl --download-archive <link>` (see [What is remembered](#what-is-remembered-between-runs)) |
+| See what you have downloaded lately | Press `r` (or **Recent**) on the home screen |
 | Check that everything is set up | `viddl --doctor` |
 | Fetch the newest video engine (the usual fix for a link that stopped working) | Press **Update engine** on the home or failure screen, or `viddl --update` |
 | Fetch the newest ffmpeg build | `viddl --update-ffmpeg` |
@@ -148,6 +150,15 @@ overwritten by accident:
 
 When it finishes, the app shows the **full path** on screen, along with buttons
 to copy it or open the folder.
+
+Every finished download is also written to a small **recent list** in Viddl's
+own folder. **Recent** on the home screen (`r`) shows the last fifty: the
+title, the size, when it was saved and where. A row's folder can be opened
+(`o`, **Open folder**), its full path copied (`c`, **Copy path**), or the file
+taken again (`Enter`, **Download again**) — which puts the link back in the box
+and asks the site for its qualities, exactly as if it had been pasted. A file
+that has since been deleted stays in the list, marked as gone, rather than
+quietly disappearing.
 
 If that name is already taken, the new file becomes `Me at the zoo [jNQXAC9IVRw]
 (2).mp4` rather than replacing what is there — including when two Viddl windows
@@ -440,10 +451,33 @@ and a link from a page can never reach the command line as an option. The whole
 model — including what a page *can* do, and what this deliberately does not
 defend against — is in [SECURITY.md](SECURITY.md).
 
+## What is remembered between runs
+
+Two small files in Viddl's own folder, both readable by your account alone:
+
+* **The recent list** (`recent.json`) — the last fifty downloads: link, path,
+  title, size and when. This is what the **Recent** screen shows, and it is
+  always on.
+* **The download archive** (`download-archive.txt`) — one line per video
+  yt-dlp has finished. This one is off unless you ask for it:
+  `viddl --download-archive <link>` turns it on for that run (or set
+  `VIDDL_ARCHIVE=1`), and every download that run — app or `--plain` — records
+  itself and skips a video that is already in it. Re-running a playlist takes
+  only the videos it has not fetched yet.
+
+What the archive does, said plainly: asking for a video you already have
+hands back the file already in your Downloads folder instead of downloading it
+again. It recognises the *video*, not the file — so if you deleted that file,
+the next run notices and downloads it again (the line is dropped from the
+archive); and if you want the same video at a *different* quality while the
+archive is on, it will still hand back the file you have, because that is what
+it was asked to do. Leave it off, as by default, and every click downloads.
+
 ## Environment variables
 
-Five variables change where Viddl looks, one changes what it asks for, and one
-changes how long it waits for the network. None are needed for normal use; they
+Five variables change where Viddl looks, one changes what it asks for, one
+changes how long it waits for the network, and one says what is remembered
+between runs. None are needed for normal use; they
 exist for tests, shared machines, slow links and unusual setups. `viddl --doctor` prints the ones that are set and what became of
 each, so none of them is a secret.
 
@@ -455,6 +489,7 @@ each, so none of them is a secret.
 | `VIDDL_FFMPEG` | The ffmpeg to use, instead of the one Viddl finds or downloads. | Same, for ffmpeg. |
 | `VIDDL_YTDLP_ARGS` | Extra options for yt-dlp, split like a shell splits them: `--limit-rate 2M --cookies-from-browser chrome`. | Slow a link down, use your browser's cookies for a site that asks you to sign in, or pass anything else yt-dlp understands. |
 | `VIDDL_TIMEOUT` | How many seconds to wait for the network, per request: `45` or `45s`, between 1 and 3600. | Give a slow link more patience, or make a site that never answers fail in seconds instead of minutes. |
+| `VIDDL_ARCHIVE` | Keep a download archive and skip videos already in it: `1`/`on`/`yes`, or `0`/`off`/`no` to say so out loud. | Take a playlist again and only get the new videos; never fetch the same link twice. |
 
 Each value is checked before it is used, and one that cannot be honoured is
 ignored rather than half-applied. A value that looks like an option
@@ -462,8 +497,10 @@ ignored rather than half-applied. A value that looks like an option
 folder that is really a file is refused, rather than failing later in a way
 nobody can explain; and a bare program name means your `PATH` — never the
 working directory, which is not something Viddl gets to choose when a browser
-starts it. `viddl --doctor` says which of the six are in use, which were
-ignored, and why.
+starts it. `viddl --doctor` says which of the seven are in use, which were
+ignored, and why. `VIDDL_ARCHIVE` is the one with no path to check — a value
+that is neither a yes nor a no is refused (and shown as such by the doctor)
+rather than quietly read as "off".
 
 `VIDDL_TIMEOUT` moves every network wait together, because they only make sense
 as a set: yt-dlp's socket timeout (20 s by default), the longer bound on a whole

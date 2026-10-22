@@ -324,6 +324,8 @@ class RecordingJob:
         cookies="",
         playlist_item=None,
         extras=None,
+        archive=None,
+        title="",
     ):
         self.url = url
         self.option = option
@@ -331,6 +333,10 @@ class RecordingJob:
         self.playlist_item = playlist_item
         # What was added to each download besides the media (F5).
         self.extras = extras
+        # The archive each item shares, and the title each one is recorded
+        # under in the recent list (F6).
+        self.archive = archive
+        self.title = title
         self.attachments = []
         self.out_dir = Path(out_dir)
         self.cancelled = False
@@ -773,3 +779,86 @@ async def test_the_running_screen_says_how_many_videos_are_going(tmp_path):
         assert "Stopped" in shown(app.screen, "#result-sub")
         assert len(RecordingJob.started) == 1
     BlockingAppJob.release.clear()
+
+
+# ---------------------------------------------------------------------------
+# the download archive through the queue and --plain (F6)
+#
+# One archive for a whole playlist is what makes re-running it incremental:
+# every item records itself in the same file, and an item already in it is
+# skipped and reported as had rather than fetched again.
+# ---------------------------------------------------------------------------
+
+
+class HadItJob(RecordingJob):
+    """A download the archive recognised: the file is real, the fetch did not happen."""
+
+    def run(self):
+        path = super().run()
+        self.already_had = True
+        return path
+
+
+def test_every_item_gets_the_archive_and_its_own_title(tmp_path):
+    playlist = listing()
+    archive = tmp_path / "download-archive.txt"
+    queue = QueueJob(
+        FakeEngine(),
+        playlist,
+        playlist.entries,
+        video_option(),
+        Path("/tmp/viddl-queue-tests"),
+        archive=archive,
+        make_job=RecordingJob,
+    )
+
+    queue.run()
+
+    assert [job.archive for job in RecordingJob.started] == [archive] * len(playlist.entries)
+    # Each item is recorded under its own title: a queue left to guess would
+    # give the recent list the title of the video it is not downloading.
+    assert [job.title for job in RecordingJob.started] == [
+        entry.title for entry in playlist.entries
+    ]
+
+
+def test_an_item_the_archive_already_had_is_reported_as_had():
+    playlist = listing()
+    queue = QueueJob(
+        FakeEngine(),
+        playlist,
+        playlist.entries,
+        video_option(),
+        Path("/tmp/viddl-queue-tests"),
+        make_job=HadItJob,
+    )
+
+    summary = queue.run()
+
+    assert summary.done == len(playlist.entries)
+    assert all(item.already_had for item in summary.items)
+
+
+def test_the_plain_playlist_says_already_had_instead_of_saved(monkeypatch):
+    """A script's log should be able to tell a fetch from a recall."""
+    monkeypatch.setattr(plain, "probe_playlist", lambda *a, **k: listing())
+    out, err = io.StringIO(), io.StringIO()
+
+    code = plain.run_plain(
+        URL,
+        playlist=True,
+        assume_yes=True,
+        engine=FakeEngine(),
+        probe=lambda engine, link, cookies="": media(),
+        make_job=HadItJob,
+        downloads_dir=lambda: Path("/tmp/viddl-plain-playlist"),
+        stdout=out,
+        stderr=err,
+    )
+
+    assert code == 0
+    assert err.getvalue().count("Already had") == len(listing().entries)
+    assert "Saved (" not in err.getvalue()
+    # The paths on stdout are the same either way: that line is what a script
+    # reads, and the file is the file.
+    assert out.getvalue().count("\n") == len(listing().entries)

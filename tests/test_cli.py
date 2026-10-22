@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from viddl import appdata, cli
+from viddl import appdata, cli, plain
 from viddl.cli import main
 from viddl.engine import Tool, ToolError
 from viddl.formats import MediaInfo, MediaOption
@@ -359,7 +359,7 @@ def _capture_run(monkeypatch) -> dict:
     seen: dict = {}
     monkeypatch.setattr(
         "viddl.tui.app.run",
-        lambda *, url, audio, cookies="", extras=None: seen.update(url=url, audio=audio),
+        lambda *, url, audio, **kwargs: seen.update(url=url, audio=audio),
     )
     return seen
 
@@ -440,7 +440,7 @@ def test_extras_named_on_the_command_line_reach_the_app(monkeypatch):
     seen: dict = {}
     monkeypatch.setattr(
         "viddl.tui.app.run",
-        lambda *, url, audio, cookies="", extras=None: seen.update(extras=extras),
+        lambda *, url, audio, extras=None, **kwargs: seen.update(extras=extras),
     )
 
     assert main(["--extras", "subs,cover", URL]) == 0
@@ -452,7 +452,7 @@ def test_no_extras_means_the_app_starts_with_none(monkeypatch):
     seen: dict = {}
     monkeypatch.setattr(
         "viddl.tui.app.run",
-        lambda *, url, audio, cookies="", extras=None: seen.update(extras=extras),
+        lambda *, url, audio, extras=None, **kwargs: seen.update(extras=extras),
     )
 
     assert main([URL]) == 0
@@ -499,7 +499,7 @@ def test_a_scheme_shaped_argument_is_refused(monkeypatch, capsys):
 
 
 def test_no_real_terminal_is_explained(monkeypatch, capsys):
-    def no_terminal(*, url, audio, cookies="", extras=None):
+    def no_terminal(*, url, audio, **kwargs):
         raise OSError("Inappropriate ioctl for device")
 
     monkeypatch.setattr("viddl.tui.app.run", no_terminal)
@@ -552,7 +552,7 @@ def _capture_cookies(monkeypatch) -> dict:
     seen: dict = {}
     monkeypatch.setattr(
         "viddl.tui.app.run",
-        lambda *, url, audio, cookies="", extras=None: seen.update(cookies=cookies),
+        lambda *, url, audio, cookies="", **kwargs: seen.update(cookies=cookies),
     )
     return seen
 
@@ -598,3 +598,53 @@ def test_an_unknown_browser_is_refused_before_anything_runs(capsys):
 def test_the_doctor_says_which_browsers_could_sign_in(capsys):
     assert main(["--doctor"]) == 0
     assert "Cookies:" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# --download-archive (F6)
+#
+# The switch is the session's, the way --download-dir's is: both are read
+# where a job is built, deep in the stack, and neither is worth threading
+# through every screen.
+# ---------------------------------------------------------------------------
+
+
+def test_the_archive_flag_switches_the_archive_on_for_the_session(monkeypatch):
+    monkeypatch.delenv("VIDDL_ARCHIVE", raising=False)
+    seen: dict = {}
+    monkeypatch.setattr(
+        "viddl.tui.app.run", lambda *, url, audio, **kwargs: seen.update(kwargs)
+    )
+
+    assert main(["--download-archive", URL]) == 0
+
+    assert appdata.archive_enabled()
+    assert seen["archive"] == appdata.archive_path()
+
+
+def test_without_the_flag_there_is_no_archive(monkeypatch):
+    """Skipping a download is a promise to keep, not a surprise to spring."""
+    monkeypatch.delenv("VIDDL_ARCHIVE", raising=False)
+    seen: dict = {}
+    monkeypatch.setattr(
+        "viddl.tui.app.run", lambda *, url, audio, **kwargs: seen.update(kwargs)
+    )
+
+    assert main([URL]) == 0
+
+    assert seen["archive"] is None
+
+
+def test_the_plain_path_gets_the_archive_too(monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(plain, "run_plain", lambda url, **kwargs: seen.update(kwargs) or 0)
+
+    assert main(["--plain", "--yes", "--download-archive", URL]) == 0
+
+    assert seen["archive"] == appdata.archive_path()
+
+
+def test_the_doctor_says_which_overrides_include_the_archive(capsys, monkeypatch):
+    monkeypatch.setenv("VIDDL_ARCHIVE", "1")
+    assert main(["--doctor"]) == 0
+    assert "VIDDL_ARCHIVE=1 (in use)" in capsys.readouterr().out

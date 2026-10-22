@@ -13,9 +13,12 @@ extra yt-dlp options on purpose.
 
 The sixth, ``VIDDL_TIMEOUT``, decides how long Viddl waits for the network (R11).
 
-All six are read through :func:`folder_override`, :func:`program_override`,
-:func:`ytdlp_arguments` and :func:`network_timeout`, which check what they are
-given before it is used. An environment variable is not a command line: nobody
+The seventh, ``VIDDL_ARCHIVE``, remembers what has already been downloaded so
+the same video is not fetched twice (F6).
+
+All seven are read through :func:`folder_override`, :func:`program_override`,
+:func:`ytdlp_arguments`, :func:`network_timeout` and :func:`archive_enabled`,
+which check what they are given before it is used. An environment variable is not a command line: nobody
 sees it in the app, and in a shared checkout or a CI job it can be set by
 something other than the person using Viddl. So a value is treated as a request
 — one that can be refused, with the refusal visible in ``viddl --doctor`` —
@@ -36,7 +39,7 @@ from typing import List, Optional, Tuple
 
 from . import APP_NAME
 
-# The six variables Viddl reads, named once so the documentation, the doctor
+# The seven variables Viddl reads, named once so the documentation, the doctor
 # output and the tests cannot drift from the code that reads them.
 ENV_HOME = "VIDDL_HOME"
 ENV_DOWNLOAD_DIR = "VIDDL_DOWNLOAD_DIR"
@@ -44,6 +47,7 @@ ENV_YTDLP = "VIDDL_YTDLP"
 ENV_FFMPEG = "VIDDL_FFMPEG"
 ENV_YTDLP_ARGS = "VIDDL_YTDLP_ARGS"
 ENV_TIMEOUT = "VIDDL_TIMEOUT"
+ENV_ARCHIVE = "VIDDL_ARCHIVE"
 ENVIRONMENT_VARIABLES = (
     ENV_HOME,
     ENV_DOWNLOAD_DIR,
@@ -51,6 +55,7 @@ ENVIRONMENT_VARIABLES = (
     ENV_FFMPEG,
     ENV_YTDLP_ARGS,
     ENV_TIMEOUT,
+    ENV_ARCHIVE,
 )
 
 # Options Viddl builds for itself, by short and long name. A value that sets one
@@ -356,6 +361,64 @@ def timeout_note() -> str:
     return f"Network:      waiting {seconds:g}s per network request (VIDDL_TIMEOUT)"
 
 
+#: What ``VIDDL_ARCHIVE`` accepts for "on" and for "off". The words are the
+#: ones a person would reach for first; anything else is refused rather than
+#: guessed at, because "is Viddl remembering what I downloaded?" must never
+#: depend on reading a value right.
+_ARCHIVE_ON = ("1", "on", "yes", "true")
+_ARCHIVE_OFF = ("0", "off", "no", "false")
+
+
+def archive_enabled() -> bool:
+    """Whether this run keeps a download archive, so repeats are skipped (F6).
+
+    Off unless asked for: skipping a video you already have is a behaviour a
+    user opts into, because the alternative — Viddl quietly refusing to fetch
+    something — is only welcome when it is what you asked for.
+    """
+    return _asked(ENV_ARCHIVE).strip().lower() in _ARCHIVE_ON
+
+
+def archive_problem() -> str:
+    """Why ``VIDDL_ARCHIVE`` cannot be used, or ``""`` when it can (or is unset).
+
+    Unset is the ordinary case and is not a problem. Set to something that is
+    neither a yes nor a no is: a typo would otherwise be read as "off", and
+    the person who asked for a memory would silently not have one.
+    """
+    if ENV_ARCHIVE not in os.environ:
+        return ""
+    value = _asked(ENV_ARCHIVE).strip().lower()
+    if not value or value in _ARCHIVE_ON or value in _ARCHIVE_OFF:
+        return ""
+    return "not a yes or no (try 1 or 0)"
+
+
+def archive_path() -> Path:
+    """The download archive: the file yt-dlp records finished videos in (F6)."""
+    return data_dir() / "download-archive.txt"
+
+
+def history_path() -> Path:
+    """The recent list: a small JSON file of what was saved lately (F6)."""
+    return data_dir() / "recent.json"
+
+
+def archive_note() -> str:
+    """One ``--doctor`` line saying whether repeats are skipped (F6)."""
+    if not archive_enabled():
+        return (
+            "Archive:      off — run `viddl --download-archive` to skip "
+            "videos you already have"
+        )
+    return f"Archive:      on — {archive_path()}"
+
+
+def recent_note() -> str:
+    """One ``--doctor`` line saying where the recent list lives (F6)."""
+    return f"Recent list:  {history_path()}"
+
+
 def overrides() -> List[Override]:
     """Every environment variable that is set, and what became of it.
 
@@ -371,12 +434,14 @@ def overrides() -> List[Override]:
             problem = ytdlp_arguments_problem()
         elif name == ENV_TIMEOUT:
             problem = network_timeout_problem()
+        elif name == ENV_ARCHIVE:
+            problem = archive_problem()
         else:
             problem = _refuse(value)
         if not problem:
             if name in (ENV_YTDLP, ENV_FFMPEG):
                 problem = "" if program_override(name) else "not a program Viddl can run"
-            elif name not in (ENV_YTDLP_ARGS, ENV_TIMEOUT):
+            elif name not in (ENV_YTDLP_ARGS, ENV_TIMEOUT, ENV_ARCHIVE):
                 problem = "" if folder_override(name) else "not a folder"
         found.append(Override(name, value, problem))
     return found

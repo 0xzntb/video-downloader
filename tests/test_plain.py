@@ -105,7 +105,13 @@ class FakeJob:
         on_log=None,
         cookies="",
         extras=None,
+        archive=None,
+        title="",
     ):
+        # The download archive and the video's title, both passed on for the
+        # recent list (F6); a test asserts they arrived.
+        self.archive = archive
+        self.title = title
         self.option = option
         self.out_dir = Path(out_dir)
         self.on_progress = on_progress
@@ -686,6 +692,8 @@ def test_the_cli_hands_the_choices_to_the_plain_path(monkeypatch):
         "playlist": False,
         # Nothing is added to the download unless it was asked for (F5).
         "extras": Extras(),
+        # No archive either, unless the run asked for one (F6).
+        "archive": None,
     }
 
 
@@ -731,3 +739,42 @@ def test_the_cookie_choice_reaches_the_plain_path(monkeypatch):
 
     assert cli.main(["--cookies-from-browser", "chrome", "--plain", "--yes", URL]) == 0
     assert seen["cookies"] == "chrome"
+
+
+# ---------------------------------------------------------------------------
+# the download archive and the recent list (F6)
+# ---------------------------------------------------------------------------
+
+
+class HadItJob(FakeJob):
+    """A download the archive recognised: the file is real, no fetch happened."""
+
+    def run(self):
+        path = super().run()
+        self.already_had = True
+        return path
+
+
+def test_the_archive_and_the_title_reach_the_plain_job(tmp_path):
+    archive = tmp_path / "download-archive.txt"
+
+    code, out, err = run(archive=archive, assume_yes=True)
+
+    assert code == 0
+    job = FakeJob.made[-1]
+    assert job.archive == archive
+    # The title the recent list is recorded under comes from the look-up,
+    # not from guessing at the file name.
+    assert job.title == "A Very Real Video"
+
+
+def test_a_video_the_archive_already_had_says_so_in_the_log():
+    """A script's log should be able to tell a fetch from a recall."""
+    code, out, err = run(job_class=HadItJob, assume_yes=True)
+
+    assert code == 0
+    assert "Already had" in err
+    assert "Saved (" not in err
+    # The path on stdout is the same either way: that line is what a script
+    # reads, and the file is the file.
+    assert out.strip().endswith("A Very Real Video [dQw4w9WgXcQ].mp4")

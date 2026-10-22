@@ -254,6 +254,7 @@ def test_the_variables_are_the_ones_the_readme_lists(no_environment):
         "VIDDL_FFMPEG",
         "VIDDL_YTDLP_ARGS",
         "VIDDL_TIMEOUT",
+        "VIDDL_ARCHIVE",
     )
     readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(
         encoding="utf-8"

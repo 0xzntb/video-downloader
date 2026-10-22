@@ -14,7 +14,9 @@ from typing import Optional
 
 import pytest
 
+from viddl import appdata
 from viddl import download as download_mod
+from viddl import history
 from viddl.download import DownloadCancelled, DownloadJob, ProbeCancelled, probe_video
 from viddl.engine import Tool, ToolError
 from viddl.formats import MediaOption
@@ -1848,3 +1850,245 @@ def test_a_signed_in_look_up_is_a_different_question(tmp_path):
 
     assert download_mod._probe_key(url) in download_mod._PROBE_CACHE
     assert download_mod._probe_key(url, "chrome") in download_mod._PROBE_CACHE
+
+
+# ---------------------------------------------------------------------------
+# the download archive and the recent list (F6)
+#
+# The archive is yt-dlp's own file, and the two scripts below stand in for the
+# two things the real tool does with it: say "already recorded" and write
+# nothing, or say it only while the line is still there. The line itself was
+# measured against real yt-dlp 2026.08.19, in both shapes it prints.
+# ---------------------------------------------------------------------------
+
+# Says what yt-dlp says when the archive already holds the video, and writes
+# nothing — which is exactly the behaviour under test.
+ARCHIVED_SCRIPT = """\
+import sys
+print("[generic] Extracting URL: https://x.invalid/v")
+print("[download] dQw4w9WgXcQ: A Real Video has already been recorded in the archive")
+sys.exit(0)
+"""
+
+# Honours the archive the way the real tool does: skip while the id is in the
+# file, download once it is not. The purge in front of the retry is what the
+# second half of this script exists to prove.
+ARCHIVE_AWARE_SCRIPT = """\
+import pathlib, sys
+args = sys.argv[1:]
+out = pathlib.Path(args[args.index("-P") + 1])
+archive = pathlib.Path(args[args.index("--download-archive") + 1])
+if "youtube dQw4w9WgXcQ" in archive.read_text():
+    print("[download] dQw4w9WgXcQ: has already been recorded in the archive")
+    sys.exit(0)
+target = out / "A Real Video [dQw4w9WgXcQ].mp4"
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_bytes(b"v" * 4096)
+print("[download] Destination: " + str(target))
+sys.exit(0)
+"""
+
+ARCHIVE_URL = "https://x.invalid/v"
+
+
+def write_archive(tmp_path: Path, lines=("youtube dQw4w9WgXcQ",)) -> Path:
+    archive = tmp_path / "download-archive.txt"
+    archive.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+    return archive
+
+
+def test_the_archive_is_asked_for_when_the_run_wants_one(tmp_path):
+    engine = engine_for(tmp_path, "fake_ok.py", SUCCESS_SCRIPT)
+    archive = tmp_path / "archive.txt"
+
+    args = DownloadJob(
+        engine, ARCHIVE_URL, video_option(), tmp_path / "out", archive=archive
+    ).build_args()
+
+    assert args[args.index("--download-archive") + 1] == str(archive)
+    # Before Viddl's own paths, so a user's extra options cannot aim it
+    # somewhere else (R3).
+    assert args.index("--download-archive") < args.index("-P")
+
+
+def test_no_archive_is_asked_for_when_none_was_wanted(tmp_path):
+    engine = engine_for(tmp_path, "fake_ok.py", SUCCESS_SCRIPT)
+    args = DownloadJob(engine, ARCHIVE_URL, video_option(), tmp_path / "out").build_args()
+    assert "--download-archive" not in args
+
+
+def test_a_video_the_archive_already_had_is_handed_back_not_fetched(tmp_path):
+    """The skip exits 0 and writes nothing; the first run's file is what the
+    user gets, exactly where they left it."""
+    out = tmp_path / "Downloads"
+    out.mkdir(parents=True)
+    existing = out / "A Real Video [dQw4w9WgXcQ].mp4"
+    existing.write_bytes(b"the first copy")
+    archive = write_archive(tmp_path)
+
+    job = DownloadJob(
+        engine_for(tmp_path, "fake_archived.py", ARCHIVED_SCRIPT),
+        ARCHIVE_URL,
+        video_option(),
+        out,
+        archive=archive,
+    )
+    statuses = []
+    job.on_progress = statuses.append
+
+    path = job.run()
+
+    assert path == existing
+    assert path.read_bytes() == b"the first copy", "the file was moved or rewritten"
+    assert job.already_had
+    assert statuses[-1].phase == "done"
+    assert "Already downloaded" in statuses[-1].status
+    # The working folder is gone: it held nothing, and litter is litter.
+    assert not list(out.glob(".viddl-*"))
+    # And the recent list knows about it — both are memories of the same file.
+    (found,) = history.entries()
+    assert found.path == existing
+    assert found.url == ARCHIVE_URL
+
+
+def test_a_video_whose_file_is_gone_is_fetched_again(tmp_path):
+    """The archive said yes, the disk said no: the disk wins, and the line goes.
+
+    Without this, tidying a Downloads folder would make a video impossible to
+    download while the archive was on — "you already have it" about a file that
+    is not there.
+    """
+    out = tmp_path / "Downloads"
+    archive = write_archive(tmp_path)
+
+    job = DownloadJob(
+        engine_for(tmp_path, "fake_archive_aware.py", ARCHIVE_AWARE_SCRIPT),
+        ARCHIVE_URL,
+        video_option(),
+        out,
+        archive=archive,
+    )
+
+    path = job.run()
+
+    assert path.read_bytes() == b"v" * 4096
+    assert not job.already_had
+    assert "youtube dQw4w9WgXcQ" not in archive.read_text(encoding="utf-8")
+
+
+def test_a_cover_image_is_not_the_video_the_archive_had(tmp_path):
+    """The old mistake, wearing a new hat: a picture beside the file (F5)."""
+    out = tmp_path / "Downloads"
+    out.mkdir(parents=True)
+    (out / "A Real Video [dQw4w9WgXcQ].jpg").write_bytes(b"23 KB of picture")
+    media = out / "A Real Video [dQw4w9WgXcQ].mp4"
+    media.write_bytes(b"the real thing")
+    archive = write_archive(tmp_path)
+
+    job = DownloadJob(
+        engine_for(tmp_path, "fake_archived.py", ARCHIVED_SCRIPT),
+        ARCHIVE_URL,
+        video_option(),
+        out,
+        archive=archive,
+    )
+
+    assert job.run() == media
+
+
+def test_a_short_id_does_not_grab_the_end_of_a_longer_one(tmp_path):
+    """The brackets are the boundary: [abc] must never match [xabc]."""
+    out = tmp_path / "Downloads"
+    out.mkdir(parents=True)
+    decoy = out / "Something Else [xdQw4w9WgXcQ].mp4"
+    decoy.write_bytes(b"not the video the archive meant")
+    archive = write_archive(tmp_path)
+
+    job = DownloadJob(
+        engine_for(tmp_path, "fake_archive_aware.py", ARCHIVE_AWARE_SCRIPT),
+        ARCHIVE_URL,
+        video_option(),
+        out,
+        archive=archive,
+    )
+
+    path = job.run()
+
+    assert path.name == "A Real Video [dQw4w9WgXcQ].mp4"
+    assert decoy.read_bytes() == b"not the video the archive meant"
+
+
+def test_the_archive_line_is_read_in_both_shapes_the_real_tool_prints(tmp_path):
+    job = DownloadJob(
+        FakeEngine(["/fake/yt-dlp"]),
+        ARCHIVE_URL,
+        video_option(),
+        tmp_path / "out",
+        archive=tmp_path / "archive.txt",
+    )
+
+    # After extraction: id, then the title the site gave it.
+    job._lines = [
+        "[download] dQw4w9WgXcQ: A Real Video has already been recorded in the archive"
+    ]
+    assert job._archived_video_id() == "dQw4w9WgXcQ"
+
+    # Before extraction: the id alone, read from the link itself.
+    job._lines = ["[download] dQw4w9WgXcQ: has already been recorded in the archive"]
+    assert job._archived_video_id() == "dQw4w9WgXcQ"
+
+    # A progress line is not a skip.
+    job._lines = ["[download]  50.0% of 10MiB"]
+    assert job._archived_video_id() is None
+
+    # And without an archive of our own, the line means nothing to us.
+    no_archive = DownloadJob(
+        FakeEngine(["/fake/yt-dlp"]),
+        ARCHIVE_URL,
+        video_option(),
+        tmp_path / "out",
+    )
+    no_archive._lines = [
+        "[download] dQw4w9WgXcQ: has already been recorded in the archive"
+    ]
+    assert no_archive._archived_video_id() is None
+
+
+def test_the_recent_list_takes_the_title_the_caller_knew(tmp_path):
+    engine = engine_for(tmp_path, "fake_ok.py", SUCCESS_SCRIPT)
+
+    job = DownloadJob(
+        engine, ARCHIVE_URL, video_option(), tmp_path / "out", title="A Real Video"
+    )
+    path = job.run()
+
+    (found,) = history.entries()
+    assert found.path == path
+    assert found.url == ARCHIVE_URL
+    assert found.title == "A Real Video"
+    assert found.size == 4096
+
+
+def test_a_title_nobody_knew_is_taken_back_out_of_the_file_name(tmp_path):
+    """The output template is what named the file, so it is what names it back:
+    ``A Real Video [dQw4w9WgXcQ]`` is a title and an id, not one long title."""
+    engine = engine_for(tmp_path, "fake_ok.py", SUCCESS_SCRIPT)
+
+    DownloadJob(engine, ARCHIVE_URL, video_option(), tmp_path / "out").run()
+
+    (found,) = history.entries()
+    assert found.title == "A Real Video"
+
+
+def test_a_download_still_works_when_the_recent_list_cannot_be_written(
+    tmp_path, monkeypatch
+):
+    """The diary is a nicety; the file is the point."""
+    monkeypatch.setattr(appdata, "data_dir", lambda: tmp_path / "blocked" / "by" / "a" / "file")
+    (tmp_path / "blocked").write_text("not a folder", encoding="utf-8")
+
+    engine = engine_for(tmp_path, "fake_ok.py", SUCCESS_SCRIPT)
+    path = DownloadJob(engine, ARCHIVE_URL, video_option(), tmp_path / "out").run()
+
+    assert path.exists()
+    assert history.entries() == []

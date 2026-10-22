@@ -35,6 +35,10 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
     monkeypatch.delenv("VIDDL_YTDLP", raising=False)
     monkeypatch.delenv("VIDDL_FFMPEG", raising=False)
+    # The archive switch is set by the CLI for the whole session, so a test
+    # that passes --download-archive would otherwise leak into every test
+    # after it (F6).
+    monkeypatch.delenv("VIDDL_ARCHIVE", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
     # Windows reads these, not HOME, and a test must never touch the real
     # profile of the account running it.

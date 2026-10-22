@@ -54,6 +54,10 @@ class QueueItem:
     error: Optional[ToolError] = None
     #: Pictures saved beside the file by this item's extras (F5).
     attachments: List[Path] = field(default_factory=list)
+    #: True when the download archive recognised this video and the file from
+    #: an earlier run was handed back instead of fetched again (F6). The file
+    #: is real; only the words "Saved" and "Already had" differ.
+    already_had: bool = False
 
     @property
     def title(self) -> str:
@@ -120,6 +124,7 @@ class QueueJob:
         out_dir: Path,
         cookies: str = "",
         extras: Optional[Extras] = None,
+        archive: Optional[Path] = None,
         make_job: Callable[..., DownloadJob] = DownloadJob,
         on_start: Optional[Callable[[QueueItem], None]] = None,
         on_progress: Optional[Callable[[QueueItem, Progress], None]] = None,
@@ -133,6 +138,10 @@ class QueueJob:
         # The extras every video in the queue gets (F5). Chosen once, on the
         # qualities screen, and applied to each download the queue starts.
         self.extras = extras or Extras()
+        # The download archive every item shares (F6). One file for the whole
+        # queue is what makes it incremental: the videos already in it are
+        # skipped, and only the ones never fetched are downloaded.
+        self.archive = Path(archive) if archive is not None else None
         self._make_job = make_job
         self.on_start = on_start
         self.on_progress = on_progress
@@ -212,6 +221,11 @@ class QueueJob:
             "on_progress": lambda progress: self._notify(self.on_progress, item, progress),
             "cookies": self.cookies,
             "extras": self.extras,
+            # One archive for the whole queue (F6), and this item's own title
+            # for the recent list — the queue knows both, and a job left to
+            # guess would have only the file name.
+            "archive": self.archive,
+            "title": item.title,
         }
         if link is not None:
             job = self._make_job(self.engine, link, self.option, self.out_dir, **kwargs)
@@ -235,6 +249,9 @@ class QueueJob:
         # Kept so the summary can say a cover picture landed beside the file,
         # rather than leaving an unexplained image in the folder (F5).
         item.attachments = list(getattr(job, "attachments", []))
+        # Likewise for a file the archive already had (F6): the queue says
+        # "Already had" instead of "Saved" for this one, and nothing more.
+        item.already_had = bool(getattr(job, "already_had", False))
         return path
 
     def summary(self) -> QueueSummary:
