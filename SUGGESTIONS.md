@@ -10,7 +10,7 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **27 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F8
+Progress so far: **28 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F8
 in section 3, U4 in section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -1417,15 +1417,80 @@ the natural home for **F9** notifications.
 > a real playlist link (the archive arguments are the same ones the single-video
 > run used, and that part *was* measured).
 
-### F7 — Batch queue · **P2** · L
-
-> **The runner now exists.** `viddl/queue.py` (see **F2**) takes any list of
-> entries and downloads it in order with per-item progress, failures that do not
-> end the run, and a summary. What is left here is collecting the links and the
-> interaction for adding and removing them.
+### F7 — Batch queue · **P2** · L · ✅ **Done**
 
 Paste several links (or select playlist entries) and let them run in order, with
 per-item state and an overall summary.
+
+> **Done, and the runner was the easy half.** `viddl/queue.py` (F2) already did
+> the downloading — one at a time, per-item state, a failure that costs one item
+> and not the list, a summary that names what went wrong. What was missing was
+> somewhere to *collect* the links, and that is now **Links** (`LinksScreen`):
+> paste several into the home box on separate lines or separated by spaces, and
+> the home screen splits them **on whitespace only** — a comma or a dot is legal
+> inside an address, so cutting there would corrupt a link — puts each through
+> `safe_video_link`, the same gate a single link goes through (S1), collapses
+> duplicates, and opens the list in the order they were pasted. Punctuation
+> stuck to the end of a link (“…?v=abc,”) is dropped; a word caught between two
+> links is left out and **said so**, because a silently dropped link is a person
+> wondering later why one of three never arrived.
+>
+> **The interaction the item asked for:** one row per link (`1. youtube.com` and
+> the path beside it, with the query redacted the way the log is, S4), `Delete`
+> or **Remove** for the row under the cursor, `c` or **Clear** for the lot, and a
+> box at the top where another link can be pasted and added with `Enter` — the
+> box keeps the focus so a batch can be pasted in a row, and a link already in
+> the list is refused instead of queued twice. `Enter`/`d`/**Download all** hands
+> the whole list to the qualities screen, where **one** quality is chosen from
+> the first link's menu and used for every link, in order; the note says exactly
+> that, and “Choose videos…” is not offered, because replacing the batch with
+> one link's playlist would throw the rest away.
+>
+> **The bug that wiring found:** `OptionsScreen.on_choice_list_selected` started
+> a download directly instead of going through `action_download`, so pressing
+> Enter on the quality list would have fetched *one* video and quietly ignored
+> the other links. It now takes the same path as the button — choosing a row and
+> pressing Download mean one thing.
+>
+> **A batch of links is not a playlist,** and the summary screen no longer says
+> it is: `All links saved` / `Links finished with problems` / `Links stopped`,
+> and “the links that were not started are still on the list” rather than
+> “unticked”. Under it is the same summary F2 built: every file named, every
+> failure named, the stop button, the resume, the one-time ffmpeg prompt, the
+> extras and the archive (F5, F6).
+>
+> **The links arrive without titles**, and the queue now records the *entry's*
+> title rather than the row's `Video 3` placeholder, so the recent list names the
+> file by its own title instead of by the position it happened to hold.
+>
+> **Measured end to end, in the real app, with real yt-dlp 2026.10.21** and two
+> MP4s served over local HTTP (no stubs for the probe, the job or the queue).
+> Pasting the two links opened Links with `1. 127.0.0.1 (/first.mp4)` and
+> `2. 127.0.0.1 (/second.mp4)` and the note *“2 links · they download in order”*;
+> the qualities screen probed **only the first** link (the second was never
+> looked up), said *“2 links · this quality is used for all of them, in the order
+> they were added”*, and the run ended on **`All links saved` / `Saved all 2
+> videos.`** with `first [first].mp4` and `second [second].mp4` both in the
+> folder.
+>
+> **10 new tests** (837 → 847): seven driving the app (a paste that opens the
+> list without probing anything, a word left out and counted, the same link
+> twice as one video, add / refuse-duplicate / remove / clear, the empty list
+> refusing to start, the full two-link run in order at one quality, and
+> “Choose videos…” staying hidden), two on the splitting (whitespace only, and
+> a trailing comma dropped while `…/clip.mp4` survives intact) and one on the
+> queue (an unnamed entry is labelled `Video 2` but is not *named* it).
+> `pyflakes` clean; coverage **93 %** overall (`tui/app.py` **90 %**,
+> `queue.py` **94 %**). README has the row and a paragraph on the queue.
+>
+> **Not done:** rows cannot be reordered — the list is the order, and adding a
+> link again is how a row moves; `--plain` still takes one link per run (a batch
+> script loops, and `--playlist` covers a list from one link), so the queue is
+> the app's; the quality menu comes from the first link, so a batch that mixes
+> sites is offered that link's rows and the generic selectors behind them
+> (`best`, `1080p`) rather than each site's own labels; and there is no
+> per-item cancel — stopping still stops the queue after the item in flight,
+> with the rest left on the list.
 
 ### F8 — Clipboard-aware start · **P2** · S · ✅ **Done**
 

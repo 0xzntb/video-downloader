@@ -22,19 +22,22 @@ from textual.widgets import Button, Input, Static
 from viddl.download import DownloadCancelled, ProbeCancelled, Progress
 from viddl.engine import Tool, ToolError
 from viddl.extras import Extras
-from viddl.formats import MediaInfo, MediaOption, parse_info
+from viddl.formats import MediaInfo, MediaOption, PlaylistSummary, parse_info
 from viddl.history import Entry
 from viddl.protocol import build_scheme_url
 from viddl.tui.app import (
     DownloadScreen,
     HomeScreen,
+    LinksScreen,
     OptionsScreen,
+    QueueResultScreen,
     RecentScreen,
     ResultScreen,
     Services,
     SignIn,
     StoppedScreen,
     ViddlApp,
+    _links_from_text,
     _open_folder,
 )
 from viddl.tui.widgets import ChoiceList, ChoiceRow, ExtraToggle
@@ -115,6 +118,9 @@ class FakeJob:
         archive=None,
         title="",
     ):
+        # What the job was asked to fetch (F7): a queue is checked by the order
+        # its links were taken in, not only by what it saved.
+        self.url = url
         self.option = option
         self.out_dir = Path(out_dir)
         self.on_progress = on_progress
@@ -2457,3 +2463,216 @@ async def test_a_clipboard_that_cannot_be_read_is_not_an_error(tmp_path):
         app.screen.query_one("#url-input", Input).value = URL
         await pilot.press("enter")
         assert await wait_for_screen(pilot, OptionsScreen)
+
+
+# ---------------------------------------------------------------------------
+# several links at once (F7)
+#
+# A batch is pasted rather than typed, and it lands on a screen where the list
+# can be read, added to and cut down before anything is asked of a site. The
+# quality is one decision for the whole list, in the order the links were added.
+# ---------------------------------------------------------------------------
+
+BATCH = [
+    "https://www.youtube.com/watch?v=one111",
+    "https://www.youtube.com/watch?v=two222",
+    "https://vimeo.com/987654",
+]
+
+
+async def open_queue_screen(pilot, app, links) -> LinksScreen:
+    """Paste a batch on the home screen and land on the queue screen."""
+    app.screen.query_one("#url-input", Input).value = "  ".join(links)
+    await pilot.press("enter")
+    await settle(pilot)
+    assert isinstance(app.screen, LinksScreen), type(app.screen)
+    return app.screen
+
+
+@pytest.mark.asyncio
+async def test_several_links_pasted_at_once_open_the_queue_screen(tmp_path):
+    """Nothing is looked up on the way there: the list comes first."""
+    probed = []
+    services = make_services(tmp_path)
+    services.probe = lambda engine, url, cancel=None, cookies="": (
+        probed.append(url) or parse_info(INFO_JSON)
+    )
+    app = ViddlApp(services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        screen = await open_queue_screen(pilot, app, BATCH)
+
+        assert app.state.links == BATCH
+        assert probed == []
+        assert screen.query_one("#choices", ChoiceList).row_count == 3
+        assert "3 links" in shown(screen, "#options-note")
+        assert "in order" in shown(screen, "#options-note")
+        # One host per row, and the part that tells two links to the same host
+        # apart, so a batch of three YouTube links is not three identical rows.
+        labels = [row.plain for row in screen.query(ChoiceRow)]
+        assert "1. www.youtube.com" in labels[0]
+        assert labels[0] != labels[1]  # same site, different video
+
+
+@pytest.mark.asyncio
+async def test_a_stray_word_between_links_is_left_out_and_said_so(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        with captured_notifications(app) as toast:
+            # A comma after a link, and a word that is not one: the comma goes,
+            # the word is counted, both links survive.
+            await open_queue_screen(pilot, app, [BATCH[0] + ",", "and", BATCH[1]])
+
+        assert app.state.links == BATCH[:2]
+        assert any("did not look like a link" in message for message in toast.messages)
+        assert any("1 of 3" in message for message in toast.messages)
+
+
+@pytest.mark.asyncio
+async def test_the_same_link_twice_is_one_download(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        app.screen.query_one("#url-input", Input).value = f"{URL} {URL}"
+        await pilot.press("enter")
+        await settle(pilot)
+
+        # One link is one video, whatever it was pasted twice.
+        assert isinstance(app.screen, OptionsScreen)
+        assert app.state.links == []
+        assert app.state.url == URL
+
+
+@pytest.mark.asyncio
+async def test_a_link_can_be_added_and_taken_out_of_the_queue(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        screen = await open_queue_screen(pilot, app, BATCH[:2])
+
+        # Adding keeps the focus in the box, so a batch can be pasted in a row.
+        field = screen.query_one("#link-input", Input)
+        field.focus()
+        field.value = BATCH[2]
+        await pilot.press("enter")
+        await settle(pilot)
+        assert screen.links == BATCH
+        assert screen.query_one("#choices", ChoiceList).row_count == 3
+        assert app.focused is field
+        assert field.value == ""
+
+        # The same link again is refused rather than queued twice.
+        with captured_notifications(app) as toast:
+            field.value = BATCH[0]
+            await pilot.press("enter")
+            await settle(pilot)
+        assert any("already in the list" in message for message in toast.messages)
+        assert screen.links == BATCH
+
+        # Taking one out leaves the rest, in order.
+        screen.query_one("#choices", ChoiceList).focus()
+        screen.query_one("#choices", ChoiceList).select_index(1)
+        await pilot.press("delete")
+        await settle(pilot)
+        assert screen.links == [BATCH[0], BATCH[2]]
+        assert "2 links" in shown(screen, "#options-note")
+
+
+@pytest.mark.asyncio
+async def test_clearing_the_queue_leaves_nothing_to_download(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        screen = await open_queue_screen(pilot, app, BATCH)
+
+        screen.query_one("#choices", ChoiceList).focus()
+        await pilot.press("c")
+        await settle(pilot)
+
+        assert screen.links == []
+        assert "No links yet." in shown(screen, "#options-note")
+        for button_id in ("download", "remove", "clear"):
+            assert screen.query_one(f"#{button_id}", Button).disabled
+
+        with captured_notifications(app) as toast:
+            await pilot.press("d")
+            await settle(pilot)
+        assert "Add at least one link first." in toast.messages
+        assert isinstance(app.screen, LinksScreen)
+
+
+@pytest.mark.asyncio
+async def test_the_queue_takes_every_link_in_order_at_one_quality(tmp_path):
+    RecordingJob.started.clear()
+    services = make_services(tmp_path, job_class=RecordingJob)
+    app = ViddlApp(services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await open_queue_screen(pilot, app, BATCH[:2])
+
+        # The list has the focus; Enter on it takes the whole list.
+        await pilot.press("enter")
+        assert await wait_for_screen(pilot, OptionsScreen)
+        await settle(pilot)
+
+        assert "2 links" in shown(app.screen, "#options-note")
+        assert "this quality is used for all of them" in shown(app.screen, "#options-note")
+
+        options = app.screen.query_one("#choices", ChoiceList)
+        options.focus()
+        await pilot.press("enter")
+        assert await wait_for_screen(pilot, QueueResultScreen)
+        await settle(pilot, rounds=12)
+
+        assert [job.url for job in RecordingJob.started] == BATCH[:2]
+        # A batch of links is not a playlist, and the summary says so.
+        assert shown(app.screen, "#brand") == "All links saved"
+        assert "Saved all 2 videos." in shown(app.screen, "#result-sub")
+
+
+@pytest.mark.asyncio
+async def test_choose_videos_is_not_offered_for_a_batch_of_links(tmp_path):
+    """A batch is already a list; a link's playlist must not replace it."""
+    info = parse_info(INFO_JSON)
+    info.playlist = PlaylistSummary(title="A playlist", count=4, url=URL)
+    info.playlist_note = "A playlist, 4 videos"
+    services = make_services(tmp_path, info=info)
+    app = ViddlApp(services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await open_queue_screen(pilot, app, BATCH[:2])
+        await pilot.press("d")
+        assert await wait_for_screen(pilot, OptionsScreen)
+        await settle(pilot)
+
+        assert app.screen.query_one("#playlist", Button).has_class("hidden")
+        assert "Choose videos" not in shown(app.screen, "#options-note")
+
+
+def test_a_batch_is_split_on_whitespace_and_nothing_else():
+    """A comma or a dot is legal inside an address, so neither may split one."""
+    links, left_out = _links_from_text(
+        "https://example.com/clip.mp4  https://example.com/watch?v=a,b"
+    )
+
+    assert links == [
+        "https://example.com/clip.mp4",
+        "https://example.com/watch?v=a,b",
+    ]
+    assert left_out == 0
+
+
+def test_punctuation_after_a_link_is_dropped_but_the_link_is_not():
+    """A link copied from the end of a sentence arrives with the sentence's comma."""
+    links, left_out = _links_from_text("see https://example.com/clip.mp4, then")
+
+    assert links == ["https://example.com/clip.mp4"]
+    assert left_out == 2  # "see" and "then"

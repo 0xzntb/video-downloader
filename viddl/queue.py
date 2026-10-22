@@ -223,9 +223,11 @@ class QueueJob:
             "extras": self.extras,
             # One archive for the whole queue (F6), and this item's own title
             # for the recent list — the queue knows both, and a job left to
-            # guess would have only the file name.
+            # guess would have only the file name. The entry's title, not the
+            # row's label: a batch of links has no titles yet (F7), and
+            # "Video 3" is a position, not a name to remember a file by.
             "archive": self.archive,
-            "title": item.title,
+            "title": item.entry.title,
         }
         if link is not None:
             job = self._make_job(self.engine, link, self.option, self.out_dir, **kwargs)

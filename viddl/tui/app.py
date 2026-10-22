@@ -9,7 +9,8 @@ Four screens, in the order you meet them:
 
 And one beside that order: **Recent** (F6), reached from the home screen,
 listing what has been saved lately with a way to open it, copy its path or
-take it again.
+take it again. Several links pasted at once open **Links** (F7) instead — a
+list to read, add to and cut down before any of it is downloaded.
 
 The home screen also offers the link the clipboard is already holding (F8).
 It offers it and stops there: nothing is filled in, and nothing is looked up,
@@ -59,7 +60,7 @@ from ..engine import Engine, Tool, ToolError
 from ..extras import EXTRAS, Extras
 from ..formats import MediaInfo, MediaOption, Playlist, PlaylistEntry
 from ..queue import QueueItem, QueueJob, QueueSummary
-from ..util import human_duration, human_size, safe_video_link, shorten
+from ..util import human_duration, human_size, redact, safe_video_link, shorten
 from .widgets import ChoiceList, ExtraToggle
 
 _ARP = "·"
@@ -147,6 +148,10 @@ class State:
     #: ``None`` is every run that did not: skipping a download is a promise
     #: to keep, not a surprise to spring.
     archive: Optional[Path] = None
+    #: Several links collected on the links screen, in the order they will be
+    #: taken (F7). One decision — the quality — is asked of the first of them
+    #: and used for all; empty means the ordinary one-video flow.
+    links: List[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +647,24 @@ class ViddlApp(App):
         self.state.playlist_entries = list(entries)
         self.push_screen(DownloadScreen())
 
+    def start_links(self, option: MediaOption) -> None:
+        """Take the collected links in order, at the chosen quality (F7).
+
+        The queue runner is the playlist one: a batch of links and a list of
+        videos are the same job — one at a time, per-item state, a summary that
+        names what failed — and the only difference is where the entries came
+        from. Their titles are left empty on purpose, so the finished file is
+        named by its own title rather than by the row number that stood in for
+        it while the link had no name.
+        """
+        self.state.option = option
+        self.state.playlist = None
+        self.state.playlist_entries = [
+            PlaylistEntry(index=position, title="", url=link)
+            for position, link in enumerate(self.state.links, start=1)
+        ]
+        self.push_screen(DownloadScreen())
+
 
 # ---------------------------------------------------------------------------
 # screens
@@ -672,7 +695,10 @@ class HomeScreen(Screen):
         with Vertical(id="home-panel"):
             yield Static(f"{APP_TITLE}", id="brand")
             yield Static("Download a video or a song by pasting a link.", classes="tagline")
-            yield Static("Paste a video link", classes="field-label")
+            yield Static(
+                "Paste a video link — or several, separated by spaces",
+                classes="field-label",
+            )
             yield Input(
                 placeholder="https://www.youtube.com/watch?v=…",
                 id="url-input",
@@ -798,27 +824,47 @@ class HomeScreen(Screen):
 
     def submit_url(self) -> None:
         field = self.query_one("#url-input", Input)
-        url = field.value.strip()
-        if not url:
+        raw = field.value.strip()
+        if not raw:
             self.notify("Paste a link first.", severity="warning")
             field.focus()
             return
-        if url.lower().startswith(("viddl://", "viddl:")):
-            url = _url_from_scheme(url)
-        # The last gate before a link reaches the downloader: only a plain
-        # http(s) link gets through, so nothing option-shaped can ever be
-        # handed over as if it were a flag.
-        link = safe_video_link(url)
-        if link is None:
+        if raw.lower().startswith(("viddl://", "viddl:")) and not any(
+            character.isspace() for character in raw
+        ):
+            raw = _url_from_scheme(raw)
+        # The last gate before a link reaches the downloader: only plain
+        # http(s) links get through here, so nothing option-shaped can ever be
+        # handed over as if it were a flag (S1).
+        links, left_out = _links_from_text(raw)
+        if not links:
             self.notify(
                 "That looks like text, not a link. Copy the address from your browser."
-                if " " in url
+                if " " in raw
                 else "That does not look like a video link. Copy the address from your browser.",
                 severity="warning",
                 timeout=6,
             )
             field.focus()
             return
+        if left_out:
+            # Said out loud: a word lost between two links is a person wondering
+            # later why one of the three never arrived (F7).
+            self.notify(
+                f"{left_out} of {left_out + len(links)} things pasted did not look "
+                "like a link and were left out.",
+                severity="warning",
+                timeout=6,
+            )
+        if len(links) > 1:
+            # Several links at once is a queue, not a video: it gets a screen
+            # where the list can be read, added to and cut down before any of
+            # it is downloaded (F7).
+            self.app.state.links = links
+            self.app.push_screen(LinksScreen(links=links))
+            return
+        self.app.state.links = []
+        link = links[0]
         self.app.state.url = link
         self.app.push_screen(OptionsScreen())
 
@@ -854,6 +900,240 @@ def _url_from_scheme(raw: str) -> str:
     from ..protocol import parse_scheme_url
 
     return parse_scheme_url(raw) or ""
+
+
+def _links_from_text(raw: str) -> Tuple[List[str], int]:
+    """Every link in a pasted line, and how many words were not one (F7).
+
+    A batch is pasted rather than typed: several links arrive on separate lines
+    or separated by spaces, and a stray word from the page they came from
+    arrives with them. The valid links are kept in order, the same link twice is
+    one link (asking for a file twice is a mistake, not a queue), and the count
+    of what was left out goes back so the screen can say so instead of silently
+    dropping it.
+
+    A link is never split on anything but whitespace: a comma or a dot is legal
+    inside an address, so cutting ``?v=a,b`` at the comma would corrupt one
+    link into two words. Trailing punctuation is a different thing — a link
+    copied from the end of a sentence arrives as ``…?v=abc,`` — so the end of
+    each token is tried without it. The stripped form wins when both are links,
+    because a real address ending in a comma is rarer than a sentence is.
+    """
+    links: List[str] = []
+    left_out = 0
+    for token in raw.split():
+        trimmed = token.rstrip(",;.")
+        link = safe_video_link(trimmed) if trimmed != token else None
+        if link is None:
+            link = safe_video_link(token)
+        if link is None:
+            left_out += 1
+        elif link not in links:
+            links.append(link)
+    return links, left_out
+
+
+def _link_parts(link: str) -> Tuple[str, str]:
+    """The two halves a queue row has room for: the site, and where on it (F7).
+
+    The site is what tells two links apart at a glance; the rest — path and
+    query — is what tells two links to the same site apart. The query is
+    redacted the same way the log is (S4), because a link can carry a token and
+    a row on screen is read over shoulders.
+    """
+    split = urlsplit(link)
+    host = split.hostname or link
+    rest = split.path or ""
+    if split.query:
+        rest = f"{rest}?{split.query}"
+    return host, shorten(redact(rest), 48)
+
+
+class LinksScreen(Screen):
+    """Screen 1b: several links, in the order they will be taken (F7).
+
+    A queue of links has no playlist behind it, so this screen is where the
+    list is collected: one row per link, a box to add another, and a way to cut
+    one out. Nothing is looked up and nothing is downloaded here — the qualities
+    screen that follows asks once for the whole list, which is the same
+    one-decision shape a playlist has (F2).
+
+    The list is the *order*: the queue takes them top to bottom, so a row can be
+    moved only by being added again in the position it should have. That is
+    enough — a batch is usually pasted in the order it was collected — and it
+    keeps this screen out of the reordering business.
+    """
+
+    BINDINGS = [
+        Binding("escape", "go_back", "Back", show=True),
+        # Enter and `d` both mean "take the lot" when the list has the focus;
+        # in the box above, Enter adds the link that was just pasted instead,
+        # because that is what a person typing in a box expects.
+        Binding("enter", "download", "Download all", show=False),
+        Binding("d", "download", "Download all", show=False),
+        Binding("delete", "remove", "Remove", show=True),
+        Binding("x", "remove", "Remove", show=False),
+        Binding("c", "clear", "Clear", show=False),
+    ]
+
+    def __init__(self, links: Optional[List[str]] = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        # A working copy: the app's state is only told what was collected when
+        # the list is actually taken, so backing out leaves nothing behind.
+        self.links: List[str] = list(links or [])
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="options-panel"):
+            yield Static("Several links", id="options-heading")
+            yield Static("", id="options-status")
+            yield Input(
+                placeholder="Paste another link and press Enter",
+                id="link-input",
+            )
+            yield ChoiceList(id="choices")
+            with Horizontal(classes="buttons"):
+                yield Button("Download all", variant="primary", id="download")
+                yield Button("Remove", id="remove")
+                yield Button("Clear", id="clear")
+                yield Button("Back", id="back")
+            yield Static("", id="options-note")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.render_rows()
+        if self.links:
+            self.query_one("#choices", ChoiceList).focus()
+        else:
+            self.query_one("#link-input", Input).focus()
+
+    # -- the list -----------------------------------------------------------
+    def render_rows(self) -> None:
+        table = self.query_one("#choices", ChoiceList)
+        cursor = table.cursor_index or 0
+        rows: List[Tuple[str, str, str, Any]] = []
+        for index, link in enumerate(self.links):
+            host, rest = _link_parts(link)
+            rows.append((f"{index + 1}. {host}", "", rest, index))
+        table.set_choices(rows)
+        if rows:
+            # Removing the third of five must leave the cursor where the eye is.
+            table.select_index(min(cursor, len(rows) - 1))
+        self.refresh_note()
+
+    def refresh_note(self) -> None:
+        count = len(self.links)
+        for button_id in ("download", "remove", "clear"):
+            self.query_one(f"#{button_id}", Button).disabled = count == 0
+        if count == 0:
+            lines = [
+                "No links yet.",
+                "Paste a link into the box above and press Enter. Several can be "
+                "pasted at once on the home screen.",
+            ]
+        else:
+            lines = [
+                f"{count} link{'s' if count != 1 else ''}  {_ARP}  they download in order",
+                "The quality you choose next is used for every link in the list.",
+                "Click a row and press Remove to take one out; Enter takes them all.",
+            ]
+        self.query_one("#options-note", Static).update(_plain("\n".join(lines)))
+
+    def selected_index(self) -> Optional[int]:
+        value = self.query_one("#choices", ChoiceList).highlighted_value
+        return value if isinstance(value, int) else None
+
+    # -- adding and removing ------------------------------------------------
+    def add_link(self) -> None:
+        """Add what is in the box, if it is a link and not already there."""
+        field = self.query_one("#link-input", Input)
+        raw = field.value.strip()
+        if not raw:
+            return
+        link = safe_video_link(raw)
+        if link is None:
+            self.notify(
+                "That does not look like a video link. Copy the address from your browser.",
+                severity="warning",
+                timeout=6,
+            )
+            field.focus()
+            return
+        if link in self.links:
+            self.notify("That link is already in the list.", severity="warning", timeout=4)
+            return
+        self.links.append(link)
+        field.value = ""
+        self.render_rows()
+        # The box keeps the focus on purpose: a batch is pasted as several
+        # links in a row, and making the person click back into the box between
+        # every one of them would be the whole friction this screen exists for.
+        table = self.query_one("#choices", ChoiceList)
+        table.select_index(len(self.links) - 1)
+        field.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.add_link()
+
+    def action_remove(self) -> None:
+        index = self.selected_index()
+        if index is None or not (0 <= index < len(self.links)):
+            return
+        host, _ = _link_parts(self.links.pop(index))
+        self.render_rows()
+        self.notify(f"Removed {host}.", timeout=3)
+
+    def action_clear(self) -> None:
+        count = len(self.links)
+        if not count:
+            return
+        self.links = []
+        self.render_rows()
+        self.notify(f"Removed all {count} links.", timeout=3)
+
+    # -- taking it ----------------------------------------------------------
+    def action_download(self) -> None:
+        """Hand the whole list to the qualities screen (F7).
+
+        The quality is not chosen here because a queue is one decision, not N:
+        the first link is the one asked about — its menu is the shape of the
+        choice — and the row that is picked is used for every link, in order.
+        """
+        if not self.links:
+            self.notify("Add at least one link first.", severity="warning")
+            return
+        state = self.app.state
+        state.links = list(self.links)
+        state.url = self.links[0]
+        state.info = None
+        state.option = None
+        state.playlist = None
+        state.playlist_entries = []
+        state.saved_path = None
+        self.app.push_screen(OptionsScreen())
+
+    def action_go_back(self) -> None:
+        self.app.pop_screen()
+
+    def on_choice_list_selected(self, message: ChoiceList.Selected) -> None:
+        """Clicking or pressing Enter on a row takes the whole list.
+
+        A row here is not a choice to make — the list has no per-row action but
+        Remove (a button and a key of its own) — so the obvious meaning of
+        "activate the list" is the one this screen exists for.
+        """
+        message.stop()
+        self.action_download()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        button_id = event.button.id
+        if button_id == "download":
+            self.action_download()
+        elif button_id == "remove":
+            self.action_remove()
+        elif button_id == "clear":
+            self.action_clear()
+        elif button_id == "back":
+            self.action_go_back()
 
 
 class OptionsScreen(Screen):
@@ -1129,9 +1409,12 @@ class OptionsScreen(Screen):
         table.set_choices(choices)
         table.focus()
 
-        if info.playlist is not None:
+        if info.playlist is not None and not self.app.state.links:
             # The rest of the playlist is an offer, not a second screen nobody
             # asked for: the button is there, and pressing it is the asking.
+            # Not offered for a batch of links (F7): that is already a list,
+            # and replacing it with this link's playlist would quietly throw
+            # the rest of the batch away.
             self.query_one("#playlist", Button).remove_class("hidden")
             if info.playlist_note:
                 note.update(
@@ -1223,7 +1506,15 @@ class OptionsScreen(Screen):
             button.add_class("hidden")
             info = state.info
             lines: List[str] = []
-            if info is not None and info.playlist_note:
+            batching = len(state.links) > 1
+            if batching:
+                # Said before the quality's own note, because it changes what
+                # the click means: one decision, several videos (F7).
+                lines.append(
+                    f"{len(state.links)} links  {_ARP}  this quality is used for "
+                    "all of them, in the order they were added."
+                )
+            if not batching and info is not None and info.playlist_note:
                 lines.append(
                     f"{info.playlist_note}. Download takes the first one; "
                     "“Choose videos…” picks which of them to take."
@@ -1320,7 +1611,10 @@ class OptionsScreen(Screen):
         if isinstance(message.value, SignIn):
             self.choose_sign_in(message.value)
         elif isinstance(message.value, MediaOption):
-            self.app.start_download(message.value)
+            # Through the action, not straight to the download: choosing a row
+            # with Enter and pressing Download must mean the same thing, and
+            # for a batch of links that meaning is the queue (F7).
+            self.action_download()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
@@ -1344,6 +1638,12 @@ class OptionsScreen(Screen):
         if not isinstance(option, MediaOption):
             # The sign-in row is a thing to click, not a thing to download.
             self.notify("Choose a quality first.", severity="warning")
+            return
+        if len(self.app.state.links) > 1:
+            # A batch collected on the links screen (F7): the quality under the
+            # cursor is one decision for the whole list, exactly as it is for a
+            # playlist.
+            self.app.start_links(option)
             return
         self.app.start_download(option)
 
@@ -1832,7 +2132,15 @@ class DownloadScreen(Screen):
         if not self._has_a_screen():
             return
         self.query_one("#download-bar", ProgressBar).update(progress=100.0)
-        self.app.push_screen(QueueResultScreen(summary=summary, option=self.app.state.option))
+        self.app.push_screen(
+            QueueResultScreen(
+                summary=summary,
+                option=self.app.state.option,
+                # A queue with no playlist behind it came from the links
+                # screen, and says so (F7).
+                batch=self.app.state.playlist is None,
+            )
+        )
 
     # -- updates ------------------------------------------------------------
     def set_status(self, message: str) -> None:
@@ -2243,6 +2551,9 @@ class RecentScreen(Screen):
         state.saved_path = None
         state.playlist = None
         state.playlist_entries = []
+        # One file, taken again: a batch left over from the links screen must
+        # not turn this into several downloads (F7).
+        state.links = []
         self.app.push_screen(OptionsScreen())
 
     def action_open_folder(self) -> None:
@@ -2306,11 +2617,16 @@ class QueueResultScreen(Screen):
         self,
         summary: QueueSummary,
         option: Optional[MediaOption] = None,
+        batch: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.summary = summary
         self.option = option
+        # True when the queue came from the links screen rather than a playlist
+        # (F7): the two are the same run, and the screen should not call a batch
+        # of links a playlist.
+        self.batch = batch
 
     @property
     def saved(self) -> List[Path]:
@@ -2334,9 +2650,11 @@ class QueueResultScreen(Screen):
     def on_mount(self) -> None:
         summary = self.summary
         if summary.failed:
-            title = "Playlist finished with problems"
+            title = "Links finished with problems" if self.batch else "Playlist finished with problems"
         elif summary.stopped:
-            title = "Playlist stopped"
+            title = "Links stopped" if self.batch else "Playlist stopped"
+        elif self.batch:
+            title = "All links saved"
         else:
             title = "Playlist saved"
         self.query_one("#brand", Static).update(title)
@@ -2356,7 +2674,11 @@ class QueueResultScreen(Screen):
         if len(failures) > 5:
             lines.append(f"...and {len(failures) - 5} more that did not work.")
         if summary.stopped and summary.done < summary.total:
-            lines.append("The videos that were not started are still unticked in the list.")
+            lines.append(
+                "The links that were not started are still on the list."
+                if self.batch
+                else "The videos that were not started are still unticked in the list."
+            )
         self.query_one("#result-message", Static).update(_plain("\n".join(lines)))
 
     # -- actions ------------------------------------------------------------

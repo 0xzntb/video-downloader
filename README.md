@@ -120,6 +120,7 @@ Nothing is installed system-wide and no configuration files are created.
 | Skip videos you have already downloaded | `viddl --download-archive <link>` (see [What is remembered](#what-is-remembered-between-runs)) |
 | See what you have downloaded lately | Press `r` (or **Recent**) on the home screen |
 | Use the link you already copied | Click **Paste link** on the home screen (or press `p` when the box is not focused) |
+| Download several links in one go | Paste them into the link box separated by spaces, then **Download all** on the links screen |
 | Check that everything is set up | `viddl --doctor` |
 | Fetch the newest video engine (the usual fix for a link that stopped working) | Press **Update engine** on the home or failure screen, or `viddl --update` |
 | Fetch the newest ffmpeg build | `viddl --update-ffmpeg` |
@@ -142,6 +143,16 @@ The quality under the cursor when you open the list is the quality used for
 every video in it. **Download** without opening the list takes the first video
 only, which is what a playlist link did before — a click never starts forty
 downloads.
+
+Several links at once become a **queue**: paste them into the link box separated
+by spaces (or one per line, if your terminal pastes that way) and the list opens
+in the order you pasted it. Rows can be **Removed** (`Delete`), the whole list
+**Cleared** (`c`), and another link added in the box at the top — paste it and
+press `Enter`. **Download all** then asks for one quality, used for every link,
+and takes them one at a time; the screen at the end names each file saved and
+any that did not work, and one bad link never stops the rest. A word pasted in
+between two links is left out and said so, and the same link twice is one
+download.
 
 Downloads go to your **Downloads** folder (`~/Downloads`, or whatever your
 desktop calls it) with the video's own title, plus its id so nothing gets

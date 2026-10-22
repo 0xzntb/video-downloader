@@ -870,3 +870,31 @@ def test_the_plain_playlist_says_already_had_instead_of_saved(monkeypatch):
     # The paths on stdout are the same either way: that line is what a script
     # reads, and the file is the file.
     assert out.getvalue().count("\n") == len(listing().entries)
+
+
+def test_an_unnamed_entry_is_not_given_a_made_up_title(tmp_path):
+    """A batch of links has no titles yet (F7).
+
+    The row can say "Video 2" — a position is all anybody knows — but the
+    download must not be *named* that: the recent list would remember a file
+    by the number it happened to be at in a queue, and the file itself carries
+    its own title.
+    """
+    RecordingJob.started.clear()
+    entries = [
+        PlaylistEntry(index=1, title="", url="https://example.invalid/watch?v=one"),
+        PlaylistEntry(index=2, title="", url="https://example.invalid/watch?v=two"),
+    ]
+    queue = QueueJob(
+        FakeEngine(),
+        Playlist(title="", url=""),
+        entries,
+        video_option(),
+        tmp_path / "Downloads",
+        make_job=RecordingJob,
+    )
+
+    summary = queue.run()
+
+    assert [job.title for job in RecordingJob.started] == ["", ""]
+    assert [item.title for item in summary.items] == ["Video 1", "Video 2"]
