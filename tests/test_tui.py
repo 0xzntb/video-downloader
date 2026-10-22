@@ -299,7 +299,13 @@ class StubProbe:
 
 
 def make_services(
-    tmp_path: Path, engine=None, info=None, job_class=FakeJob, browsers=(), recent=None
+    tmp_path: Path,
+    engine=None,
+    info=None,
+    job_class=FakeJob,
+    browsers=(),
+    recent=None,
+    clipboard="",
 ) -> Services:
     info = info if info is not None else parse_info(INFO_JSON)
     services = Services(
@@ -315,6 +321,9 @@ def make_services(
         # What the recent list holds (F6), said by the test rather than read
         # from a file: the screen is what is being tested, not the file.
         services.recent = recent
+    # What is on the clipboard (F8), said by the test rather than read from the
+    # machine running the suite — an empty clipboard unless a test fills it.
+    services.clipboard = lambda: clipboard
     return services
 
 
@@ -2303,3 +2312,148 @@ async def test_the_result_screen_says_already_had_rather_than_a_quality_it_lacks
         assert sub.startswith("Already had")
         assert "1080p" not in sub
         assert "2.0 KB" in sub
+
+
+# ---------------------------------------------------------------------------
+# the link the clipboard already holds (F8)
+#
+# The home screen asks once, offers what it found, and stops. Nothing is filled
+# in and nothing is looked up until the person says yes — the same promise the
+# app makes to a link arriving from a web page (S5), extended to one arriving
+# from the clipboard.
+# ---------------------------------------------------------------------------
+
+CLIPBOARD_URL = "https://www.youtube.com/watch?v=clipboard123"
+
+
+@pytest.mark.asyncio
+async def test_a_link_on_the_clipboard_is_offered_and_nothing_else_happens(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path, clipboard=CLIPBOARD_URL))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        offer = shown(app.screen, "#clipboard-offer")
+        assert "youtube.com" in offer
+        assert "Paste link" in offer
+        # Never silent, never automatic: the box is still empty, and the app is
+        # still on the screen it started on.
+        assert app.screen.query_one("#url-input", Input).value == ""
+        assert isinstance(app.screen, HomeScreen)
+        assert app.screen.query_one("#paste", Button).has_class("hidden") is False
+
+
+@pytest.mark.asyncio
+async def test_the_paste_button_fills_the_box_and_does_not_submit(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path, clipboard=CLIPBOARD_URL))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.click("#paste")
+        await settle(pilot)
+
+        assert app.screen.query_one("#url-input", Input).value == CLIPBOARD_URL
+        # Filling is the whole action: the qualities are a keypress away, and
+        # the keypress belongs to the person.
+        assert isinstance(app.screen, HomeScreen)
+        # And the offer is spent, so it cannot be pasted twice by accident.
+        assert app.screen.clipboard_link == ""
+        assert shown(app.screen, "#clipboard-offer") == ""
+        assert app.screen.query_one("#paste", Button).has_class("hidden")
+
+
+@pytest.mark.asyncio
+async def test_the_paste_key_belongs_to_the_screen_not_the_link_box(tmp_path):
+    """`p` pastes — and while the link box is being typed in, it is a letter."""
+    app = ViddlApp(services=make_services(tmp_path, clipboard=CLIPBOARD_URL))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        await pilot.press("p")
+        assert app.screen.query_one("#url-input", Input).value == "p"
+        assert isinstance(app.screen, HomeScreen)
+
+        app.screen.query_one("#url-input", Input).value = ""
+        app.screen.query_one("#recent", Button).focus()
+        await pilot.press("p")
+        await settle(pilot)
+
+        assert app.screen.query_one("#url-input", Input).value == CLIPBOARD_URL
+        assert isinstance(app.screen, HomeScreen)
+
+
+@pytest.mark.asyncio
+async def test_a_clipboard_without_a_link_offers_nothing(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path, clipboard="a shopping list"))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        assert shown(app.screen, "#clipboard-offer") == ""
+        assert app.screen.query_one("#paste", Button).has_class("hidden")
+        with captured_notifications(app) as toast:
+            app.screen.query_one("#recent", Button).focus()
+            await pilot.press("p")
+            await settle(pilot)
+        assert "The clipboard has no link to use." in toast.messages
+
+
+@pytest.mark.asyncio
+async def test_the_offer_shows_the_host_and_not_the_whole_link(tmp_path):
+    """A copied address can carry a signed token; the screen is read over shoulders."""
+    link = "https://example.com/watch?v=abc&token=SUPERSECRET"
+    app = ViddlApp(services=make_services(tmp_path, clipboard=link))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        offer = shown(app.screen, "#clipboard-offer")
+        assert "example.com" in offer
+        assert "SUPERSECRET" not in offer
+
+        # The link itself is kept whole for the paste that was asked for.
+        app.screen.query_one("#recent", Button).focus()
+        await pilot.press("p")
+        assert app.screen.query_one("#url-input", Input).value == link
+
+
+@pytest.mark.asyncio
+async def test_opening_with_a_link_does_not_ask_the_clipboard_at_all(tmp_path):
+    asked = []
+
+    def clipboard():
+        asked.append(True)
+        return CLIPBOARD_URL
+
+    services = make_services(tmp_path)
+    services.clipboard = clipboard
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        # The app was opened with a link; an offer on top of it would be noise,
+        # and reading a clipboard nobody asked about is not free.
+        assert asked == []
+        assert isinstance(app.screen, OptionsScreen)
+
+
+@pytest.mark.asyncio
+async def test_a_clipboard_that_cannot_be_read_is_not_an_error(tmp_path):
+    def broken():
+        raise OSError("no clipboard here")
+
+    services = make_services(tmp_path)
+    services.clipboard = broken
+    app = ViddlApp(services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        assert isinstance(app.screen, HomeScreen)
+        assert shown(app.screen, "#clipboard-offer") == ""
+        # The app still works, which is the whole point of failing quietly.
+        app.screen.query_one("#url-input", Input).value = URL
+        await pilot.press("enter")
+        assert await wait_for_screen(pilot, OptionsScreen)

@@ -608,6 +608,10 @@ def app_services(tmp_path: Path, info=None) -> Services:
         make_job=AppJob,
         downloads_dir=lambda: tmp_path / "Downloads",
         browsers=lambda: [],
+        # Nothing on the clipboard: the home screen must not shell out to a
+        # clipboard tool in a test, and a real clipboard would change what the
+        # screen shows (F8).
+        clipboard=lambda: "",
         fetch_playlist=lambda engine, url, cookies="", **kwargs: listing(),
     )
 
@@ -757,6 +761,10 @@ async def test_the_running_screen_says_how_many_videos_are_going(tmp_path):
         make_job=BlockingAppJob,
         downloads_dir=lambda: tmp_path / "Downloads",
         browsers=lambda: [],
+        # Nothing on the clipboard: the home screen must not shell out to a
+        # clipboard tool in a test, and a real clipboard would change what the
+        # screen shows (F8).
+        clipboard=lambda: "",
         fetch_playlist=lambda engine, url, cookies="", **kwargs: listing(),
     )
     app = ViddlApp(initial_url=URL, services=services)

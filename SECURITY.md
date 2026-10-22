@@ -42,11 +42,36 @@ and cannot achieve, and where each guarantee is enforced.
 | Slip something into the log | Every log line, tracebacks included, is passed through `util.redact()`, which removes credentials and signature parameters from links. |
 | Read what Viddl installed or logged | The app's own folder and the folder holding yt-dlp and ffmpeg are `0700`, the log is `0600`, and the downloaded programs themselves are `0700`. |
 | Read your browser's cookies | The cookie choice is made on the qualities screen, by a person, and only for the link on that screen; a `viddl://` hand-off cannot set it. The name it accepts is checked against a closed list of browsers before it reaches a command line, so nothing else can be smuggled in as one. |
+| Start something from your clipboard | The clipboard is read once, at launch, only to offer a link (below). The offer fills the link box after a click and stops there: nothing is looked up, and nothing is downloaded, until a person presses Enter and then picks a quality. |
 | Have unverified bytes run | Every download is checked against a published SHA-256 (yt-dlp's `SHA2-256SUMS`, the ffmpeg builds' `checksums.sha256`, or a hash pinned in the source) *before* it is written to its final path. A mismatch is refused and deleted. A mirror that publishes only an MD5 is not used at all. |
 
 Read from the other side, that is the promise: a link from a web page is only
 ever *pre-filled*, and the worst a hostile page achieves is a window with a link
 in it that you can ignore.
+
+## The clipboard
+
+Viddl reads the clipboard **once**, when the home screen opens, and only to
+answer one question: does it already hold a link? It asks the platform's own
+tool — `Get-Clipboard`, `pbpaste`, `wl-paste`, `xclip` or `xsel`, whichever is
+installed — through a fixed argument list and no shell, and gives up after two
+seconds rather than leave a screen waiting on somebody else's process.
+
+What it does with the answer:
+
+* Anything that is not a plain `http(s)` link is dropped where it is read. It is
+  not shown, not logged, and not kept.
+* A link is **offered, not used**: the home screen says which site it points at
+  and waits for a click on **Paste link**. The link is held in memory for that
+  one action and is written down only if a download of it finishes, which is the
+  same rule the recent list follows (**F6**).
+* Only the **hostname** is displayed, never the whole address: a copied link can
+  carry a signed token, and a screen is read over shoulders.
+
+The clipboard is not watched: there is no polling, and nothing is read again
+after launch. It is the one part of this program that touches text nobody gave
+it, so it is kept to a single question at the one moment the answer is useful —
+and the answer never starts anything on its own.
 
 ## Not defended against
 

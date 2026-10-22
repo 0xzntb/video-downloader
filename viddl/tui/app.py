@@ -11,6 +11,10 @@ And one beside that order: **Recent** (F6), reached from the home screen,
 listing what has been saved lately with a way to open it, copy its path or
 take it again.
 
+The home screen also offers the link the clipboard is already holding (F8).
+It offers it and stops there: nothing is filled in, and nothing is looked up,
+until the person says yes.
+
 Everything is driveable with the mouse (click a quality, click a button) and
 with the keyboard (arrows, Enter, Tab, Escape).
 """
@@ -23,6 +27,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from rich.markup import escape
 from typing import Any, Callable, List, Optional, Tuple
@@ -36,6 +41,7 @@ from textual.widgets import Button, Footer, Input, ProgressBar, Static
 
 from .. import APP_TITLE, __version__
 from .. import appdata
+from .. import clipboard as clipboard_mod
 from .. import cookies as cookies_mod
 from .. import download as download_mod
 from .. import engine as engine_mod
@@ -93,6 +99,10 @@ class Services:
     #: What the recent list holds (F6). Swappable, so a test says what was
     #: downloaded instead of reading a file from the machine running it.
     recent: Callable[[], List[history_mod.Entry]] = history_mod.entries
+    #: What is on the clipboard, asked once when the home screen opens (F8).
+    #: Swappable for the same reason: a test says what was copied instead of
+    #: reading the clipboard of the machine running it.
+    clipboard: Callable[[], str] = clipboard_mod.read_text
 
 
 @dataclass
@@ -262,6 +272,14 @@ class ViddlApp(App):
 
     #engine-status {
         color: $text-muted;
+        text-align: center;
+        width: 100%;
+        padding-top: 1;
+        height: auto;
+    }
+
+    #clipboard-offer {
+        color: $accent;
         text-align: center;
         width: 100%;
         padding-top: 1;
@@ -640,7 +658,15 @@ class HomeScreen(Screen):
         # is asked with the app already open (F6). It cannot clash with
         # typing: while the link box has the focus, every letter goes there.
         Binding("r", "recent", "Recent", show=True),
+        # The link already on the clipboard is one key away too (F8), for the
+        # same reason and with the same caveat: with the box focused, ``p`` is
+        # a letter. The button beside it is what the mouse reaches for.
+        Binding("p", "paste_clipboard", "Paste link", show=True),
     ]
+
+    #: The link the clipboard offered, waiting for a yes (F8). Empty until the
+    #: read comes back with something that is really a link.
+    clipboard_link = ""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="home-panel"):
@@ -651,7 +677,12 @@ class HomeScreen(Screen):
                 placeholder="https://www.youtube.com/watch?v=…",
                 id="url-input",
             )
+            yield Static("", id="clipboard-offer")
             with Horizontal(classes="buttons"):
+                # Offered only when the clipboard really holds a link (F8), and
+                # hidden rather than disabled when it does not: a permanently
+                # dead button is a question nobody can answer.
+                yield Button("Paste link", id="paste", classes="hidden")
                 yield Button("Find qualities", variant="primary", id="go")
                 yield Button("Recent", id="recent")
                 yield Button("Update engine", id="update-engine")
@@ -667,8 +698,73 @@ class HomeScreen(Screen):
         if self.app.state.url:
             self.query_one("#url-input", Input).value = self.app.state.url
             self.call_after_refresh(self.submit_url)
-        else:
-            self.query_one("#url-input", Input).focus()
+            return
+        self.query_one("#url-input", Input).focus()
+        # Asked once, on the way in, and not again: a clipboard watched all
+        # session would be reading somebody else's text on a timer (F8).
+        self.read_clipboard()
+
+    # -- the link the clipboard already has (F8) ----------------------------
+    @work(thread=True, exclusive=True, group="clipboard")
+    def read_clipboard(self) -> None:
+        """Look once for a link on the clipboard, and offer it.
+
+        In a worker because the read is a subprocess and a clipboard owner can
+        be slow to answer; on the way back only a *link* is passed on, so a
+        password, a paragraph or an address never reaches the screen, let
+        alone the log.
+        """
+        if self.app.state.url:
+            # The app was opened with a link; an offer would be noise on top of
+            # the download it is already asking about.
+            return
+        try:
+            text = self.app.services.clipboard()
+        except Exception:  # pragma: no cover - a test's stub, or a broken tool
+            return
+        link = safe_video_link(text)
+        if link is None:
+            return
+        self.app._post(self.offer_clipboard, link)
+
+    def offer_clipboard(self, link: str) -> None:
+        """Say that a link is there; never put it in the box unbidden (F8).
+
+        The host is shown and not the whole link: a copied address can carry a
+        signed token, and the screen is read over shoulders. The link itself
+        waits in memory until the person asks for it.
+        """
+        self.clipboard_link = link
+        host = urlsplit(link).hostname or "that site"
+        # The button is named first because the link box has the focus on a
+        # fresh launch, and a letter typed there is a letter (as with `r`).
+        self.query_one("#clipboard-offer", Static).update(
+            _plain(f"The clipboard has a link to {host} — click Paste link, or press p.")
+        )
+        self.query_one("#paste", Button).set_class(False, "hidden")
+
+    def hide_clipboard_offer(self) -> None:
+        """Take the offer away, and forget the link with it."""
+        self.clipboard_link = ""
+        self.query_one("#clipboard-offer", Static).update("")
+        self.query_one("#paste", Button).add_class("hidden")
+
+    def action_paste_clipboard(self) -> None:
+        """Put the offered link in the box — and stop exactly there (F8).
+
+        Filling is the whole action. Nothing is looked up and nothing is
+        downloaded: the link is still a link somebody else wrote, and the
+        promise made to a link from a web page (S5) is made to the clipboard
+        too. Enter is one keystroke away and it belongs to the person.
+        """
+        link = self.clipboard_link
+        if not link:
+            self.notify("The clipboard has no link to use.", severity="warning")
+            return
+        field = self.query_one("#url-input", Input)
+        field.value = link
+        field.focus()
+        self.hide_clipboard_offer()
 
     def reset(self) -> None:
         """Empty the link box and put the cursor back in it."""
@@ -732,6 +828,8 @@ class HomeScreen(Screen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "go":
             self.submit_url()
+        elif event.button.id == "paste":
+            self.action_paste_clipboard()
         elif event.button.id == "recent":
             self.action_recent()
         elif event.button.id == "update-engine":

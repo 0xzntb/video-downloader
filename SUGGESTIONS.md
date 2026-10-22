@@ -10,7 +10,7 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **26 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F6
+Progress so far: **27 of 60** — S1–S6 in section 1, R1–R11 in section 2, F1–F8
 in section 3, U4 in section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
@@ -1427,7 +1427,7 @@ the natural home for **F9** notifications.
 Paste several links (or select playlist entries) and let them run in order, with
 per-item state and an overall summary.
 
-### F8 — Clipboard-aware start · **P2** · S
+### F8 — Clipboard-aware start · **P2** · S · ✅ **Done**
 
 The home screen says "Paste a video link", but nothing offers the link that is
 already on the clipboard. Checking the clipboard on launch is what mail clients
@@ -1435,6 +1435,54 @@ do, and it removes the most common first friction.
 
 **Do:** offer "The clipboard has a link — download it?" with a *Paste* key
 binding (**U5**). Never auto-fill silently, never auto-start.
+
+> **Done, and it is an offer rather than an action.** A new `viddl/clipboard.py`
+> reads the clipboard **once**, when the home screen mounts, through the
+> platform's own tool — `Get-Clipboard`, `pbpaste`, `wl-paste`, `xclip`,
+> `xsel`, first one installed wins — with a fixed argument list, no shell, and a
+> 3 s timeout. Everything it returns goes through `safe_video_link`, the same
+> gate every other way in uses, so a password, a paragraph or an option-shaped
+> string is dropped where it is read and never reaches a variable, let alone
+> the log.
+>
+> **What the screen does with it:** one line under the link box — *"The
+> clipboard has a link to www.youtube.com — click Paste link, or press p."* —
+> and a **Paste link** button that is hidden until there is something to paste.
+> The host is shown and never the whole link, because a copied address can
+> carry a signed token and a screen is read over shoulders. Clicking it (or
+> pressing `p`, under the rule `r` already follows: while the box has the focus,
+> a letter is a letter) fills the box and **stops** — nothing is probed, no
+> screen is pushed, and Enter is left to the person. Opening Viddl with a link
+> in hand does not read the clipboard at all: no subprocess, and no offer on top
+> of the download already being asked about. The clipboard is never polled.
+>
+> **Measured** with stand-in clipboard tools on `PATH` (the platform's own tool
+> replaced, argv and all): a tool printing a link gave `read_text()` that link
+> with the trailing newline trimmed; a tool exiting 1 gave `""`; a tool that
+> slept gave `""` after **3.0 s**; and the real app, driven headlessly with the
+> *default* wiring rather than a stub, showed `The clipboard has a link to
+> www.youtube.com — click Paste link, or press p.` with the link box **empty**,
+> then filled the box with the whole link — signed token and all — on the
+> click, and stayed on the home screen.
+>
+> **16 new tests** (821 → 837): nine for the reader (which tool per platform, a
+> failed reader falling through to the next, a hung one giving up, the timeout
+> reaching every tool, NUL and newline trimming, no shell) and seven driving the
+> app (an offer that does not fill the box, a button that does not submit, `p`
+> as a letter in the box and as a shortcut outside it, a clipboard with no link,
+> hostname-only display, no read at all when opened with a link, a read that
+> raises). `pyflakes` clean; coverage **93 %** overall (`clipboard.py` **100 %**,
+> `tui/app.py` **90 %**). The README has the row and the paragraph, and
+> `SECURITY.md` gained a **The clipboard** section and a "cannot start something
+> from your clipboard" row.
+>
+> **Not done:** there is no switch to turn the read off — no settings screen yet
+> (**F13**) — so it is one read at launch, ignored by leaving the offer alone;
+> `p` cannot work while the link box is focused (a letter there is a letter, as
+> `r` already was), so from a fresh launch the button is the path; `--plain` has
+> no clipboard step, since there is no interface to offer anything in; and the
+> Windows and macOS commands are covered by tests with the platform simulated,
+> not run on those systems.
 
 ### F9 — Tell the user when a long download finishes · **P2** · M
 
@@ -1556,7 +1604,7 @@ the right capabilities, in CI, or with a screen reader.
 prints progress on one line and the final path on its own — usable from scripts,
 `ssh`, and a11y tooling. This also removes the need for the `OSError` dead end.
 
-### U5 — Keyboard affordances · **P2** · S
+### U5 — Keyboard affordances · **P2** · S · ◐ **partly done**
 
 Bindings today: `Esc`, `Tab`, `Ctrl+Q`, `Ctrl+C`, arrows/`j`/`k`, `Enter`, `c`.
 Cheap wins: `p` to paste the clipboard link, `r` to retry a failed download,
@@ -1565,6 +1613,13 @@ Cheap wins: `p` to paste the clipboard link, `r` to retry a failed download,
 older note here — that `Esc` cancels instantly and **R1** made that cost real
 progress — no longer applies: **R1** is done, so `Esc` keeps the part and the
 screen asks whether to resume it or throw it away.
+
+> **◐ Two of the four are in.** `p` pastes the clipboard link and `o` opens the
+> folder from the done screen; both arrived with the features that needed them
+> (**F8**, **F6**), and `p` follows the same rule `r` does — a letter typed into
+> the link box stays a letter, so the button is what a fresh launch uses.
+> Missing: `?` for a help overlay, and `r` is still only "resume" on the
+> **Stopped** screen, not a retry on the failure screen.
 
 ### U6 — Accessibility · **P2** · M
 

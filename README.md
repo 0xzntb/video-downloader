@@ -119,6 +119,7 @@ Nothing is installed system-wide and no configuration files are created.
 | Save somewhere else for one run | `viddl --download-dir ~/Videos <link>` |
 | Skip videos you have already downloaded | `viddl --download-archive <link>` (see [What is remembered](#what-is-remembered-between-runs)) |
 | See what you have downloaded lately | Press `r` (or **Recent**) on the home screen |
+| Use the link you already copied | Click **Paste link** on the home screen (or press `p` when the box is not focused) |
 | Check that everything is set up | `viddl --doctor` |
 | Fetch the newest video engine (the usual fix for a link that stopped working) | Press **Update engine** on the home or failure screen, or `viddl --update` |
 | Fetch the newest ffmpeg build | `viddl --update-ffmpeg` |
@@ -130,7 +131,9 @@ In the app:
 * **Keyboard** — `↑`/`↓` or `j`/`k` to move, `Enter` to download, `Tab` between
   buttons, `Esc` to go back, `Ctrl+Q` to quit. On the qualities screen `s`,
   `m` and `t` switch subtitles, details and the cover image on and off.
-* Paste with `Ctrl+V` / `Cmd+V`, or just type the link.
+* Paste with `Ctrl+V` / `Cmd+V`, or just type the link. If the clipboard already
+  holds a link when Viddl opens, the home screen says so and offers **Paste
+  link**; it never fills the box or starts anything by itself.
 
 When the link is a **playlist**, the qualities screen says so and offers
 **Choose videos…** (`p`). That opens a checklist of every video in it, all

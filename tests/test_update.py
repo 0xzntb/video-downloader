@@ -285,6 +285,10 @@ def services_for(
         make_job=UnusedJob,
         downloads_dir=lambda: tmp_path / "Downloads",
         browsers=lambda: [],
+        # Nothing on the clipboard: the home screen must not shell out to a
+        # clipboard tool in a test, and a real clipboard would change what the
+        # screen shows (F8).
+        clipboard=lambda: "",
         fetch_playlist=lambda *a, **k: Playlist(title="", url=URL),
         update_engine=updater or Updater(),
     )
