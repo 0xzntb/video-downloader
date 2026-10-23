@@ -1,8 +1,9 @@
 # Viddl
 
-Download a video (or just the audio) by pasting a link into a terminal app that
-behaves like a real little program: a clean screen, a list of qualities with
-estimated sizes, a progress bar, and the full path of the file when it is done.
+Download a video (or just the audio) by pasting a link — or typing its name —
+into a terminal app that behaves like a real little program: a clean screen, a
+list of qualities with estimated sizes, a progress bar, and the full path of the
+file when it is done.
 
 Works with YouTube, X, Instagram, Threads, TikTok, Vimeo and the hundreds of
 other sites [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) supports. Mouse and
@@ -14,9 +15,9 @@ machine except the download itself.
 ```
 ╭────────────────────────────────────────────────────────────────────────────────────╮
 │                                       Viddl                                        │
-│                   Download a video or a song by pasting a link.                    │
+│         Download a video or a song by pasting a link or typing its name.           │
 │                                                                                    │
-│  Paste a video link                                                                │
+│  Paste a link (or several, separated by spaces) — or type a name to search for     │
 │  ▊  https://www.youtube.com/watch?v=…                                             ▎
 │                                                                                    │
 │                          Find qualities        Quit                                │
@@ -109,6 +110,7 @@ Nothing is installed system-wide and no configuration files are created.
 | --- | --- |
 | Start it | `viddl` |
 | Go straight to a link | `viddl https://www.youtube.com/watch?v=…` |
+| Only know the name of what you want | `viddl "the song you mean"` (see [Search by name](#search-by-name)) |
 | Start on the audio options | `viddl --audio <link>` |
 | Download something that needs a sign-in | Choose **Sign in with my browser** on the qualities screen, or `viddl --cookies-from-browser auto <link>` |
 | Use it in a script, an old console or over SSH | `viddl --plain --yes <link>` |
@@ -190,6 +192,51 @@ the link and quality, which is also what lets a stopped download be resumed: the
 half-finished file is waiting there — out of sight, not gone — and picking the
 same video again carries on from it, even in a later session. Choose
 **Discard** on the stopped screen and the folder goes too.
+
+## Search by name
+
+You do not always have the link. When the box — or the command line — gets a
+name instead, Viddl searches for it, using the engine's own search (which is
+YouTube's), and takes the **first** result:
+
+```sh
+viddl "the song you mean"
+```
+
+The qualities screen then shows *which* video that was — its title and uploader,
+just as a pasted link would — before anything is downloaded, and `--plain` says
+it out loud before the menu:
+
+```
+Searching for "the song you mean" - the first result is used.
+```
+
+`--list-qualities` and `--json --list-qualities` take a name too, so a script
+can ask what a name resolves to without downloading it:
+
+```sh
+viddl --json --list-qualities "the song you mean" | jq -r '.url, .title'
+```
+
+Once the search has an answer it is treated as **that video**, not as the query:
+the file is named after the video, the [download
+archive](#what-is-remembered-between-runs) records the video, the recent list
+holds the video's own link, and running the same name again with the archive on
+hands back the file you already have. A search is a way in, not a new kind of
+download.
+
+What a name may be: anything that is not a link — `some song`, `AC/DC: live`,
+`café del mar`. What it may not be: something that starts with a dash (the
+downloader would read it as an option), a path (`/tmp/a.mp4`, `~/Videos/x.mp4`,
+`./x`), another scheme (`file:`, `javascript:`), a paste longer than 200
+characters, or nothing at all. Those are refused with a sentence rather than
+searched for, because each of them is a mistake worth naming.
+
+A link is still the precise answer — a name can pick the wrong video — and the
+title on the qualities screen is how you notice. Press `Escape` and edit the name
+in the box to try again. Names work wherever one video is expected: the home box,
+`viddl`, `--plain`, `--playlist` and `--list-qualities`. They are not part of a
+pasted batch of links, where each entry is downloaded without a look-up first.
 
 ## Without the full-screen app
 
@@ -554,6 +601,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 | `viddl/queue.py` | Several videos, one at a time: which one is running, a count that is honest at the end, and a bad video that costs one item rather than the list. |
 | `viddl/plain.py` | The line-oriented `--plain` path: ASCII-only text, one progress line, the saved path alone on stdout. |
 | `viddl/config.py` | The optional settings file: a small TOML subset it can read on every Python it supports, and the order that decides whether a flag, a variable, the file or the default wins. |
+| `viddl/search.py` | What text typed where a link goes actually is: a link, a name to search for, or neither — and the link a search turned out to mean, so the download names a video rather than a query. |
 | `viddl/errors.py` | Maps raw tool output onto plain-language explanations, and says whether the failure is one another attempt may fix. |
 | `viddl/protocol.py` | The `viddl://` hand-off and its per-OS registration. |
 | `viddl/browser_extension/` | The Chromium (Manifest V3) extension. |

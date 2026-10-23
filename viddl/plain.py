@@ -22,6 +22,7 @@ from typing import Callable, Optional, TextIO
 from . import appdata
 from . import cookies as cookies_mod
 from . import engine as engine_mod
+from . import search
 from .download import (
     DownloadCancelled,
     DownloadJob,
@@ -641,12 +642,19 @@ def run_plain(
 
     if cookies:
         _say(report, cookies_mod.active_note(cookies_mod.label_for(cookies)))
-    _say(report, f"Looking up {url}")
+    # A link, or a name to search for (F14). The line says which question is
+    # being asked, so "the wrong song came back" is explained before the menu.
+    _say(report, search.looking_note(url))
     try:
         info = probe(engine, url, cookies=cookies)
     except ToolError as exc:
         _explain_failure(err, exc, engine)
         return 1
+
+    # Once a search has answered, what is downloaded is the video it found, not
+    # the query: the archive, the recent list and a resume all name a video
+    # (F14). A link is left exactly as it came in.
+    url = search.resolved(info, url)
 
     try:
         chosen = choose_option(info, quality=quality, audio=audio)

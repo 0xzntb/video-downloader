@@ -103,6 +103,15 @@ _RULES: list[_Rule] = [
         "Viddl can fetch it for you — choose “Set up ffmpeg” on the previous screen.",
     ),
     _Rule(
+        # A search that found nothing (F14): the answer is about the words, not
+        # the connection, and "no video results" is deliberately checked before
+        # the unsupported-URL rule so a search is not reported as a bad link.
+        r"no video results|no search results|no results found|"
+        r"did not return any results|no results were found",
+        "Nothing was found for that search.",
+        "Try fewer words, another spelling, or paste the link instead.",
+    ),
+    _Rule(
         r"unsupported url|no video formats found|unable to extract|"
         r"no suitable formats|no video could be found|no video found",
         "No video could be found at that link.",

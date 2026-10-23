@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **32 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F13 in section 3, U4 in section 4, D2–D3 in section 6.
+Progress so far: **33 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 in section 3, U4 in section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
 down keeps a secret, and a web page can no longer start it *doing* anything —
@@ -1844,11 +1844,86 @@ thing that silently misbehaves.
 > per-site default; and the four network choices from **F11** are still flags
 > only, which is the "Advanced" row this item makes possible rather than builds.
 
-### F14 — Search by name · **P3** · M
+### F14 — Search by name · **P3** · M · ✅ **Done**
 
 `viddl "some song"` currently fails ("does not look like a video link"). yt-dlp
 can search YouTube via `ytsearch1:`. Note this must land *after* **S1** — search
 strings contain spaces and colons, and the fix there is what makes it safe.
+
+> **Done as one rule with three answers, in one module.** `viddl/search.py`
+> decides what a piece of text is: a **link** (returned as it is, because
+> `safe_video_link` already knows what one looks like), a **name** (returned as
+> `ytsearch1:<the words>`, the engine's own "first search result"), or
+> **neither** — which is a refusal, not a search. The command line, `--plain`,
+> `--list-qualities` and the app's link box all ask the same function, so
+> `viddl "some song"` and typing `some song` into the box do the same thing
+> instead of two things that almost agree.
+>
+> **A search is a way in, not a new kind of download.** The look-up answers with
+> a video, and from that moment the video is what everything names: the job
+> downloads it, the file is named after its title, the archive records
+> `youtube <id>`, the recent list holds its link, and a resume finds the same
+> partial file. That is `search.resolved()`, and it is why the archive can skip a
+> name a second time instead of downloading "the first result" twice.
+>
+> **Refusing is still the default for anything that is not a name.** A string
+> starting with a dash (an option to the downloader), a path (`/tmp/a.mp4`,
+> `~/Videos/x.mp4`, `./x`), another scheme (`file:`, `javascript:`, `http://`),
+> control characters, punctuation alone, more than 200 characters: all refused
+> with the same sentence as before — *That does not look like a video link or a
+> name to search for* — because each is a mistake worth naming rather than a
+> search for its own text. A name is one argv element either way, after the
+> `--` every download already uses, and the prefix is re-validated so
+> `ytsearch1:` cannot be doubled.
+>
+> **The app says which video it found.** The qualities screen carries the found
+> title and uploader as usual, and the note under the menu adds *First result for
+> "…"* so a wrong song is visible before the click; `Escape` goes back to the box,
+> which opens on the *name* rather than the plumbing. `--plain` prints
+> `Searching for "…" - the first result is used.` instead of `Looking up
+> ytsearch1:…`, and `--quiet` still prints nothing but the path. The home screen's
+> tagline and field label, and `--help`'s description, now say a name works.
+> yt-dlp's own "no results" answer gets its own explanation — *Nothing was found
+> for that search* — with advice about the words rather than the connection.
+>
+> **Measured with real yt-dlp 2026.10.21 and the real network.** `viddl
+> --list-qualities "rick astley never gonna give you up"` printed the found video
+> — *Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster) · 3:33*,
+> uploader *Rick Astley*, 16 rows — and exited **0**; the same question as JSON
+> gave `"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"` and
+> `"playlist": null`. `viddl --plain --yes --quiet --quality 144 "rick astley
+> never gonna give you up"` put one path on stdout (and nothing on stderr) and
+> saved a real **5,604,893-byte** MP4 that ffmpeg reads as 3:33 of h264 256x144
+> with AAC audio, exit **0**. With `--download-archive` the archive gained
+> **`youtube dQw4w9WgXcQ`** rather than the query, the recent list gained the
+> video's own link, and the same name again answered *Already had (5.3 MB)* with
+> the same path on stdout and exit **0**. The refusals held against the real
+> binary too: `--uri=--exec=calc.exe`, `file:///etc/passwd` and
+> `"/tmp/a video.mp4"` each exited **1** with the sentence above and no process
+> started.
+>
+> **35 new tests** (1000 → 1035): 23 in `tests/test_search.py` (links, names,
+> collapsed whitespace, punctuation a name really has, every refusal, the
+> prefix not doubling, one-argument shape, resolution to the found video and its
+> fallback, the box text, the `--plain` line), 5 in `tests/test_plain.py` (the
+> search line, the video reaching the job, a link still saying `Looking up`, the
+> no-results sentence, `--quiet`), 3 in `tests/test_cli.py` (a name reaching
+> `--plain` and the app as a search, a name accepted by `--list-qualities`, a
+> path refused), 3 in `tests/test_tui.py` (a name typed into the box, the box
+> opening on the name, and the download job getting the video), and 2 cases in
+> `tests/test_errors.py` (the no-results explanation). `pyflakes` clean;
+> coverage **93 %** overall (`search.py` 100 %, `cli.py` 98 %,
+> `errors.py` 90 %, `plain.py` 89 %, `tui/app.py` 90 %).
+>
+> **Not done** (and not asked for here): the search is YouTube's, because that is
+> the engine's `ytsearch1:` — a name for a Vimeo or Instagram video is not
+> searched on that site; there is no "show me five results and let me pick" (the
+> first result is taken, and the title on the next screen is how you notice);
+> a name is not accepted in a pasted batch of links, on the links screen's add
+> box, or in a `viddl://` hand-off, where a page has given a link and a batch
+> downloads without a look-up; and a file already downloaded under a *different*
+> search term is a different archive question — the archive remembers the video,
+> so it will still be skipped, but the name itself is not remembered anywhere.
 
 ### F15 — Broader browser support · **P3** · M
 

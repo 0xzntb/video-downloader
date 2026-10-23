@@ -940,16 +940,69 @@ async def test_an_empty_link_box_asks_for_a_link(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_sentence_is_not_mistaken_for_a_link(tmp_path):
-    app = ViddlApp(services=make_services(tmp_path))
+async def test_a_name_typed_where_a_link_goes_is_searched_for(tmp_path):
+    """A sentence is a search now, not a refusal (F14)."""
+    probed = []
+    services = make_services(tmp_path)
+    services.probe = lambda engine, url, cancel=None, cookies="": (
+        probed.append(url) or parse_info(INFO_JSON)
+    )
+    app = ViddlApp(services=services)
+
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause()
         app.screen.query_one("#url-input").value = "this is just a sentence"
         with captured_notifications(app) as noted:
             await pilot.press("enter")
-            await pilot.pause()
-        assert isinstance(app.screen, HomeScreen)
-        assert any("looks like text" in message for message in noted.messages)
+            await settle(pilot)
+
+        assert isinstance(app.screen, OptionsScreen)
+        assert probed == ["ytsearch1:this is just a sentence"]
+        # From here on it is the video that answered, not the query (F14).
+        assert app.state.url == URL
+        note = shown(app.screen, "#options-note")
+        assert 'First result for "this is just a sentence".' in note
+        # Every word belonged to the name, so nothing was "left out" of it.
+        assert not noted.messages, noted.messages
+
+
+@pytest.mark.asyncio
+async def test_the_box_opens_on_the_name_a_search_was_given(tmp_path):
+    """Opening ``viddl "some song"`` shows the name, not the plumbing."""
+    app = ViddlApp(initial_url="some song", services=make_services(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        assert isinstance(app.screen, OptionsScreen)
+        home = [screen for screen in app.screen_stack if isinstance(screen, HomeScreen)][0]
+        assert home.query_one("#url-input", Input).value == "some song"
+        # What is downloaded from here is the video the search found.
+        assert app.state.url == URL
+
+
+@pytest.mark.asyncio
+async def test_a_search_downloads_the_video_it_found(tmp_path):
+    """The archive and the recent list get a video, so the job gets a link."""
+    jobs = []
+
+    class WatchingJob(FakeJob):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            jobs.append(self)
+
+    app = ViddlApp(
+        initial_url="some song",
+        services=make_services(tmp_path, job_class=WatchingJob),
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.click("#download")
+        await settle(pilot)
+
+        assert len(jobs) == 1
+        assert jobs[0].url == URL
 
 
 @pytest.mark.asyncio

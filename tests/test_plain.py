@@ -115,6 +115,9 @@ class FakeJob:
         # recent list (F6); a test asserts they arrived.
         self.archive = archive
         self.title = title
+        # Which link the job was asked to fetch (F14): a search is resolved to
+        # the video that answered before it gets here.
+        self.url = url
         # How the download was told to use the network (F11).
         self.network = network
         # Whether this was a live stream, and from where to record it (F12).
@@ -975,3 +978,57 @@ def test_quiet_still_gives_the_recording_path_and_nothing_else():
     assert out == f"{DEST / 'A Live Stream [abc].mp4'}\n"
     assert "What had been recorded was saved" in err
     assert "Live:" not in err
+
+
+# ---------------------------------------------------------------------------
+# a name instead of a link (F14)
+# ---------------------------------------------------------------------------
+
+
+def test_a_name_says_it_is_a_search_and_which_answer_is_used():
+    code, out, err = run("ytsearch1:some song", assume_yes=True)
+
+    assert code == 0
+    assert 'Searching for "some song" - the first result is used.' in err
+    # The plumbing is never printed: it means nothing to the person reading.
+    assert "ytsearch1:" not in err
+    assert out == f"{DEST / 'A Very Real Video [dQw4w9WgXcQ].mp4'}\n"
+
+
+def test_a_search_downloads_the_video_it_found():
+    """The job, the archive and the recent list all get a video (F14)."""
+    code, out, err = run("ytsearch1:some song", assume_yes=True)
+
+    assert code == 0
+    assert FakeJob.made[-1].url == URL
+    assert FakeJob.made[-1].title == "A Very Real Video"
+
+
+def test_a_link_is_still_looked_up_by_its_link():
+    code, out, err = run(assume_yes=True)
+
+    assert code == 0
+    assert f"Looking up {URL}" in err
+    assert "Searching for" not in err
+
+
+def test_a_search_that_found_nothing_says_so():
+    def probe(engine, link, cookies=""):
+        raise ToolError(
+            "Nothing was found for that search.",
+            "Try fewer words, another spelling, or paste the link instead.",
+        )
+
+    code, out, err = run("ytsearch1:no such song", probe=probe, assume_yes=True)
+
+    assert code == 1
+    assert out == ""
+    assert "Nothing was found for that search." in err
+
+
+def test_quiet_keeps_a_search_to_the_path_on_stdout():
+    code, out, err = run("ytsearch1:some song", assume_yes=True, quiet=True)
+
+    assert code == 0
+    assert out == f"{DEST / 'A Very Real Video [dQw4w9WgXcQ].mp4'}\n"
+    assert "Searching for" not in err

@@ -48,6 +48,7 @@ from .. import download as download_mod
 from .. import engine as engine_mod
 from .. import errors
 from .. import history as history_mod
+from .. import search
 from ..download import (
     DownloadCancelled,
     DownloadJob,
@@ -453,7 +454,9 @@ class ViddlApp(App):
         # A link arriving from the command line or a browser hand-off is still
         # a link from outside: it is checked here as well as at the CLI.
         self.state = State(
-            url=safe_video_link(initial_url) or "",
+            # A link, or a name to search for (F14): the same rule the command
+            # line uses, so the two front doors accept the same things.
+            url=search.target_for(initial_url) or "",
             prefer_audio=prefer_audio,
             prefer_quality=prefer_quality,
             # Checked against the closed list on the way in, so the value that
@@ -727,9 +730,13 @@ class HomeScreen(Screen):
     def compose(self) -> ComposeResult:
         with Vertical(id="home-panel"):
             yield Static(f"{APP_TITLE}", id="brand")
-            yield Static("Download a video or a song by pasting a link.", classes="tagline")
             yield Static(
-                "Paste a video link — or several, separated by spaces",
+                "Download a video or a song by pasting a link or typing its name.",
+                classes="tagline",
+            )
+            yield Static(
+                "Paste a link (or several, separated by spaces) — or type a name to "
+                "search for",
                 classes="field-label",
             )
             yield Input(
@@ -755,7 +762,11 @@ class HomeScreen(Screen):
         self.query_one("#update-engine", Button).add_class("hidden")
         self.refresh_engine_status()
         if self.app.state.url:
-            self.query_one("#url-input", Input).value = self.app.state.url
+            # A search opens with the name in the box, not its plumbing, so it
+            # can be edited and tried again (F14).
+            self.query_one("#url-input", Input).value = search.display_text(
+                self.app.state.url
+            )
             self.call_after_refresh(self.submit_url)
             return
         self.query_one("#url-input", Input).focus()
@@ -871,15 +882,27 @@ class HomeScreen(Screen):
         # handed over as if it were a flag (S1).
         links, left_out = _links_from_text(raw)
         if not links:
-            self.notify(
-                "That looks like text, not a link. Copy the address from your browser."
-                if " " in raw
-                else "That does not look like a video link. Copy the address from your browser.",
-                severity="warning",
-                timeout=6,
-            )
-            field.focus()
-            return
+            # A name is not a link and is not meant to be one (F14). Whole text
+            # only: "some words <link>" is a pasted page with a link in it, and
+            # searching it for its own words would ignore the link.
+            target = search.target_for(raw)
+            if target is not None and search.is_search(target):
+                links = [target]
+                # Every word belongs to the name: there is nothing left out,
+                # and saying otherwise would be about a link that was not there.
+                left_out = 0
+            else:
+                self.notify(
+                    "That looks like text, not a link. Copy the address from "
+                    "your browser, or type a name to search for."
+                    if " " in raw
+                    else "That does not look like a video link or a name. Copy "
+                    "the address from your browser, or type a name to search for.",
+                    severity="warning",
+                    timeout=6,
+                )
+                field.focus()
+                return
         if left_out:
             # Said out loud: a word lost between two links is a person wondering
             # later why one of the three never arrived (F7).
@@ -1172,6 +1195,10 @@ class LinksScreen(Screen):
 class OptionsScreen(Screen):
     """Screen 2: choose a quality."""
 
+    #: The name this look-up searched for, when it was a search rather than a
+    #: link (F14). Empty for every link, which is most runs.
+    search_query: str = ""
+
     BINDINGS = [
         Binding("escape", "go_back", "Back", show=True),
         Binding("b", "go_back", "Back", show=False),
@@ -1429,6 +1456,12 @@ class OptionsScreen(Screen):
         self.stop_looking()
         self.query_one("#stop-probe", Button).add_class("hidden")
         self.query_one("#update-engine", Button).add_class("hidden")
+        # A name is answered by a video, and from here on it is that video
+        # (F14): a download, an archive entry, a recent entry and a resume all
+        # have to name the same thing, and a query is not a thing.
+        if search.is_search(self.app.state.url):
+            self.search_query = search.query_from(self.app.state.url)
+            self.app.state.url = search.resolved(info, self.app.state.url)
         self.app.state.info = info
         heading = self.query_one("#options-heading", Static)
         status = self.query_one("#options-status", Static)
@@ -1640,6 +1673,14 @@ class OptionsScreen(Screen):
                 lines.append(
                     f"{len(state.links)} links  {_ARP}  this quality is used for "
                     "all of them, in the order they were added."
+                )
+            if self.search_query:
+                # What was found, and that something else could have been: a
+                # search is a convenience, and the menu makes the answer visible
+                # before anything is downloaded (F14).
+                lines.append(
+                    f'First result for "{self.search_query}". '
+                    "Press Escape to try a different name."
                 )
             if not batching and info is not None and info.playlist_note:
                 lines.append(

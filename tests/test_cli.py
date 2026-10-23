@@ -223,8 +223,17 @@ def test_install_browser_extension_copies_out(capsys):
     assert manifest["manifest_version"] == 3
 
 
-def test_a_sentence_is_not_a_link(capsys):
-    assert main(["hello there, download this for me"]) == 1
+def test_a_name_is_searched_for_rather_than_refused(monkeypatch):
+    """A sentence is a search now, not an error (F14)."""
+    seen = _capture_run(monkeypatch)
+    assert main(["hello there, download this for me"]) == 0
+    assert seen["url"] == "ytsearch1:hello there, download this for me"
+
+
+def test_a_path_is_not_a_name_to_search_for(monkeypatch, capsys):
+    """A local path is a mistake to report, not something to search for."""
+    _refuse_to_launch(monkeypatch)
+    assert main(["/tmp/not-a-link.mp4"]) == 1
     assert "does not look like a video link" in capsys.readouterr().err
 
 
@@ -314,9 +323,21 @@ def test_list_qualities_omits_an_unknown_uploader(monkeypatch, capsys):
     assert capsys.readouterr().out.startswith("Untitled upload")
 
 
-def test_list_qualities_rejects_a_sentence(capsys):
-    assert main(["--list-qualities", "not a link at all"]) == 1
-    assert "does not look like a link" in capsys.readouterr().err
+def test_list_qualities_takes_a_name_and_searches_for_it(monkeypatch, capsys):
+    """The read-only question works on a name too (F14)."""
+    seen: dict = {}
+    info = MediaInfo(url=URL, title="The Song Found", uploader="")
+
+    def probe(engine, url, cookies=""):
+        seen["url"] = url
+        return info
+
+    monkeypatch.setattr("viddl.download.probe_video", probe)
+
+    assert main(["--list-qualities", "the song i meant"]) == 0
+
+    assert seen["url"] == "ytsearch1:the song i meant"
+    assert "The Song Found" in capsys.readouterr().out
 
 
 def test_list_qualities_explains_a_failed_probe(monkeypatch, capsys):
@@ -900,3 +921,27 @@ def test_the_app_starts_on_the_best_row_when_nothing_is_remembered(monkeypatch):
     assert main([URL]) == 0
 
     assert seen["prefer_quality"] == ""
+
+
+# ---------------------------------------------------------------------------
+# a name instead of a link (F14)
+# ---------------------------------------------------------------------------
+
+
+def test_a_name_reaches_the_plain_path_as_a_search(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        plain, "run_plain", lambda url, **kwargs: seen.update(url=url, **kwargs) or 0
+    )
+
+    assert main(["--plain", "--yes", "some song"]) == 0
+
+    assert seen["url"] == "ytsearch1:some song"
+
+
+def test_the_app_gets_a_search_when_the_link_is_a_name(monkeypatch):
+    seen = _capture_run(monkeypatch)
+
+    assert main(["some song"]) == 0
+
+    assert seen["url"] == "ytsearch1:some song"

@@ -32,6 +32,9 @@ from viddl.errors import SIGN_IN_MARK, explain
         ),
         ("OSError: [Errno 28] No space left on device", "disk is full"),
         ("ERROR: Requested format is not available", "quality is no longer offered"),
+        # A search that found nothing (F14): about the words, not the connection.
+        ("ERROR: No video results for ytsearch1:qwxxzzy", "Nothing was found"),
+        ("ERROR: ytsearch1:qwxxzzy: No results found", "Nothing was found"),
     ],
 )
 def test_known_failures_get_a_friendly_message(raw, expected):

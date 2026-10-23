@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from . import APP_TITLE, __version__
-from . import appdata, config, cookies as cookies_mod, logfile
+from . import appdata, config, cookies as cookies_mod, logfile, search
 from .engine import Engine, Tool, ToolError, staleness_advice
 from .extras import Extras
 from .formats import format_rows
@@ -42,9 +42,8 @@ from .protocol import (
     register,
     unregister,
 )
-from .util import safe_video_link
 
-_DESCRIPTION = "Download videos and audio by pasting a link."
+_DESCRIPTION = "Download videos and audio by pasting a link or typing a name."
 
 
 def _enable_log_file() -> None:
@@ -535,9 +534,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     if args.list_qualities:
-        url = safe_video_link(args.list_qualities)
+        # A link, or a name to search for (F14): the question "what qualities
+        # does this have" is worth answering for either.
+        url = search.target_for(args.list_qualities)
         if url is None:
-            return _fail("That does not look like a link.")
+            return _fail("That does not look like a link or a name to search for.")
         from .download import probe_video
 
         engine = Engine()
@@ -605,15 +606,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         url = raw.strip()
         if url:
-            # Only a plain http(s) link goes through: anything option-shaped
-            # would be read as a flag by the downloader we hand it to.
-            link = safe_video_link(url)
-            if link is None:
+            # A link, or a name to search for (F14). Only a plain http(s) link
+            # or a name Viddl is willing to search for goes through: anything
+            # option-shaped would be read as a flag by the downloader we hand
+            # it to, and a path is a mistake rather than a name.
+            target = search.target_for(url)
+            if target is None:
                 return _fail(
-                    "That does not look like a video link.",
-                    "Example: viddl https://www.youtube.com/watch?v=…",
+                    "That does not look like a video link or a name to search for.",
+                    "Paste a link, or type a name: viddl \"a song name\"",
                 )
-            url = link
+            url = target
 
     if args.plain:
         if not url:
