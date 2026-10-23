@@ -148,3 +148,16 @@ def test_a_title_outside_ascii_survives_the_round_trip():
     report = json.loads(machine.dumps(machine.qualities_report(info)))
 
     assert report["title"] == "日本語のビデオ"
+
+
+def test_the_doctor_report_names_the_settings_file():
+    from viddl import config
+
+    config.set_value("quality", "720")
+
+    report = machine.doctor_report()
+
+    assert report["settings"]["path"] == str(config.config_path())
+    assert report["settings"]["file"] is True
+    assert report["settings"]["values"] == {"quality": "720"}
+    assert report["settings"]["problems"] == []

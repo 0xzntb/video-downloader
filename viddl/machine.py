@@ -24,6 +24,7 @@ from typing import Any, Dict, Optional
 
 from . import APP_TITLE, __version__
 from . import appdata
+from . import config
 from . import cookies as cookies_mod
 from . import engine as engine_mod
 from .engine import Engine, Tool
@@ -54,6 +55,7 @@ def doctor_report(engine: Optional[Engine] = None) -> Dict[str, Any]:
     engine = engine or Engine()
     problem = appdata.ensure_dirs()
     ytdlp = engine.find_ytdlp()
+    stored = config.read()
 
     try:
         downloads = str(appdata.downloads_dir())
@@ -77,6 +79,15 @@ def doctor_report(engine: Optional[Engine] = None) -> Dict[str, Any]:
             else ""
         ),
         "ffmpeg": _tool(engine.find_ffmpeg()),
+        # The optional settings file (F13): what it holds, not what is in
+        # force — the environment still outranks it and is listed below, and
+        # a value the file got wrong is named rather than dropped quietly.
+        "settings": {
+            "path": str(stored.path),
+            "file": stored.path.exists(),
+            "values": dict(stored.values),
+            "problems": list(stored.problems),
+        },
         # What the environment asked for, and what became of it: the same list
         # the doctor prints under the tools (D2).
         "environment": [

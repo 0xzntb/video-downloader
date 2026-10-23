@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from viddl import appdata, cli, plain
+from viddl import appdata, cli, config, plain
 from viddl.cli import main
 from viddl.engine import Tool, ToolError
 from viddl.formats import MediaInfo, MediaOption
@@ -764,3 +764,139 @@ def test_live_from_start_with_a_playlist_is_refused(capsys):
     err = capsys.readouterr().err
     assert "--live-from-start records one live stream, not a playlist" in err
     assert "without --playlist" in err
+
+
+# ---------------------------------------------------------------------------
+# remembered preferences (F13)
+# ---------------------------------------------------------------------------
+
+
+def test_set_remembers_a_preference_and_says_where(capsys):
+    assert main(["--set", "quality", "720"]) == 0
+
+    out = capsys.readouterr().out
+    assert "Saved quality = 720" in out
+    assert str(config.config_path()) in out
+    assert "A flag or an environment variable still wins" in out
+    assert config.quality() == "720"
+
+
+def test_unset_forgets_a_preference(capsys):
+    main(["--set", "quality", "720"])
+    capsys.readouterr()
+
+    assert main(["--unset", "quality"]) == 0
+
+    out = capsys.readouterr().out
+    assert "Removed quality" in out
+    assert not config.config_path().exists()
+
+
+def test_unset_says_when_there_was_nothing_to_forget(capsys):
+    assert main(["--unset", "archive"]) == 0
+
+    assert "archive was not set" in capsys.readouterr().out
+
+
+def test_a_preference_that_cannot_be_used_is_refused(capsys):
+    assert main(["--set", "quality", "ultra"]) == 1
+
+    err = capsys.readouterr().err
+    assert "not a quality" in err
+    assert "viddl --set download-dir" in err
+    assert not config.config_path().exists()
+
+
+def test_an_unknown_setting_is_refused(capsys):
+    assert main(["--set", "theme", "dark"]) == 1
+    assert "Unknown setting 'theme'" in capsys.readouterr().err
+
+
+def test_set_and_unset_at_once_are_refused(capsys):
+    assert main(["--set", "quality", "720", "--unset", "archive"]) == 1
+
+    assert "--set and --unset change different things" in capsys.readouterr().err
+    assert not config.config_path().exists()
+
+
+def test_the_doctor_says_what_the_settings_file_holds(capsys):
+    assert main(["--doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "Settings:" in out
+    assert "none — every setting is a default" in out
+
+
+def test_the_doctor_shows_a_remembered_preference(capsys):
+    config.set_value("quality", "720")
+
+    assert main(["--doctor"]) == 0
+
+    out = capsys.readouterr().out
+    assert str(config.config_path()) in out
+    assert "(quality)" in out
+
+
+def test_a_remembered_quality_reaches_the_plain_path(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(plain, "run_plain", lambda url, **kwargs: seen.update(kwargs) or 0)
+    config.set_value("quality", "720")
+
+    assert main(["--plain", "--yes", URL]) == 0
+
+    assert seen["quality"] == "720"
+
+
+def test_the_quality_flag_beats_the_remembered_one(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(plain, "run_plain", lambda url, **kwargs: seen.update(kwargs) or 0)
+    config.set_value("quality", "720")
+
+    assert main(["--plain", "--yes", "--quality", "480", URL]) == 0
+
+    assert seen["quality"] == "480"
+
+
+def test_audio_beats_a_remembered_quality(monkeypatch):
+    """`--audio` is a flag, so it outranks a preference (F13)."""
+    seen = {}
+    monkeypatch.setattr(plain, "run_plain", lambda url, **kwargs: seen.update(kwargs) or 0)
+    config.set_value("quality", "720")
+
+    assert main(["--plain", "--yes", "--audio", URL]) == 0
+
+    assert seen["audio"] is True
+    assert seen["quality"] == ""
+
+
+def test_the_environment_beats_a_remembered_quality(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(plain, "run_plain", lambda url, **kwargs: seen.update(kwargs) or 0)
+    config.set_value("quality", "720")
+    monkeypatch.setenv("VIDDL_QUALITY", "best")
+
+    assert main(["--plain", "--yes", URL]) == 0
+
+    assert seen["quality"] == "best"
+
+
+def test_a_remembered_quality_reaches_the_app(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        "viddl.tui.app.run", lambda *, url, audio, **kwargs: seen.update(kwargs)
+    )
+    config.set_value("quality", "480")
+
+    assert main([URL]) == 0
+
+    assert seen["prefer_quality"] == "480"
+
+
+def test_the_app_starts_on_the_best_row_when_nothing_is_remembered(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        "viddl.tui.app.run", lambda *, url, audio, **kwargs: seen.update(kwargs)
+    )
+
+    assert main([URL]) == 0
+
+    assert seen["prefer_quality"] == ""

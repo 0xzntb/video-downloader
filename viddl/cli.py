@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from . import APP_TITLE, __version__
-from . import appdata, cookies as cookies_mod, logfile
+from . import appdata, config, cookies as cookies_mod, logfile
 from .engine import Engine, Tool, ToolError, staleness_advice
 from .extras import Extras
 from .formats import format_rows
@@ -188,6 +188,22 @@ def build_parser() -> argparse.ArgumentParser:
             "the moment you start (not every site can serve the part it has "
             "already played)"
         ),
+    )
+    parser.add_argument(
+        "--set",
+        dest="set_setting",
+        nargs=2,
+        metavar=("SETTING", "VALUE"),
+        help=(
+            "remember a preference in Viddl's settings file: "
+            "download-dir, quality or archive"
+        ),
+    )
+    parser.add_argument(
+        "--unset",
+        dest="unset_setting",
+        metavar="SETTING",
+        help="forget a remembered preference",
     )
     parser.add_argument(
         "--doctor",
@@ -358,6 +374,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _prepare_console()
     _enable_log_file()
 
+    # Changing a preference is a question about Viddl, not about a link, so it
+    # is answered before anything is asked of a site (F13). The file is only
+    # written here: a machine that never runs this command has none.
+    if args.set_setting and args.unset_setting:
+        return _fail(
+            "--set and --unset change different things.",
+            "Run them one at a time.",
+        )
+    if args.set_setting:
+        name, value = args.set_setting
+        try:
+            stored = config.set_value(name, value)
+        except ValueError as exc:
+            return _fail(str(exc), f"For example: {config.example()}")
+        print(f"Saved {name} = {stored} in {config.config_path()}")
+        print("A flag or an environment variable still wins when it is set.")
+        return 0
+    if args.unset_setting:
+        try:
+            removed = config.unset(args.unset_setting)
+        except ValueError as exc:
+            return _fail(str(exc), f"For example: {config.example()}")
+        if removed:
+            print(f"Removed {args.unset_setting} from {config.config_path()}")
+        else:
+            print(f"{args.unset_setting} was not set.")
+        return 0
+
     if not args.plain and (args.quality or args.yes or args.playlist or args.quiet):
         hint = "Try: viddl --plain --quality 720 <link>"
         if args.playlist and not (args.quality or args.yes):
@@ -448,10 +492,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
             print(machine.dumps(machine.doctor_report()), end="")
             return 0
-        # The report says which overrides are set, what Viddl is actually
-        # waiting for whether or not one is (R11), what it remembers between
-        # runs (F6), and which browsers it could read a sign-in from (F1).
+        # The report says what the settings file holds (F13), which overrides
+        # are set, what Viddl is actually waiting for whether or not one is
+        # (R11), what it remembers between runs (F6), and which browsers it
+        # could read a sign-in from (F1).
         for line in [
+            *config.report(),
             *Engine().report(),
             appdata.archive_note(),
             appdata.recent_note(),
@@ -523,6 +569,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Anything else opens the app.
     url = ""
     audio = bool(args.audio)
+    # The quality a remembered preference asks for, when the flag is silent
+    # (F13). `--audio` is a flag too, so it beats a stored default rather than
+    # being overridden by one; an explicit `--quality` beats both.
+    quality = (args.quality or "").strip()
+    if not quality and not audio:
+        quality = config.quality()
     # What remembers what has already been downloaded, when the run asked for
     # one (F6). Both front doors get the same answer, so the app and --plain
     # agree about what "already have this" means.
@@ -575,7 +627,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return run_plain(
                 url,
                 audio=audio,
-                quality=args.quality or "",
+                quality=quality,
                 assume_yes=bool(args.yes),
                 cookies=cookies,
                 playlist=bool(args.playlist),
@@ -604,6 +656,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # The app offers the same choice on the qualities screen; on the
             # command line it can be given up front (F12).
             live_from_start=bool(args.live_from_start),
+            # The row to start the cursor on, from the settings file or
+            # VIDDL_QUALITY (F13). Empty means the best row, as before.
+            prefer_quality=quality,
         )
     except KeyboardInterrupt:  # pragma: no cover - interactive
         return 130

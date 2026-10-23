@@ -14,9 +14,14 @@ extra yt-dlp options on purpose.
 The sixth, ``VIDDL_TIMEOUT``, decides how long Viddl waits for the network (R11).
 
 The seventh, ``VIDDL_ARCHIVE``, remembers what has already been downloaded so
-the same video is not fetched twice (F6).
+the same video is not fetched twice (F6). The eighth, ``VIDDL_QUALITY``, picks
+the quality ``--plain`` uses when ``--quality`` is not given (F13).
 
-All seven are read through :func:`folder_override`, :func:`program_override`,
+Each of them outranks the optional settings file in ``~/.config/viddl`` (see
+:mod:`viddl.config`), and a flag outranks both: a preference is a default, not
+an instruction.
+
+They are read through :func:`folder_override`, :func:`program_override`,
 :func:`ytdlp_arguments`, :func:`network_timeout` and :func:`archive_enabled`,
 which check what they are given before it is used. An environment variable is not a command line: nobody
 sees it in the app, and in a shared checkout or a CI job it can be set by
@@ -38,6 +43,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from . import APP_NAME
+from . import config
 
 # The seven variables Viddl reads, named once so the documentation, the doctor
 # output and the tests cannot drift from the code that reads them.
@@ -48,6 +54,10 @@ ENV_FFMPEG = "VIDDL_FFMPEG"
 ENV_YTDLP_ARGS = "VIDDL_YTDLP_ARGS"
 ENV_TIMEOUT = "VIDDL_TIMEOUT"
 ENV_ARCHIVE = "VIDDL_ARCHIVE"
+#: The one that names a default quality rather than a folder (F13). It lives
+#: with the settings file's own rules, so the flag, the variable and the file
+#: cannot accept three different spellings.
+ENV_QUALITY = config.ENV_QUALITY
 ENVIRONMENT_VARIABLES = (
     ENV_HOME,
     ENV_DOWNLOAD_DIR,
@@ -56,6 +66,7 @@ ENVIRONMENT_VARIABLES = (
     ENV_YTDLP_ARGS,
     ENV_TIMEOUT,
     ENV_ARCHIVE,
+    ENV_QUALITY,
 )
 
 # Options Viddl builds for itself, by short and long name. A value that sets one
@@ -374,9 +385,15 @@ def archive_enabled() -> bool:
 
     Off unless asked for: skipping a video you already have is a behaviour a
     user opts into, because the alternative — Viddl quietly refusing to fetch
-    something — is only welcome when it is what you asked for.
+    something — is only welcome when it is what you asked for. It can be asked
+    for with a flag (which sets the variable), with the variable, or in the
+    settings file (F13) — in that order, and the variable is decisive even when
+    its value is refused, rather than falling through to a file that says
+    something else.
     """
-    return _asked(ENV_ARCHIVE).strip().lower() in _ARCHIVE_ON
+    if ENV_ARCHIVE in os.environ:
+        return _asked(ENV_ARCHIVE).strip().lower() in _ARCHIVE_ON
+    return bool(config.archive())
 
 
 def archive_problem() -> str:
@@ -436,12 +453,14 @@ def overrides() -> List[Override]:
             problem = network_timeout_problem()
         elif name == ENV_ARCHIVE:
             problem = archive_problem()
+        elif name == ENV_QUALITY:
+            problem = config.quality_problem()
         else:
             problem = _refuse(value)
         if not problem:
             if name in (ENV_YTDLP, ENV_FFMPEG):
                 problem = "" if program_override(name) else "not a program Viddl can run"
-            elif name not in (ENV_YTDLP_ARGS, ENV_TIMEOUT, ENV_ARCHIVE):
+            elif name not in (ENV_YTDLP_ARGS, ENV_TIMEOUT, ENV_ARCHIVE, ENV_QUALITY):
                 problem = "" if folder_override(name) else "not a folder"
         found.append(Override(name, value, problem))
     return found
@@ -591,10 +610,20 @@ def _xdg_download_dir() -> Optional[Path]:
 
 
 def downloads_dir() -> Path:
-    """The user's Downloads folder, created if needed."""
+    """The user's Downloads folder, created if needed.
+
+    Three answers, in the order they win (F13): ``VIDDL_DOWNLOAD_DIR`` (which
+    ``--download-dir`` sets), then the settings file, then the platform's own
+    Downloads folder. An environment variable that cannot be used is still an
+    answer — it falls back to the default, not to the file — because a run that
+    was told something is not a run that was told nothing.
+    """
     override = folder_override(ENV_DOWNLOAD_DIR)
+    configured = config.download_dir()
     if override is not None:
         path = override
+    elif configured is not None:
+        path = configured
     elif _is_windows():
         home = os.environ.get("USERPROFILE") or str(Path.home())
         path = Path(home) / "Downloads"

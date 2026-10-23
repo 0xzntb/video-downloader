@@ -124,6 +124,7 @@ Nothing is installed system-wide and no configuration files are created.
 | Keep a call, a game or a stream usable while it downloads | `viddl --limit-rate 2M <link>` (see [A slow connection, a busy one, or a proxy](#a-slow-connection-a-busy-one-or-a-proxy)) |
 | Download through a proxy | `viddl --proxy socks5://127.0.0.1:1080 <link>` |
 | Record a live stream from its beginning | Press **Record from the start** on the qualities screen (`l`), or `viddl --live-from-start <link>` (see [Live streams](#live-streams)) |
+| Remember a folder, quality or archive between runs | `viddl --set quality 720` (see [Settings](#settings-optional)) |
 | See what you have downloaded lately | Press `r` (or **Recent**) on the home screen |
 | Use the link you already copied | Click **Paste link** on the home screen (or press `p` when the box is not focused) |
 | Download several links in one go | Paste them into the link box separated by spaces, then **Download all** on the links screen |
@@ -253,7 +254,7 @@ The shapes, with every key always present:
 | --- | --- |
 | qualities | `url`, `title`, `uploader`, `duration` (seconds, or `null`), `extractor`, `live`, `playlist` (`title`, `count`, `url`, `note`, or `null`), `qualities` |
 | each quality | `key` (what `--quality` accepts), `label`, `kind` (`video`/`audio`), `height`, `size_bytes` (`null` when unknown — never `0`), `size_is_estimate`, `needs_ffmpeg`, `format_selector`, `merge_container`, `audio_format`, `keeps_source_audio`, `note` |
-| doctor | `name`, `version`, `folders` (`app`, `downloads`, `log`), `problem`, `ytdlp` and `ffmpeg` (`path`, `version`, `origin`, `origin_text`, or `null`), `ytdlp_note`, `environment` (`name`, `value`, `problem`), `timeout_seconds` (`null` when unset), `archive` (`enabled`, `path`), `recent` (`path`), `cookies` (`browsers`: `key`, `label`), `platform` |
+| doctor | `name`, `version`, `folders` (`app`, `downloads`, `log`), `problem`, `ytdlp` and `ffmpeg` (`path`, `version`, `origin`, `origin_text`, or `null`), `ytdlp_note`, `settings` (`path`, `file`, `values`, `problems`), `environment` (`name`, `value`, `problem`), `timeout_seconds` (`null` when unset), `archive` (`enabled`, `path`), `recent` (`path`), `cookies` (`browsers`: `key`, `label`), `platform` |
 
 The rows are in the order the app shows them, so `qualities[0]` is what pressing
 Enter would pick. Failures are still human sentences on stderr with exit code 1,
@@ -552,12 +553,14 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 | `viddl/download.py` | Reads what a link offers — in a process of its own, so a slow site can be stopped and its answer is remembered for a few minutes — and runs yt-dlp in a per-download working folder, reads its progress, and moves the finished file out under a name reserved before the move, so two windows cannot collide. A failure worth a second attempt is retried after a doubling wait; stopping it stops the whole tree yt-dlp started — the ffmpeg merge included — and keeps what was fetched so it can be resumed. |
 | `viddl/queue.py` | Several videos, one at a time: which one is running, a count that is honest at the end, and a bad video that costs one item rather than the list. |
 | `viddl/plain.py` | The line-oriented `--plain` path: ASCII-only text, one progress line, the saved path alone on stdout. |
+| `viddl/config.py` | The optional settings file: a small TOML subset it can read on every Python it supports, and the order that decides whether a flag, a variable, the file or the default wins. |
 | `viddl/errors.py` | Maps raw tool output onto plain-language explanations, and says whether the failure is one another attempt may fix. |
 | `viddl/protocol.py` | The `viddl://` hand-off and its per-OS registration. |
 | `viddl/browser_extension/` | The Chromium (Manifest V3) extension. |
 
 Nothing is ever written outside `~/.local/share/viddl` (plus your Downloads
-folder), apart from the two small system bits that make the browser button work:
+folder, and the optional settings file in `~/.config/viddl` described under
+[Settings](#settings-optional)), apart from the two small system bits that make the browser button work:
 a `.desktop` entry on Linux, an app bundle in `~/Applications` on macOS, or a
 registry key under `HKEY_CURRENT_USER` on Windows. Viddl's own folder and the
 log are readable only by you.
@@ -578,9 +581,14 @@ Two small files in Viddl's own folder, both readable by your account alone:
 * **The download archive** (`download-archive.txt`) — one line per video
   yt-dlp has finished. This one is off unless you ask for it:
   `viddl --download-archive <link>` turns it on for that run (or set
-  `VIDDL_ARCHIVE=1`), and every download that run — app or `--plain` — records
+  `VIDDL_ARCHIVE=1`, or `viddl --set archive on` to remember it), and every
+  download that run — app or `--plain` — records
   itself and skips a video that is already in it. Re-running a playlist takes
   only the videos it has not fetched yet.
+
+The optional settings file is not one of these: it lives with your other
+configuration (`~/.config/viddl`) and is described under
+[Settings](#settings-optional).
 
 What the archive does, said plainly: asking for a video you already have
 hands back the file already in your Downloads folder instead of downloading it
@@ -590,13 +598,62 @@ archive); and if you want the same video at a *different* quality while the
 archive is on, it will still hand back the file you have, because that is what
 it was asked to do. Leave it off, as by default, and every click downloads.
 
+## Settings (optional)
+
+Viddl works with nothing configured, and that stays the default: no file is
+read, none is written, and every choice is the one the app shipped with. When
+you do want to remember something — a folder on another disk, the quality you
+always take, an archive so repeats are skipped — one command writes it:
+
+```sh
+viddl --set download-dir ~/Videos
+viddl --set quality 720
+viddl --set archive on
+```
+
+The file is `~/.config/viddl/config.toml` (`$XDG_CONFIG_HOME/viddl/config.toml`
+when that is set, and `%APPDATA%\viddl\config.toml` on Windows), readable only
+by you, and written only by `--set` and `--unset` — a machine that never ran
+either has no file at all. `viddl --unset quality` forgets one preference;
+removing the last one deletes the file, which puts the zero-config default back.
+
+| Setting | Values | Flag and variable that override it |
+| --- | --- | --- |
+| `download-dir` | a folder | `--download-dir`, `VIDDL_DOWNLOAD_DIR` |
+| `quality` | `720`, `1080p`, `best`, `audio`, `mp3-192` … | `--quality`, `--audio`, `VIDDL_QUALITY` |
+| `archive` | `on` or `off` | `--download-archive`, `VIDDL_ARCHIVE` |
+
+**What wins:** a flag on the command line, then an environment variable, then
+this file, then the built-in default. That order is the point of a preference
+being a default rather than an instruction: `viddl --quality 480` takes 480 for
+one run while the file keeps saying 720, and `--audio` beats a remembered
+quality because it is a flag. `--set` checks the value before writing it — a
+folder that is really a file, a quality the download path would refuse, or a
+"yes" that is not a yes is refused with a sentence rather than written down and
+ignored later. A value that gets into the file by hand and cannot be used is
+ignored and named in `viddl --doctor`, which also prints the file and which
+settings it holds.
+
+The file is a small TOML subset — `key = "value"` and `key = true` — because
+every Python Viddl supports has to read it back (3.9 has no `tomllib`). A key
+from a newer version is left alone when Viddl rewrites the file, and comments
+are the one thing it does not keep.
+
+`quality` is where the app *starts*, not a decision it makes for you: the
+qualities screen opens with that row under the cursor (or the best row, when
+this link does not have it), and `--plain` downloads it when `--quality` is
+silent.
+
+
 ## Environment variables
 
 Five variables change where Viddl looks, one changes what it asks for, one
-changes how long it waits for the network, and one says what is remembered
-between runs. None are needed for normal use; they
-exist for tests, shared machines, slow links and unusual setups. `viddl --doctor` prints the ones that are set and what became of
-each, so none of them is a secret.
+changes how long it waits for the network, one says what is remembered
+between runs, and one sets a default quality. None are needed for normal
+use; they exist for tests, shared machines, slow links and unusual setups,
+and every one of them outranks the settings file above. `viddl --doctor`
+prints the ones that are set and what became of each, so none of them is a
+secret.
 
 | Variable | What it does | Why you would use it |
 | --- | --- | --- |
@@ -607,6 +664,7 @@ each, so none of them is a secret.
 | `VIDDL_YTDLP_ARGS` | Extra options for yt-dlp, split like a shell splits them: `--limit-rate 2M --cookies-from-browser chrome`. | Slow a link down, use your browser's cookies for a site that asks you to sign in, or pass anything else yt-dlp understands. |
 | `VIDDL_TIMEOUT` | How many seconds to wait for the network, per request: `45` or `45s`, between 1 and 3600. | Give a slow link more patience, or make a site that never answers fail in seconds instead of minutes. |
 | `VIDDL_ARCHIVE` | Keep a download archive and skip videos already in it: `1`/`on`/`yes`, or `0`/`off`/`no` to say so out loud. | Take a playlist again and only get the new videos; never fetch the same link twice. |
+| `VIDDL_QUALITY` | The quality `--plain` uses when `--quality` is not given, and the row the app starts on: `720`, `best`, `audio`, `mp3-192`. | Keep a default for this shell without writing a settings file; override one command. |
 
 Each value is checked before it is used, and one that cannot be honoured is
 ignored rather than half-applied. A value that looks like an option
@@ -614,7 +672,7 @@ ignored rather than half-applied. A value that looks like an option
 folder that is really a file is refused, rather than failing later in a way
 nobody can explain; and a bare program name means your `PATH` — never the
 working directory, which is not something Viddl gets to choose when a browser
-starts it. `viddl --doctor` says which of the seven are in use, which were
+starts it. `viddl --doctor` says which of the eight are in use, which were
 ignored, and why. `VIDDL_ARCHIVE` is the one with no path to check — a value
 that is neither a yes nor a no is refused (and shown as such by the doctor)
 rather than quietly read as "off".

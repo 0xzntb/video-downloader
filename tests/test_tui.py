@@ -2905,3 +2905,71 @@ async def test_a_live_recording_that_could_not_be_put_in_one_file_is_explained(t
         assert not list(app.screen.query("#resume"))
         await pilot.press("r")
         assert isinstance(app.screen, StoppedScreen)
+
+
+# ---------------------------------------------------------------------------
+# a remembered quality (F13)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_qualities_screen_starts_on_the_remembered_row(tmp_path):
+    app = ViddlApp(
+        initial_url=URL, prefer_quality="360", services=make_services(tmp_path)
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        chosen = app.screen.query_one("#choices", ChoiceList).highlighted_value
+        assert isinstance(chosen, MediaOption)
+        assert chosen.key == "v360"
+        # The cursor moved; nothing was decided. Download still takes the row
+        # under the cursor, which is now this one.
+        assert chosen.label == "360p"
+
+
+@pytest.mark.asyncio
+async def test_a_remembered_quality_this_link_lacks_keeps_the_best_row(tmp_path):
+    """A preference must never turn a working link into a failure (F13)."""
+    app = ViddlApp(
+        initial_url=URL, prefer_quality="ultra", services=make_services(tmp_path)
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        chosen = app.screen.query_one("#choices", ChoiceList).highlighted_value
+        assert isinstance(chosen, MediaOption)
+        assert chosen.height == 1080
+
+
+@pytest.mark.asyncio
+async def test_a_remembered_quality_can_be_audio(tmp_path):
+    app = ViddlApp(
+        initial_url=URL, prefer_quality="audio", services=make_services(tmp_path)
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        chosen = app.screen.query_one("#choices", ChoiceList).highlighted_value
+        assert isinstance(chosen, MediaOption)
+        assert chosen.kind == "audio"
+
+
+@pytest.mark.asyncio
+async def test_the_audio_flag_beats_a_remembered_quality(tmp_path):
+    app = ViddlApp(
+        initial_url=URL,
+        prefer_audio=True,
+        prefer_quality="720",
+        services=make_services(tmp_path),
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        chosen = app.screen.query_one("#choices", ChoiceList).highlighted_value
+        assert isinstance(chosen, MediaOption)
+        assert chosen.kind == "audio"

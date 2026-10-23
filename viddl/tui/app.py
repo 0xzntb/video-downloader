@@ -113,6 +113,10 @@ class State:
 
     url: str = ""
     prefer_audio: bool = False
+    #: The quality a remembered preference asks for, from the settings file or
+    #: ``VIDDL_QUALITY`` (F13). Empty — every run that did not ask — means the
+    #: best row, which is what the app did before there was a settings file.
+    prefer_quality: str = ""
     info: Optional[MediaInfo] = None
     option: Optional[MediaOption] = None
     job: Optional[DownloadJob] = None
@@ -436,6 +440,7 @@ class ViddlApp(App):
         self,
         initial_url: str = "",
         prefer_audio: bool = False,
+        prefer_quality: str = "",
         cookies: str = "",
         extras: Optional[Extras] = None,
         archive: Optional[Path] = None,
@@ -450,6 +455,7 @@ class ViddlApp(App):
         self.state = State(
             url=safe_video_link(initial_url) or "",
             prefer_audio=prefer_audio,
+            prefer_quality=prefer_quality,
             # Checked against the closed list on the way in, so the value that
             # reaches a command line cannot be something else (F1).
             cookies_browser=cookies_mod.default_for(cookies),
@@ -1475,12 +1481,41 @@ class OptionsScreen(Screen):
             return
 
         self.query_one("#download", Button).disabled = False
+        # A remembered quality decides where the cursor starts, not what is
+        # downloaded — the person still chooses (F13). Audio is a flag and
+        # beats it, which is why it is applied last.
+        self.select_preferred_quality(info)
         if self.app.state.prefer_audio:
             for index, opt in enumerate(info.options):
                 if opt.kind == "audio":
                     table.select_index(index)
                     break
         self.refresh_note()
+
+    def select_preferred_quality(self, info: MediaInfo) -> None:
+        """Put the cursor on the row a remembered quality asks for (F13).
+
+        The matcher is the one ``--quality`` already uses, so ``720`` means the
+        same row here and in ``--plain``. A link that does not offer it keeps
+        the usual best row: a preference must never turn a working link into a
+        failure, and the next thing it could do about it is nothing.
+        """
+        wanted = self.app.state.prefer_quality
+        if not wanted or not info.options:
+            return
+        # Imported here because ``plain`` pulls in the download machinery, and
+        # the app only needs its matcher on the one screen that has a menu.
+        from ..plain import choose_option
+
+        try:
+            chosen = choose_option(info, quality=wanted)
+        except ToolError:
+            return
+        table = self.query_one("#choices", ChoiceList)
+        for index, option in enumerate(info.options):
+            if option is chosen:
+                table.select_index(index)
+                return
 
     # -- live streams (F12) --------------------------------------------------
     def sync_live(self) -> None:
@@ -2911,6 +2946,7 @@ class QueueResultScreen(Screen):
 def run(
     url: str = "",
     audio: bool = False,
+    prefer_quality: str = "",
     cookies: str = "",
     extras: Optional[Extras] = None,
     archive: Optional[Path] = None,
@@ -2922,6 +2958,7 @@ def run(
     app = ViddlApp(
         initial_url=url,
         prefer_audio=audio,
+        prefer_quality=prefer_quality,
         cookies=cookies,
         extras=extras,
         archive=archive,

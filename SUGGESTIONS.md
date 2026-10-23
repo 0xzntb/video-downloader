@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **31 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F12 in section 3, U4 in section 4, D2–D3 in section 6.
+Progress so far: **32 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F13 in section 3, U4 in section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
 down keeps a secret, and a web page can no longer start it *doing* anything —
@@ -1762,7 +1762,7 @@ useful rather than surprising.
 > the container yt-dlp was writing, so a player that refuses a fragmented MP4
 > cannot be helped without a remux, which F12 did not ask for.
 
-### F13 — Optional config file · **P3** · M
+### F13 — Optional config file · **P3** · M · ✅ **Done**
 
 The README sells "nothing to configure" — a genuine strength worth keeping as the
 default. But "remember my download folder / default quality / theme" needs
@@ -1772,6 +1772,77 @@ somewhere to live.
 user changes a preference, and keep every setting overridable by a flag. Config
 precedence (flags > env > file > defaults) needs tests, since it is the kind of
 thing that silently misbehaves.
+
+> **Done as three settings, one file, and one order that is written down.** A
+> machine that never runs `viddl --set` still has no file: nothing reads one,
+> nothing writes one, and every choice is the built-in default. `viddl --set
+> download-dir ~/Videos`, `--set quality 720`, `--set archive on` write
+> `~/.config/viddl/config.toml` (`$XDG_CONFIG_HOME/viddl/config.toml`, and
+> `%APPDATA%\viddl\config.toml` on Windows), owner-only on POSIX, through a
+> neighbour file and an atomic move so no reader ever sees half of it.
+> `viddl --unset quality` forgets one; removing the last one deletes the file, so
+> the zero-config state is reachable again rather than merely initial.
+>
+> **The order is flag > variable > file > default, and each step is a real
+> step.** `--quality 480` wins for one run while the file keeps saying 720,
+> `--audio` wins over a remembered quality because it is a flag, `VIDDL_QUALITY`
+> (new, so that every setting can be overridden the same way the two existing
+> ones could) wins over the file, and a *set but unusable* variable is still an
+> answer: it falls back to the default, not to a file that says something else.
+> `--plain` uses the remembered quality; the app opens with that row under the
+> cursor while deciding nothing, and falls back to the best row when the link
+> does not offer it — a preference must never turn a working link into a
+> failure. `--doctor` prints the file, the settings it holds and any value that
+> was ignored and why; `--json --doctor` carries the same as a `settings` object
+> (`path`, `file`, `values`, `problems`). The README gained a **Settings
+> (optional)** section, the table row, the eighth environment variable, and the
+> honest version of "no configuration files are created".
+>
+> **The file is a small TOML subset Viddl can read on every Python it supports**
+> — `key = "value"`, `key = true`, single-quoted strings, comments — because 3.9
+> has no `tomllib` and a file it wrote but could not read back would be the one
+> bug worth avoiding. A key from a newer version survives a rewrite untouched; a
+> line or value that cannot be used is ignored and named by `--doctor` rather
+> than silently becoming the default. `--set` checks before writing — a folder
+> that is really a file, a quality the download path would refuse, an unknown
+> setting, a "yes" that is not a yes — so a bad value is refused with a sentence
+> instead of stored and ignored later.
+>
+> **Measured through the real command line and real yt-dlp 2026.10.21.** With
+> `quality = "mp3-128"` in the file and no flag, a 3-second H.264/AAC MP4 served
+> over local HTTP downloaded as a real **12,813-byte MP3** (ffmpeg reports
+> `Audio: mp3, 44100 Hz`), exit **0**; the same link with `--quality best` saved
+> the MP4; the same link with `VIDDL_QUALITY=audio` selected row 2 (*Audio only -
+> MP3 320 kbps*) and saved **28,951 bytes**, so the variable beat the file. An
+> unusable `VIDDL_QUALITY=banana` was refused before anything was fetched —
+> `error: Unknown quality 'banana'.` exit **1** — and `--doctor` printed it as
+> `VIDDL_QUALITY=banana (ignored — not a quality Viddl knows …)`. `--set quality
+> 720` created a `-rw-------` file holding exactly `quality = "720"`; a second
+> `--set` kept the first setting; `--set quality banana`, `--set theme dark` and
+> `--set download-dir <a file>` each exited **1** and left the file byte-for-byte
+> unchanged; `--unset` removed the last setting and the file with it.
+>
+> **48 new tests** (952 → 1000): 29 in `tests/test_config.py` (where the file
+> lives per platform, what it accepts and refuses, the writer's escapes and
+> comment stripping, atomic write and owner-only mode, unknown keys preserved,
+> each setting's cleaner, the precedence order for all three settings, and the
+> empty-file deletion), 14 in `tests/test_cli.py` (both commands, refusals that
+> leave the file alone, `--set` with `--unset`, the doctor's line in both
+> shapes, and the remembered quality reaching `--plain`, the app, and losing to
+> `--quality`, `--audio` and `VIDDL_QUALITY`), 4 in `tests/test_tui.py` (the
+> cursor on the remembered row, the best row when the link lacks it, a
+> remembered audio row, and `--audio` beating it) and 1 in
+> `tests/test_machine.py` (the JSON report's `settings`). `pyflakes` clean;
+> coverage **93 %** overall (`config.py` 95 %, `cli.py` 98 %, `appdata.py`
+> 97 %, `machine.py` 100 %, `tui/app.py` 90 %).
+>
+> **Not done** (and not asked for here): there is no settings screen in the app,
+> so changing a preference is `--set` on the command line or a hand-edited file;
+> "theme" from the item has no setting because there is no theme yet (**U1**);
+> `--set` alongside a link writes the preference and does not download, without
+> complaining about the link; the file keeps no comments and cannot hold a
+> per-site default; and the four network choices from **F11** are still flags
+> only, which is the "Advanced" row this item makes possible rather than builds.
 
 ### F14 — Search by name · **P3** · M
 
