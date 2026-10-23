@@ -13,6 +13,7 @@ piece is also reachable from the command line:
 * ``viddl --extras subs <link>``  also add subtitles, details or a cover image
 * ``viddl --download-archive <link>``  skip videos already downloaded (F6)
 * ``viddl --limit-rate 2M <link>``  a speed limit, a proxy, fewer pieces (F11)
+* ``viddl --live-from-start <link>``  record a live stream from its beginning (F12)
 * ``viddl --plain <link>``    download a line at a time, in plain ASCII
 * ``viddl --register-protocol``          wire up the ``viddl://`` hand-off
 * ``viddl --install-browser-extension``  copy the extension out for loading
@@ -177,6 +178,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "give up on a source that stays slower than this and try another: "
             "100K, 1M"
+        ),
+    )
+    parser.add_argument(
+        "--live-from-start",
+        action="store_true",
+        help=(
+            "for a live stream: record it from its beginning instead of from "
+            "the moment you start (not every site can serve the part it has "
+            "already played)"
         ),
     )
     parser.add_argument(
@@ -357,6 +367,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _fail(
             "--quality, --yes, --playlist and --quiet only work with --plain.",
             hint,
+        )
+
+    # A live stream is one recording, not a list: the start of a stream is a
+    # property of that stream, and a queue has no way to ask each item whether
+    # it is live before deciding (F12). Said here rather than quietly dropped.
+    if args.live_from_start and args.playlist:
+        return _fail(
+            "--live-from-start records one live stream, not a playlist.",
+            "Run it with the stream's own link, without --playlist.",
         )
 
     # --json is a shape for two read-only answers, not a download mode: the
@@ -563,6 +582,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 extras=extras,
                 archive=archive,
                 network=network,
+                # Record a live stream from its beginning, when it is live and
+                # this was asked for (F12).
+                live_from_start=bool(args.live_from_start),
                 # Only the path, for a script (F10). Failures still speak.
                 quiet=bool(args.quiet),
             )
@@ -579,6 +601,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             extras=extras,
             archive=archive,
             network=network,
+            # The app offers the same choice on the qualities screen; on the
+            # command line it can be given up front (F12).
+            live_from_start=bool(args.live_from_start),
         )
     except KeyboardInterrupt:  # pragma: no cover - interactive
         return 130

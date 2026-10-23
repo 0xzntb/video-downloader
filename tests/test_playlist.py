@@ -328,9 +328,14 @@ class RecordingJob:
         archive=None,
         title="",
         network=None,
+        **kwargs,
     ):
         self.url = url
         self.option = option
+        # Whether this was a live stream, and from where to record it (F12).
+        self.is_live = bool(kwargs.get("is_live", False))
+        self.live_from_start = bool(kwargs.get("live_from_start", False))
+        self.recorded = None
         self.on_progress = on_progress
         self.playlist_item = playlist_item
         # What was added to each download besides the media (F5), and how it

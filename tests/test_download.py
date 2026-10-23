@@ -2131,3 +2131,160 @@ def test_a_download_still_works_when_the_recent_list_cannot_be_written(
 
     assert path.exists()
     assert history.entries() == []
+
+
+# ---------------------------------------------------------------------------
+# live streams (F12)
+# ---------------------------------------------------------------------------
+
+#: A stream that never ends: it announces its file, writes the part it has so
+#: far, and sits there — exactly what a live recording looks like on disk.
+LIVE_SCRIPT = """\
+import pathlib, sys, time
+args = sys.argv[1:]
+out = pathlib.Path(args[args.index("-P") + 1])
+target = out / "A Live Stream [abc].mp4"
+target.parent.mkdir(parents=True, exist_ok=True)
+print("[download] Destination: " + str(target), flush=True)
+print("VIDDLPROGRESS|NA|NA|NA|512|NA|NA|" + str(target), flush=True)
+pathlib.Path(str(target) + ".part").write_bytes(b"l" * 512)
+time.sleep(30)
+"""
+
+#: The same, but with no destination line at all: the only evidence is the
+#: file in the working folder.
+SILENT_LIVE_SCRIPT = """\
+import pathlib, sys, time
+args = sys.argv[1:]
+out = pathlib.Path(args[args.index("-P") + 1])
+out.mkdir(parents=True, exist_ok=True)
+pathlib.Path(str(out / "A Live Stream [abc].mp4.part")).write_bytes(b"k" * 256)
+time.sleep(30)
+"""
+
+
+def live_job(tmp_path, **kwargs):
+    kwargs.setdefault("is_live", True)
+    return DownloadJob(
+        engine_for(tmp_path, "fake_live.py", kwargs.pop("script", LIVE_SCRIPT)),
+        "https://x.invalid/live",
+        video_option(),
+        tmp_path / "Downloads",
+        **kwargs,
+    )
+
+
+def test_only_a_live_job_asks_for_the_start_of_the_stream(tmp_path):
+    plain = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), tmp_path)
+    assert "--live-from-start" not in plain.build_args()
+
+    job = DownloadJob(
+        FakeEngine(["/fake"]), "u", video_option(), tmp_path, live_from_start=True
+    )
+    args = job.build_args()
+    assert args.count("--live-from-start") == 1
+    # Before the separator, and before anything the user asked for (R3).
+    assert args.index("--live-from-start") < args.index("--")
+
+
+def test_stopping_a_live_recording_delivers_what_it_captured(tmp_path):
+    """The whole point: what a stop caught is a file, not a hidden .part (F12)."""
+    job = live_job(tmp_path)
+    outcome = run_until_cancelled(job, after=1.0)
+
+    assert outcome.get("cancelled") is True
+    assert job.recorded is not None
+    assert job.recorded.parent == tmp_path / "Downloads"
+    assert job.recorded.name == "A Live Stream [abc].mp4"
+    assert job.recorded.read_bytes() == b"l" * 512
+    # Nothing is left half-finished, and nothing is left in a hidden folder.
+    assert job.partial_paths() == []
+    assert not list((tmp_path / "Downloads").glob(".viddl-*"))
+
+
+def test_a_stopped_download_that_is_not_live_is_still_left_to_resume(tmp_path):
+    job = partial_job(tmp_path)
+    run_until_cancelled(job, after=1.0)
+
+    assert job.recorded is None
+    assert job.partial_paths(), "the half-file is what resuming works from"
+
+
+def test_a_live_recording_is_not_announced_as_a_finished_download(tmp_path):
+    """The bar must not claim 100% for something the user stopped (F12)."""
+    phases = []
+    job = live_job(tmp_path, on_progress=lambda progress: phases.append(progress.phase))
+    run_until_cancelled(job, after=1.0)
+
+    assert job.recorded is not None
+    assert "done" not in phases
+
+
+def test_a_live_stream_whose_name_was_never_printed_is_still_kept(tmp_path):
+    """The folder is the last evidence, and it is this job's own folder."""
+    job = live_job(tmp_path, script=SILENT_LIVE_SCRIPT)
+    run_until_cancelled(job, after=1.0)
+
+    assert job.recorded is not None
+    assert job.recorded.name == "A Live Stream [abc].mp4"
+    assert job.recorded.read_bytes() == b"k" * 256
+
+
+def test_a_stopped_live_recording_that_captured_nothing_delivers_nothing(tmp_path):
+    engine = engine_for(
+        tmp_path,
+        "fake_empty_live.py",
+        """\
+import pathlib, sys, time
+args = sys.argv[1:]
+out = pathlib.Path(args[args.index("-P") + 1])
+out.mkdir(parents=True, exist_ok=True)
+print("[download] Destination: " + str(out / "A Live Stream [abc].mp4"), flush=True)
+time.sleep(30)
+""",
+    )
+    job = DownloadJob(engine, "https://x.invalid/live", video_option(), tmp_path / "Downloads", is_live=True)
+
+    run_until_cancelled(job, after=0.5)
+
+    assert job.recorded is None
+
+
+def test_only_what_a_live_stop_captured_is_delivered(tmp_path):
+    """Fragments and cover pictures are not the recording (F12, F5)."""
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out, is_live=True)
+    work = job.work_dir()
+    work.mkdir(parents=True)
+    (work / "A Live Stream [abc].f137.mp4").write_bytes(b"v" * 4096)
+    (work / "A Live Stream [abc].jpg").write_bytes(b"j" * 900)
+    (work / "A Live Stream [abc].mp4.part").write_bytes(b"r" * 512)
+
+    path = job.keep_recording()
+
+    assert path is not None and path.name == "A Live Stream [abc].mp4"
+    assert path.read_bytes() == b"r" * 512
+
+
+def test_a_live_recording_waits_for_the_writer_to_stop(tmp_path, monkeypatch):
+    """Handing over a file that is still being written is not a file."""
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), tmp_path / "Downloads", is_live=True)
+    work = job.work_dir()
+    work.mkdir(parents=True)
+    (work / "Half [abc].mp4.part").write_bytes(b"h" * 64)
+    waited = {}
+
+    class SlowProcess:
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            waited["timeout"] = timeout
+            return 0
+
+    job._process = SlowProcess()
+    monkeypatch.setattr(download_mod, "_STOP_GRACE_SECONDS", 2.0)
+
+    assert job.keep_recording() is not None
+    assert waited["timeout"] == 2.0

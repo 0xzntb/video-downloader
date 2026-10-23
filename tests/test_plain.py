@@ -109,6 +109,7 @@ class FakeJob:
         archive=None,
         title="",
         network=None,
+        **kwargs,
     ):
         # The download archive and the video's title, both passed on for the
         # recent list (F6); a test asserts they arrived.
@@ -116,6 +117,10 @@ class FakeJob:
         self.title = title
         # How the download was told to use the network (F11).
         self.network = network
+        # Whether this was a live stream, and from where to record it (F12).
+        self.is_live = bool(kwargs.get("is_live", False))
+        self.live_from_start = bool(kwargs.get("live_from_start", False))
+        self.recorded = None
         self.option = option
         self.out_dir = Path(out_dir)
         self.on_progress = on_progress
@@ -707,6 +712,8 @@ def test_the_cli_hands_the_choices_to_the_plain_path(monkeypatch):
         "archive": None,
         # Nor any network choices, unless the flags said so (F11).
         "network": NetworkOptions(),
+        # A live stream is recorded from now unless --live-from-start (F12).
+        "live_from_start": False,
         # And nothing quiet: the menu and the notes are what a person reads
         # when they did not ask for silence (F10).
         "quiet": False,
@@ -865,3 +872,106 @@ def test_quiet_leaves_the_network_note_out_too():
     assert code == 0
     assert err == ""
 
+
+
+# ---------------------------------------------------------------------------
+# live streams (F12)
+# ---------------------------------------------------------------------------
+
+
+def live() -> MediaInfo:
+    info = media()
+    info.is_live = True
+    return info
+
+
+def test_a_live_link_says_recording_starts_now_and_how_to_stop_it():
+    """The unexpected part is that the file does not end by itself (F12)."""
+    code, out, err = run(info=live(), assume_yes=True)
+
+    assert code == 0
+    assert "Live: recording starts now, not at the beginning" in err
+    assert "--live-from-start" in err
+    assert "Press Ctrl+C when you have enough" in err
+    assert "what has been recorded is kept" in err
+    # Said before anything is fetched, not after the download.
+    assert err.index("Live:") < err.index("Saved")
+
+
+def test_the_flag_says_the_recording_starts_at_the_beginning():
+    code, out, err = run(info=live(), live_from_start=True, assume_yes=True)
+
+    assert code == 0
+    assert "Live: recording from the beginning of the stream" in err
+    assert FakeJob.made[0].is_live is True
+    assert FakeJob.made[0].live_from_start is True
+
+
+def test_a_live_link_without_the_flag_records_from_now():
+    code, out, err = run(info=live(), assume_yes=True)
+
+    assert code == 0
+    assert FakeJob.made[0].is_live is True
+    assert FakeJob.made[0].live_from_start is False
+
+
+def test_the_flag_on_a_link_that_is_not_live_says_it_has_no_effect():
+    """A script that always passes it keeps working, and is told (F12)."""
+    code, out, err = run(live_from_start=True, assume_yes=True)
+
+    assert code == 0
+    assert "This is not a live stream, so --live-from-start has no effect." in err
+    assert "Live:" not in err
+    assert FakeJob.made[0].live_from_start is False
+
+
+class RecordedJob(FakeJob):
+    """A live job that was stopped: the job delivered what it captured."""
+
+    def run(self):
+        self.recorded = DEST / "A Live Stream [abc].mp4"
+        self.recorded.parent.mkdir(parents=True, exist_ok=True)
+        self.recorded.write_bytes(b"r" * 100)
+        raise DownloadCancelled()
+
+
+def test_a_stopped_live_recording_puts_its_path_on_stdout():
+    code, out, err = run(info=live(), job_class=RecordedJob, assume_yes=True)
+
+    # 130 still means "stopped", and the recording is a real file anyway.
+    assert code == 130
+    assert out == f"{DEST / 'A Live Stream [abc].mp4'}\n"
+    assert "What had been recorded was saved: A Live Stream [abc].mp4" in err
+    # There is nothing to carry on from, so the resume sentence is not said.
+    assert "carry on from here" not in err
+
+
+class InterruptedLiveJob(FakeJob):
+    """Ctrl+C during a recording: the plain path finishes it off itself."""
+
+    def run(self):
+        raise KeyboardInterrupt()
+
+    def keep_recording(self):
+        path = DEST / "A Live Stream [abc].mp4"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"r" * 100)
+        return path
+
+
+def test_ctrl_c_during_a_live_recording_keeps_what_was_recorded():
+    code, out, err = run(info=live(), job_class=InterruptedLiveJob, assume_yes=True)
+
+    assert code == 130
+    assert out == f"{DEST / 'A Live Stream [abc].mp4'}\n"
+    assert "What had been recorded was saved" in err
+    assert "carry on from here" not in err
+
+
+def test_quiet_still_gives_the_recording_path_and_nothing_else():
+    code, out, err = run(info=live(), job_class=RecordedJob, assume_yes=True, quiet=True)
+
+    assert code == 130
+    assert out == f"{DEST / 'A Live Stream [abc].mp4'}\n"
+    assert "What had been recorded was saved" in err
+    assert "Live:" not in err

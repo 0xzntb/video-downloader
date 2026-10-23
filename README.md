@@ -123,6 +123,7 @@ Nothing is installed system-wide and no configuration files are created.
 | Skip videos you have already downloaded | `viddl --download-archive <link>` (see [What is remembered](#what-is-remembered-between-runs)) |
 | Keep a call, a game or a stream usable while it downloads | `viddl --limit-rate 2M <link>` (see [A slow connection, a busy one, or a proxy](#a-slow-connection-a-busy-one-or-a-proxy)) |
 | Download through a proxy | `viddl --proxy socks5://127.0.0.1:1080 <link>` |
+| Record a live stream from its beginning | Press **Record from the start** on the qualities screen (`l`), or `viddl --live-from-start <link>` (see [Live streams](#live-streams)) |
 | See what you have downloaded lately | Press `r` (or **Recent**) on the home screen |
 | Use the link you already copied | Click **Paste link** on the home screen (or press `p` when the box is not focused) |
 | Download several links in one go | Paste them into the link box separated by spaces, then **Download all** on the links screen |
@@ -351,6 +352,37 @@ a log records the terms and not only the result. `--quiet` leaves that line out
 with the rest of the notes. For anything not covered here, `VIDDL_YTDLP_ARGS`
 still passes options straight to yt-dlp (see [Environment
 variables](#environment-variables)).
+
+
+## Live streams
+
+A live stream is the one download that does not end by itself, so Viddl says so
+before you start one. The qualities screen reads *Live stream. Recording starts
+now, not from the beginning. Stop when you have enough: what has been recorded
+is saved*, and the button beside it — **Record from the start** (`l`) — asks the
+site for the part it has already played instead. Not every site can still serve
+that part, and recording from the beginning takes as long as the stream has
+been running so far.
+
+**Stop** is how a recording ends. In the app the button on the progress screen
+says **Stop recording** rather than **Cancel**; with `--plain` it is `Ctrl+C`.
+What had been recorded is kept and delivered as a real file in your Downloads
+folder, not left as a `.part` inside a hidden working folder: the screen that
+follows says *Recording stopped* with the file's path and size, and `--plain`
+writes the path on stdout and exits **130**. A script can tell a stopped
+recording from a finished download by the exit code and still use the file.
+
+| You want to… | Do this |
+| --- | --- |
+| Record a live stream from its beginning | **Record from the start** on the qualities screen (`l`), or `viddl --live-from-start <link>` |
+| Record from now (the default) | Do nothing: the recording starts when the download does |
+| Stop a recording and keep what arrived | **Stop recording** in the app, or `Ctrl+C` with `--plain` |
+| Record a live stream from a script | `viddl --plain --yes --live-from-start <link>` |
+
+A live stream is one video, not a list: `--live-from-start` with `--playlist`
+is refused rather than half-applied, because a queue has no way to ask each item
+whether it is live before deciding. A live link inside a playlist or a batch of
+links is recorded from the current point, which is the default.
 
 
 ## Sites that want you to sign in
@@ -662,7 +694,10 @@ Regenerate the extension icons with `python3 tools/make_icons.py`.
   sites works here as there — and why a link that works one week can stop
   working the next until yt-dlp updates. That is what `viddl --update` is for;
   the app mentions it once the engine it is running is over a month old.
-* Live streams work but are recorded from the current point.
+* Live streams are recorded from the current point unless you ask for the
+  beginning (`--live-from-start`, or **Record from the start** in the app), and
+  stopping a recording keeps what arrived as a real file. A live link inside a
+  playlist or a batch of links is always taken from the current point.
 * Windows is supported and exercised: the suite runs there in CI, the installer
   (`install.ps1`) is run for real in the Windows job, and every fake shell
   script the tests use is given the shebang Windows does not understand. If a

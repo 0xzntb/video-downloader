@@ -153,6 +153,11 @@ class State:
     #: limit, a proxy, a fragment count, a throttle. All defaults unless the
     #: command line said otherwise — there is no settings screen to ask.
     network: NetworkOptions = field(default_factory=NetworkOptions)
+    #: Record a live stream from its beginning rather than from now (F12).
+    #: False is the default, because it is the one a site cannot always
+    #: serve — the button on the qualities screen is how it is chosen, and
+    #: the command line can set it up front.
+    live_from_start: bool = False
     #: Several links collected on the links screen, in the order they will be
     #: taken (F7). One decision — the quality — is asked of the first of them
     #: and used for all; empty means the ordinary one-video flow.
@@ -310,6 +315,16 @@ class ViddlApp(App):
         height: auto;
     }
 
+    #live-note {
+        /* Not muted: this is the one sentence that says a download will not
+           end by itself, and it is read before the button is pressed (F12). */
+        color: $warning;
+        text-style: bold;
+        width: 100%;
+        height: auto;
+        padding-top: 1;
+    }
+
     #extras-row {
         height: 1;
         /* A margin, not padding: padding inside a one-row box leaves it no
@@ -425,6 +440,7 @@ class ViddlApp(App):
         extras: Optional[Extras] = None,
         archive: Optional[Path] = None,
         network: Optional[NetworkOptions] = None,
+        live_from_start: bool = False,
         services: Optional[Services] = None,
     ) -> None:
         super().__init__()
@@ -445,6 +461,8 @@ class ViddlApp(App):
             # And how it uses the network (F11): the same answer for every
             # video, a playlist included.
             network=network or NetworkOptions(),
+            # Whether a live stream is recorded from its beginning (F12).
+            live_from_start=bool(live_from_start),
         )
         problem = appdata.ensure_dirs()
         if problem is not None:
@@ -1155,6 +1173,7 @@ class OptionsScreen(Screen):
         Binding("d", "download", "Download", show=False),
         Binding("p", "playlist", "Choose videos", show=False),
         Binding("u", "update_engine", "Update engine", show=False),
+        Binding("l", "live_start", "Record from the start", show=False),
         # The extras are buttons first; these keys are the same switches for
         # anyone who would rather not reach for the mouse (F5).
         Binding("s", "extra('subs')", "Subtitles", show=False),
@@ -1166,6 +1185,10 @@ class OptionsScreen(Screen):
         with Vertical(id="options-panel"):
             yield Static("", id="options-heading")
             yield Static("Looking up the link…", id="options-status")
+            # What a live stream means for this download (F12). Its own line,
+            # not the note under the menu: that one describes the row under
+            # the cursor, and this is true of every row.
+            yield Static("", id="live-note")
             yield ChoiceList(id="choices")
             with Horizontal(id="extras-row"):
                 yield Static("Extras", id="extras-label")
@@ -1184,6 +1207,7 @@ class OptionsScreen(Screen):
                 yield Button("Choose videos…", id="playlist")
                 yield Button("Update engine", id="update-engine")
                 yield Button("Set up ffmpeg", id="get-ffmpeg")
+                yield Button("Record from the start", id="live-start")
                 yield Button("Stop looking", id="stop-probe")
                 yield Button("Back", id="back")
             yield Static("", id="options-note")
@@ -1197,6 +1221,10 @@ class OptionsScreen(Screen):
         # Updating is offered only where it is the likely fix: a link that just
         # failed, on an engine old enough to be the reason (F3).
         self.query_one("#update-engine", Button).add_class("hidden")
+        # Only a live stream has a start to choose (F12), and it cannot be
+        # known before the site has answered.
+        self.query_one("#live-note", Static).add_class("hidden")
+        self.query_one("#live-start", Button).add_class("hidden")
         self.sync_extras()
         self._start_looking()
 
@@ -1254,6 +1282,10 @@ class OptionsScreen(Screen):
         self._started_at = time.monotonic()
         self.query_one("#download", Button).disabled = True
         self.query_one("#stop-probe", Button).add_class("hidden")
+        # A fresh look-up is a fresh link: the last answer's live note and its
+        # start button do not describe it until this one answers (F12).
+        self.query_one("#live-note", Static).add_class("hidden")
+        self.query_one("#live-start", Button).add_class("hidden")
         self.query_one("#options-status", Static).update("Looking up the link…")
         ticker = getattr(self, "_ticker", None)
         if ticker is not None:
@@ -1345,6 +1377,8 @@ class OptionsScreen(Screen):
         self.stop_looking()
         self.query_one("#stop-probe", Button).add_class("hidden")
         self.query_one("#playlist", Button).add_class("hidden")
+        self.query_one("#live-note", Static).add_class("hidden")
+        self.query_one("#live-start", Button).add_class("hidden")
         update = self.query_one("#update-engine", Button)
         update.set_class(not self.app.state.engine_stale, "hidden")
         update.disabled = False
@@ -1409,6 +1443,7 @@ class OptionsScreen(Screen):
             sub = f"{human_duration(info.duration)}  ·  {sub}" if sub else human_duration(info.duration)
         heading.update(f"{_plain(title)}\n[dim]{_plain(sub)}[/dim]" if sub else _plain(title))
         status.update("")
+        self.sync_live()
 
         choices: List[Tuple[str, str, str, Any]] = [
             (opt.label, opt.size_text, opt.detail, opt) for opt in info.options
@@ -1446,6 +1481,54 @@ class OptionsScreen(Screen):
                     table.select_index(index)
                     break
         self.refresh_note()
+
+    # -- live streams (F12) --------------------------------------------------
+    def sync_live(self) -> None:
+        """Say what this live link means, and offer the one choice it has.
+
+        A live stream does not end by itself, which is the thing a person
+        needs to know before pressing Download: the recording starts now, and
+        it stops when they say so. The button is the other half — asking for
+        the part the site has already played — and the sentence repeats which
+        answer is in force, so the button never has a state nobody can see.
+        """
+        info = self.app.state.info
+        note = self.query_one("#live-note", Static)
+        button = self.query_one("#live-start", Button)
+        if info is None or not info.is_live:
+            note.add_class("hidden")
+            button.add_class("hidden")
+            return
+        note.remove_class("hidden")
+        button.remove_class("hidden")
+        from_start = self.app.state.live_from_start
+        # The text is the state: a tick in a word, not only a colour.
+        button.label = "Recording from the start" if from_start else "Record from the start"
+        if from_start:
+            note.update(
+                _plain(
+                    "Live stream. Viddl will record from the beginning, if the site "
+                    "can still serve it. Stop when you have enough: what has been "
+                    "recorded is saved."
+                )
+            )
+        else:
+            note.update(
+                _plain(
+                    "Live stream. Recording starts now, not from the beginning. "
+                    "Stop when you have enough: what has been recorded is saved."
+                )
+            )
+
+    def action_live_start(self) -> None:
+        """Switch between recording from now and from the beginning (F12)."""
+        button = self.query_one("#live-start", Button)
+        if button.has_class("hidden"):
+            # Not a live link: there is no start to choose, and `l` must not
+            # change a setting nothing on screen is offering.
+            return
+        self.app.state.live_from_start = not self.app.state.live_from_start
+        self.sync_live()
 
     def sign_in_rows(self) -> List[Tuple[str, str, str, Any]]:
         """The rows that turn browser cookies on or off (F1).
@@ -1655,6 +1738,8 @@ class OptionsScreen(Screen):
             self.setup_ffmpeg()
         elif button_id == "stop-probe":
             self.action_stop_probe()
+        elif button_id == "live-start":
+            self.action_live_start()
 
 
     def action_download(self) -> None:
@@ -2017,6 +2102,11 @@ class DownloadScreen(Screen):
         elif info is not None and info.title:
             line = f"{_plain(shorten(info.title, 60))}\n[dim]{line}[/dim]"
         self.query_one("#download-heading", Static).update(line)
+        if info is not None and info.is_live:
+            # "Cancel" describes a download that was going to end. A live
+            # recording is ended by the person, and what it caught is kept
+            # (F12) — the button says which of the two it is.
+            self.query_one("#cancel", Button).label = "Stop recording"
         self.run_download()
 
     @work(thread=True, exclusive=True, group="download")
@@ -2039,6 +2129,7 @@ class DownloadScreen(Screen):
             self.run_queue(option)
             return
 
+        live = bool(app.state.info is not None and app.state.info.is_live)
         try:
             out_dir = app.services.downloads_dir()
             job = app.services.make_job(
@@ -2055,6 +2146,12 @@ class DownloadScreen(Screen):
                 archive=app.state.archive,
                 network=app.state.network,
                 title=app.state.info.title if app.state.info else "",
+                # A live stream is saved when it is stopped, and can be asked
+                # for from its beginning (F12). Both only mean something when
+                # the link actually is live, so a link that is not never gets
+                # the flag.
+                is_live=live,
+                live_from_start=live and app.state.live_from_start,
             )
             app.state.job = job
             path = job.run()
@@ -2245,7 +2342,21 @@ class DownloadScreen(Screen):
         self.app.state.job = None
         if not self._has_a_screen():
             return
-        self.app.switch_screen(StoppedScreen(job=job, option=self.app.state.option))
+        recorded = getattr(job, "recorded", None)
+        if recorded is not None:
+            # A live stream has no end, so stopping one delivered what had
+            # been recorded as a real file (F12): that is an ending to show,
+            # not a question about a half-file.
+            self.app.state.saved_path = recorded
+            self.app.push_screen(ResultScreen(saved_path=recorded, recorded=True))
+            return
+        self.app.switch_screen(
+            StoppedScreen(
+                job=job,
+                option=self.app.state.option,
+                is_live=bool(getattr(job, "is_live", False)),
+            )
+        )
 
     def action_cancel(self) -> None:
         queue = self.app.state.queue
@@ -2286,18 +2397,23 @@ class StoppedScreen(Screen):
         self,
         job: Optional[DownloadJob] = None,
         option: Optional[MediaOption] = None,
+        is_live: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.job = job
         self.option = option
+        # True for a live stream whose recording could not be put in one file
+        # (F12): there is nothing to carry on from, and saying "Resume" would
+        # promise a continuation that does not exist.
+        self.is_live = is_live
 
     def compose(self) -> ComposeResult:
         with Vertical(id="stopped-panel"):
             yield Static("Stopped", id="brand")
             yield Static("", id="stopped-message")
             with Horizontal(classes="buttons"):
-                if self.option is not None:
+                if self.option is not None and not self.is_live:
                     yield Button("Resume", variant="primary", id="resume")
                 if self.kept_files():
                     yield Button("Discard", id="discard")
@@ -2315,7 +2431,18 @@ class StoppedScreen(Screen):
         lines = []
         if self.option is not None:
             lines.append(_plain(f"{self.option.label}  {_ARP}  {self.option.size_text}"))
-        if self.kept_files():
+        if self.is_live:
+            # A live stream has no second half to carry on with: whatever is
+            # on disk is what the stop caught, and it stays there (F12).
+            lines.append(
+                "This was a live stream, so there is nothing to carry on from: "
+                "the recording stopped here. What had been recorded could not be "
+                "put into one file, and is kept in the folder below."
+            )
+            folder = getattr(self.job, "work_dir", None)
+            if callable(folder):
+                lines.append(_plain(str(folder())))
+        elif self.kept_files():
             lines.append(
                 "What has been downloaded so far is kept, so Resume carries on "
                 "from there. Discard throws it away."
@@ -2326,8 +2453,13 @@ class StoppedScreen(Screen):
 
     # -- actions ------------------------------------------------------------
     def action_resume(self) -> None:
-        if self.app.state.option is None:  # pragma: no cover - defensive
-            self.action_later()
+        if self.is_live or self.app.state.option is None:
+            # Live: a second run records from the live point, which is a new
+            # file rather than a continuation, so the button is not offered
+            # and the key does nothing (F12).
+            if self.is_live:
+                return
+            self.action_later()  # pragma: no cover - defensive
             return
         # A fresh download screen runs the same option again. The partial is
         # in the folder that download always uses (R6), so yt-dlp picks the
@@ -2352,7 +2484,13 @@ class StoppedScreen(Screen):
 
 
 class ResultScreen(Screen):
-    """Screen 4: where the file landed, or what went wrong."""
+    """Screen 4: where the file landed, or what went wrong.
+
+    One ending is not a finished download: a live stream that was stopped has
+    delivered what it recorded (F12). The file is real and complete up to the
+    moment of the stop, so it is shown like any other saved file, with the
+    heading saying which kind of ending this was.
+    """
 
     BINDINGS = [
         Binding("escape", "go_home", "Start over", show=True),
@@ -2366,11 +2504,15 @@ class ResultScreen(Screen):
         error: Optional[ToolError] = None,
         attachments: Optional[List[Path]] = None,
         already_had: bool = False,
+        recorded: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.saved_path = saved_path
         self.error = error
+        # True when the file is a live recording the user stopped (F12): it is
+        # everything up to that moment, and "Saved" alone would not say so.
+        self.recorded = recorded
         # Pictures saved beside the file by the extras (F5).
         self.attachments = list(attachments or [])
         # True when the download archive recognised the video and handed back
@@ -2388,7 +2530,7 @@ class ResultScreen(Screen):
                     yield Button("Try another link", variant="primary", id="again")
                     yield Button("Quit", id="quit")
             else:
-                yield Static("Saved", id="brand")
+                yield Static("Recording stopped" if self.recorded else "Saved", id="brand")
                 yield Static("", classes="sub", id="result-sub")
                 yield Static("", id="result-path")
                 with Horizontal(classes="buttons"):
@@ -2413,6 +2555,11 @@ class ResultScreen(Screen):
         # the video (F6): the row would otherwise claim a quality for a file
         # that was fetched at some other one, and this screen does not lie.
         sub = f"{'Already had' if self.already_had else label}  ·  {size}"
+        if self.recorded:
+            # A live stream has no natural end, so the file is what had been
+            # recorded when Stop was pressed — said out loud rather than left
+            # to look like a video that finished.
+            sub += "  ·  what had been recorded when you stopped"
         if self.attachments:
             # The image is beside the file, so it is named rather than left to
             # be discovered in the folder later (F5).
@@ -2768,6 +2915,7 @@ def run(
     extras: Optional[Extras] = None,
     archive: Optional[Path] = None,
     network: Optional[NetworkOptions] = None,
+    live_from_start: bool = False,
     services: Optional[Services] = None,
 ) -> None:
     """Start the terminal app."""
@@ -2778,6 +2926,7 @@ def run(
         extras=extras,
         archive=archive,
         network=network,
+        live_from_start=live_from_start,
         services=services,
     )
     app.run()

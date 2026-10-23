@@ -119,7 +119,12 @@ class FakeJob:
         archive=None,
         title="",
         network=None,
+        **kwargs,
     ):
+        # Whether this was a live stream, and from where to record it (F12).
+        self.is_live = bool(kwargs.get("is_live", False))
+        self.live_from_start = bool(kwargs.get("live_from_start", False))
+        self.recorded = None
         # What the job was asked to fetch (F7): a queue is checked by the order
         # its links were taken in, not only by what it saved.
         self.url = url
@@ -2732,3 +2737,171 @@ def test_punctuation_after_a_link_is_dropped_but_the_link_is_not():
 
     assert links == ["https://example.com/clip.mp4"]
     assert left_out == 2  # "see" and "then"
+
+
+# ---------------------------------------------------------------------------
+# live streams (F12)
+# ---------------------------------------------------------------------------
+
+
+def live_info() -> MediaInfo:
+    info = parse_info(INFO_JSON)
+    info.is_live = True
+    return info
+
+
+class RecordedJob(BlockingJob):
+    """A live recording that is stopped: the job delivered what it caught."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.recorded = self.out_dir / "A Live Stream [abc].mp4"
+
+    def run(self):
+        self.release.wait(timeout=10)
+        self.recorded.parent.mkdir(parents=True, exist_ok=True)
+        self.recorded.write_bytes(b"r" * 100)
+        raise DownloadCancelled()
+
+    def keep_recording(self):
+        return self.recorded
+
+
+@pytest.mark.asyncio
+async def test_a_live_link_says_so_before_the_download_starts(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path, info=live_info()))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        note = shown(app.screen, "#live-note")
+        assert "Live stream" in note
+        assert "starts now, not from the beginning" in note
+        assert "what has been recorded is saved" in note
+        button = app.screen.query_one("#live-start", Button)
+        assert not button.has_class("hidden")
+        assert str(button.label) == "Record from the start"
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_link_says_nothing_about_live_streams(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        assert app.screen.query_one("#live-note", Static).has_class("hidden")
+        assert app.screen.query_one("#live-start", Button).has_class("hidden")
+
+
+@pytest.mark.asyncio
+async def test_the_start_button_switches_which_part_of_the_stream_is_recorded(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path, info=live_info()))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        await pilot.click("#live-start")
+        await pilot.pause()
+
+        assert app.state.live_from_start is True
+        button = app.screen.query_one("#live-start", Button)
+        assert str(button.label) == "Recording from the start"
+        assert "from the beginning" in shown(app.screen, "#live-note")
+
+        await pilot.press("l")
+        await pilot.pause()
+        assert app.state.live_from_start is False
+        assert str(button.label) == "Record from the start"
+
+
+@pytest.mark.asyncio
+async def test_the_key_does_nothing_when_there_is_no_stream_to_start(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+
+        await pilot.press("l")
+        await pilot.pause()
+
+        assert app.state.live_from_start is False
+
+
+@pytest.mark.asyncio
+async def test_the_download_is_told_it_is_live_and_where_to_start(tmp_path):
+    class WatchingJob(FakeJob):
+        made: list = []
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            WatchingJob.made.append(self)
+
+    WatchingJob.made.clear()
+    app = ViddlApp(
+        initial_url=URL,
+        services=make_services(tmp_path, info=live_info(), job_class=WatchingJob),
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.click("#live-start")
+        await pilot.pause()
+        # `d`, not Enter: the click left the focus on the start button, where
+        # Enter would switch it back off again.
+        await pilot.press("d")
+        await settle(pilot)
+
+        assert isinstance(app.screen, ResultScreen)
+        assert len(WatchingJob.made) == 1
+        assert WatchingJob.made[0].is_live is True
+        assert WatchingJob.made[0].live_from_start is True
+
+
+@pytest.mark.asyncio
+async def test_stopping_a_live_recording_shows_what_was_saved(tmp_path):
+    app = ViddlApp(
+        initial_url=URL,
+        services=make_services(tmp_path, info=live_info(), job_class=RecordedJob),
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        job = await wait_for_job(app, pilot)
+        # A live recording is stopped by the person, not finished by the site.
+        assert str(app.screen.query_one("#cancel", Button).label) == "Stop recording"
+
+        await pilot.press("escape")
+        assert await wait_for_screen(pilot, ResultScreen)
+
+        path = tmp_path / "Downloads" / "A Live Stream [abc].mp4"
+        assert shown(app.screen, "#brand") == "Recording stopped"
+        assert shown(app.screen, "#result-path") == str(path)
+        assert "what had been recorded when you stopped" in shown(app.screen, "#result-sub")
+        assert job.recorded == path
+
+
+@pytest.mark.asyncio
+async def test_a_live_recording_that_could_not_be_put_in_one_file_is_explained(tmp_path):
+    app = ViddlApp(
+        initial_url=URL,
+        services=make_services(tmp_path, info=live_info(), job_class=BlockingJob),
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await wait_for_job(app, pilot)
+        await pilot.press("escape")
+        assert await wait_for_screen(pilot, StoppedScreen)
+        await settle(pilot)
+
+        message = shown(app.screen, "#stopped-message")
+        assert "This was a live stream" in message
+        assert "nothing to carry on from" in message
+        # Resume would record from the live point, which is a new file: it is
+        # not offered, and the key cannot reach it.
+        assert not list(app.screen.query("#resume"))
+        await pilot.press("r")
+        assert isinstance(app.screen, StoppedScreen)

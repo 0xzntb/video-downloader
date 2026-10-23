@@ -582,6 +582,8 @@ class DownloadJob:
         archive: Optional[Path] = None,
         title: str = "",
         network: Optional[NetworkOptions] = None,
+        live_from_start: bool = False,
+        is_live: bool = False,
     ):
         self.engine = engine
         self.url = url
@@ -614,6 +616,16 @@ class DownloadJob:
         # fragment count, a throttle to give up on. Every default is the
         # behaviour that came before the options existed.
         self.network = network or NetworkOptions()
+        # A live stream never ends by itself, so two things a download normally
+        # is not are decided here (F12): whether to take it from its beginning
+        # rather than from the moment the button was pressed, and whether what
+        # a stop caught should be handed over as a finished recording.
+        self.live_from_start = bool(live_from_start)
+        self.is_live = bool(is_live)
+        # Set by ``keep_recording``: the file a stopped live recording became.
+        # ``None`` is every other ending, and a live stream that recorded
+        # nothing worth keeping.
+        self.recorded: Optional[Path] = None
         # True once this run turned out to be a video an earlier download had
         # already put on disk (F6). The file is real and where it always was;
         # the flag only stops the app from claiming it just fetched it.
@@ -796,6 +808,10 @@ class DownloadJob:
             # in that order, and before the user's own options (R3), so that
             # where they disagree the person who asked last wins.
             *self.network.args(),
+            # Take a live stream from its beginning rather than from now
+            # (F12). Asked for explicitly, because it is not free: the site has
+            # to serve the part it already played, and not every one can.
+            *(["--live-from-start"] if self.live_from_start else []),
             "--progress",
             "--progress-template",
             _PROGRESS_TEMPLATE,
@@ -910,6 +926,9 @@ class DownloadJob:
             self._cancelled = threading.Event()
             self._process = None
             self._escalation = None
+            # A recording delivered by the stop that ended the last run does
+            # not describe this one (F12).
+            self.recorded = None
         if self._cancelled.is_set():
             raise DownloadCancelled()
         self._started = True
@@ -951,6 +970,11 @@ class DownloadJob:
         except DownloadCancelled:
             # Stopped by the user: what was fetched stays, so running this
             # download again carries on from it rather than starting over.
+            # A live stream has no end to wait for, so stopping it is how the
+            # recording is finished: what arrived is delivered as a real file
+            # while there is still a folder to deliver it from (F12).
+            if self.is_live:
+                self.recorded = self.keep_recording()
             self._release_claim()
             raise
         except ToolError:
@@ -1187,7 +1211,7 @@ class DownloadJob:
         )
 
     # -- delivering the result ----------------------------------------------
-    def _deliver(self, source: Path) -> Path:
+    def _deliver(self, source: Path, announce: bool = True) -> Path:
         """Move the finished file into the downloads folder, never onto a file.
 
         The name is claimed with an exclusive create *before* the move, so two
@@ -1196,6 +1220,10 @@ class DownloadJob:
         then puts our bytes where the claim is, atomically: a reader either sees
         the claim (an empty file, for a moment) or the finished file, never half
         of one download and half of another.
+
+        ``announce=False`` delivers without claiming the progress bar reached
+        the end: a live recording stopped on purpose is a file the user asked
+        for, but the download itself did not finish (F12).
         """
         target = self._claim_name(source.name)
         try:
@@ -1213,9 +1241,10 @@ class DownloadJob:
             raise
         self._deliver_attachments(source, target)
         self._discard_work()
-        self.progress = Progress(status="Done", percent=100.0, phase="done")
-        if self.on_progress:
-            self.on_progress(self.progress)
+        if announce:
+            self.progress = Progress(status="Done", percent=100.0, phase="done")
+            if self.on_progress:
+                self.on_progress(self.progress)
         # Told what just landed, while the size and the folder are all here
         # (F6): the recent list is built from this, not from guessing later.
         self._remember(target)
@@ -1363,6 +1392,95 @@ class DownloadJob:
                 if candidate not in found and candidate.exists():
                     found.append(candidate)
         return found
+
+    # -- a live recording that was stopped (F12) -----------------------------
+    def keep_recording(self) -> Optional[Path]:
+        """Deliver what a stopped live recording captured, and return its path.
+
+        A live stream has no end to wait for, so stopping it is not a failure:
+        the part that arrived *is* the recording. Left as it is, it would be a
+        ``.part`` file inside a hidden working folder — invisible to every
+        player and to the person who pressed Stop. The suffix is dropped and
+        the file is delivered exactly as a finished download is, with a real
+        name in the downloads folder.
+
+        Nothing is invented. A run that recorded nothing delivers nothing, and
+        a folder holding only streams that were never joined, or only yt-dlp's
+        ``.ytdl`` note, is left where it is rather than offered as a video.
+
+        Called from the cancel path, and from a Ctrl+C in ``--plain``, which is
+        why it waits first: a file still being written is not a file to hand
+        over.
+        """
+        process = self._process
+        if process is not None and process.poll() is None:
+            try:
+                process.wait(timeout=_STOP_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                self._signal_tree(process, force=True)
+                try:
+                    process.wait(timeout=_STOP_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:  # pragma: no cover - wedged
+                    return None
+
+        candidates: List[Path] = []
+        for path in self._paths:
+            # yt-dlp announces the name the file will have, and writes it as
+            # ``<name>.part`` until it is done — so both are looked for.
+            for candidate in (Path(str(path) + ".part"), path):
+                try:
+                    if candidate.is_file() and candidate.stat().st_size > 0:
+                        candidates.append(candidate)
+                except OSError:  # pragma: no cover - a file that vanished
+                    continue
+        if not candidates:
+            # Nothing was announced (a stream whose name yt-dlp never printed):
+            # this job's own folder only, and only what could be a recording.
+            try:
+                entries = list(self.work_dir().iterdir())
+            except OSError:
+                entries = []
+            for entry in entries:
+                try:
+                    if not entry.is_file() or entry.stat().st_size <= 0:
+                        continue
+                except OSError:  # pragma: no cover - a file that vanished
+                    continue
+                if entry.name.endswith((".ytdl", ".temp", ".tmp")):
+                    continue
+                if _FRAGMENT_RE.search(entry.name.rsplit(".", 1)[0]):
+                    continue
+                if _is_attachment(entry):
+                    continue
+                candidates.append(entry)
+        if not candidates:
+            return None
+
+        try:
+            source = max(candidates, key=lambda path: path.stat().st_size)
+        except OSError:  # pragma: no cover - a file that vanished
+            return None
+        if source.name.endswith(".part"):
+            finished = source.with_name(source.name[: -len(".part")])
+            if finished.exists():
+                # yt-dlp finished the file itself as it stopped; that is the
+                # better copy, and the leftover is not.
+                source = finished
+            else:
+                try:
+                    os.replace(source, finished)
+                except OSError:
+                    # A recording that cannot lose its suffix is left where it
+                    # is, with its ``.part``, rather than handed over as a file
+                    # that looks finished and is not.
+                    return None
+                source = finished
+
+        try:
+            return self._deliver(source, announce=False)
+        except (ToolError, OSError):
+            # Nothing a stop can do about a folder that will not take the file.
+            return None
 
     def discard_partial(self) -> int:
         """Throw the half-finished files away; returns how many were there.

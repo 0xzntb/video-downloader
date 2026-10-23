@@ -723,3 +723,44 @@ def test_quiet_is_handed_to_the_plain_path(monkeypatch):
 
     assert main(["--plain", "--yes", "--quiet", URL]) == 0
     assert seen["quiet"] is True
+
+
+# ---------------------------------------------------------------------------
+# live streams (F12)
+# ---------------------------------------------------------------------------
+
+
+def test_live_from_start_is_handed_to_the_plain_path(monkeypatch):
+    seen = {}
+
+    def fake_run_plain(url, **kwargs):
+        seen.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(plain, "run_plain", fake_run_plain)
+
+    assert main(["--plain", "--yes", "--live-from-start", URL]) == 0
+    assert seen["live_from_start"] is True
+
+    seen.clear()
+    assert main(["--plain", "--yes", URL]) == 0
+    assert seen["live_from_start"] is False
+
+
+def test_live_from_start_opens_the_app_with_the_choice_already_made(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        "viddl.tui.app.run", lambda *, url, audio, **kwargs: seen.update(kwargs)
+    )
+
+    assert main(["--live-from-start", URL]) == 0
+    assert seen["live_from_start"] is True
+
+
+def test_live_from_start_with_a_playlist_is_refused(capsys):
+    """One recording, not a list: a queue has no way to ask each item (F12)."""
+    assert main(["--plain", "--live-from-start", "--playlist", URL]) == 1
+
+    err = capsys.readouterr().err
+    assert "--live-from-start records one live stream, not a playlist" in err
+    assert "without --playlist" in err

@@ -304,6 +304,47 @@ def _menu(info: MediaInfo, chosen: MediaOption, stream: TextIO) -> None:
     _say(stream)
 
 
+def _live_note(info: MediaInfo, from_start: bool) -> str:
+    """What a live link means for this download, or nothing at all (F12).
+
+    A live stream is the one kind of link whose download does not end by
+    itself, so the two things a person needs to know before starting one are
+    when it starts and how to stop it. The sentence is the same one the app
+    shows on its qualities screen.
+    """
+    if not info.is_live:
+        return ""
+    if from_start:
+        start = "recording from the beginning of the stream"
+    else:
+        start = (
+            "recording starts now, not at the beginning "
+            "(add --live-from-start to take the whole stream)"
+        )
+    return (
+        f"Live: {start}. Press Ctrl+C when you have enough; "
+        "what has been recorded is kept."
+    )
+
+
+def _stopped(recorded: Optional[Path], out: TextIO, err: TextIO) -> int:
+    """End a stopped download: say what happened, and where the file is (F12).
+
+    Exit code 130 means "stopped", which is still true when a live recording
+    was delivered — but its path goes on stdout all the same, because a script
+    that asked for a recording should not have to guess where it went. For
+    every other download the old sentence stands: the ``.part`` is still there
+    and running the command again carries on from it.
+    """
+    if recorded is not None:
+        _say(err, f"Stopped. What had been recorded was saved: {Path(recorded).name}")
+        out.write(f"{recorded}\n")
+        out.flush()
+        return 130
+    _say(err, "Stopped. Run the same command again to carry on from here.")
+    return 130
+
+
 def _progress_line(progress: Progress) -> str:
     """One line describing where the download is.
 
@@ -555,6 +596,7 @@ def run_plain(
     extras: Optional[Extras] = None,
     archive: Optional[Path] = None,
     network: Optional[NetworkOptions] = None,
+    live_from_start: bool = False,
     quiet: bool = False,
     engine: Optional[Engine] = None,
     probe: Callable[..., MediaInfo] = probe_video,
@@ -582,6 +624,11 @@ def run_plain(
     and the progress line go nowhere, so a script that only wants the path gets
     only the path (F10). Failures are not "the rest" — they still go to stderr,
     because a command that fails silently is a command nobody can debug.
+
+    ``live_from_start`` records a live stream from its beginning instead of
+    from the moment it is started (F12). It is the one choice a live stream
+    gets: stopping it hands over what was recorded, as a finished file rather
+    than a ``.part`` nobody can play.
     """
     out = stdout or sys.stdout
     err = stderr or sys.stderr
@@ -629,6 +676,16 @@ def run_plain(
         # is fetched: a proxy or a ceiling is part of what was asked for, so a
         # log that records the download should record the terms as well.
         _say(report, f"Network: {network.summary()}.")
+    # A live stream is the one link that never finishes by itself, so where it
+    # starts is part of what was asked for (F12). The flag on a link that is
+    # not live is not an error — a script that always passes it keeps working
+    # — but it is said out loud rather than quietly dropped.
+    from_start = bool(live_from_start and info.is_live)
+    live_note = _live_note(info, from_start)
+    if live_note:
+        _say(report, live_note)
+    elif live_from_start:
+        _say(report, "This is not a live stream, so --live-from-start has no effect.")
 
     if info.playlist is not None:
         # A playlist link was read as its first video, which is the safe
@@ -697,18 +754,25 @@ def run_plain(
             archive=archive,
             network=network,
             title=info.title,
+            # What makes a stop of a live stream a recording rather than a
+            # cancelled download (F12). A non-live job behaves as before.
+            is_live=info.is_live,
+            live_from_start=from_start,
         )
         path = job.run()
     except KeyboardInterrupt:
         if job is not None:
             job.cancel(force=True)
         line.clear()
-        _say(err, "Stopped. Run the same command again to carry on from here.")
-        return 130
+        # Ctrl+C is how a live recording is finished, so what arrived is
+        # delivered here rather than left as a ``.part`` nobody can play (F12).
+        recorded = job.keep_recording() if job is not None and info.is_live else None
+        return _stopped(recorded, out, err)
     except DownloadCancelled:
         line.clear()
-        _say(err, "Stopped. Run the same command again to carry on from here.")
-        return 130
+        # The job delivered the recording as it stopped (F12).
+        recorded = getattr(job, "recorded", None) if job is not None else None
+        return _stopped(recorded, out, err)
     except ToolError as exc:
         line.clear()
         _explain_failure(err, exc, engine)

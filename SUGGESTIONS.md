@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **30 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F11 in section 3, U4 in section 4, D2–D3 in section 6.
+Progress so far: **31 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F12 in section 3, U4 in section 4, D2–D3 in section 6.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
 down keeps a secret, and a web page can no longer start it *doing* anything —
@@ -1685,12 +1685,82 @@ for slow hosts. Worth exposing behind an "Advanced" row once **F13** exists.
 > not served; and `--throttled-rate` only *can* help where a site offers more
 > than one source, since it is the engine that decides to try another.
 
-### F12 — Live streams · **P3** · M
+### F12 — Live streams · **P3** · M · ✅ **Done**
 
 The README says live streams work but are recorded from the current point. A
 banner saying so, plus `--live-from-start` as an explicit choice and a clear
 "stop" that keeps what has been recorded so far, would make that honest and
 useful rather than surprising.
+
+> **Done as a banner, a button, a flag and a real file.** A live link now says
+> so on the qualities screen — *Live stream. Recording starts now, not from the
+> beginning. Stop when you have enough: what has been recorded is saved* — and
+> the button beside it, **Record from the start** (`l`), switches to the other
+> answer, with the sentence repeating which one is in force so the button never
+> has a state nobody can see. `--live-from-start` is the same choice from the
+> command line, in both front doors, and the flag is only ever handed to yt-dlp
+> when the probe said the link is live.
+>
+> **Stopping is the ending, and it is now a real one.** `DownloadJob` gained
+> `is_live`: when a live job is cancelled it calls a new `keep_recording()`,
+> which waits for the process it was recording with to be gone, takes the
+> ``.part`` yt-dlp was writing, drops the suffix and delivers it through the
+> same claim-and-move path a finished download uses — so what arrived is an
+> ordinary file in the Downloads folder, not a hidden half-file nobody can
+> play. Nothing is invented: a run that recorded nothing delivers nothing, a
+> folder holding only unmerged streams or yt-dlp's ``.ytdl`` note is left
+> alone, and a file that will not lose its suffix is left where it is rather
+> than handed over looking finished. The progress bar is not told it reached
+> 100% (a stop is a stop), and the delivered recording still goes into the
+> recent list.
+>
+> The app says **Stop recording** on the progress screen for a live link
+> instead of **Cancel**, and the screen that follows is the ordinary result
+> screen headed **Recording stopped**, with the file's path, size and *what had
+> been recorded when you stopped*. If the recording could not be put into one
+> file, the stopped screen says so and withholds **Resume**: a second run
+> records from the live point, which is a new file, not a continuation.
+> `--plain` prints one `Live:` line (what it is doing and that `Ctrl+C` keep
+> what arrived), writes the delivered path on stdout when it is stopped and
+> still exits **130**, so a script can tell a stop from a success without losing
+> the file.
+>
+> **A live stream is one video, not a list.** `--live-from-start` with
+> `--playlist` is refused with a sentence, because a queue has no way to ask
+> each item whether it is live before it starts.
+>
+> **Measured against real yt-dlp 2026.10.21.** A 4 MB MP4 over local HTTP with
+> `--plain --yes --live-from-start` printed *This is not a live stream, so
+> --live-from-start has no effect.* and exited 0 with the 4,194,304-byte file;
+> `yt-dlp --live-from-start --simulate` on the same URL exited 0, so the flag
+> is a real option and not a typo. For the stop path, a server that trickles a
+> response forever stood in for a stream that never ends: real yt-dlp wrote
+> `live [live].mp4.part` at 64,512 bytes, the job was cancelled, and it
+> delivered `live [live].mp4` at exactly 64,512 bytes with no `.viddl-*` folder
+> left behind.
+>
+> **25 new tests** (927 → 952): 8 in `tests/test_download.py` (the flag and its
+> absence, a stopped recording delivered byte for byte, a non-live stop still
+> left to resume, no `done` progress for a recording, the folder fallback when
+> yt-dlp never printed a name, an empty recording delivering nothing, fragments
+> and cover pictures not being the recording, and the wait for the writer), 7
+> in `tests/test_plain.py` (both sentences, the flag reaching the job, the
+> no-effect notice, the path on stdout, the `Ctrl+C` path and `--quiet`), 7 in
+> `tests/test_tui.py` (the banner and its absence, the button and `l`, the job
+> getting both values, **Stop recording**, the **Recording stopped** screen,
+> and the no-Resume fallback) and 3 in `tests/test_cli.py` (the flag reaching
+> both front doors, and the refusal with `--playlist`). `pyflakes` clean;
+> coverage **93 %** overall (`download.py` 93 %, `plain.py` 89 %,
+> `tui/app.py` 90 %).
+>
+> **Not done** (and not asked for here): no live stream was recorded from a
+> real site — this workspace has no way to reach one, so *which* sites honour
+> `--live-from-start` is the engine's answer, not Viddl's; a live link inside a
+> playlist or a batch is still taken from the current point, since the queue
+> has no per-item live answer; there is no "keep recording" that appends to the
+> same file (a second run is a new recording); and the delivered recording is
+> the container yt-dlp was writing, so a player that refuses a fragmented MP4
+> cannot be helped without a remux, which F12 did not ask for.
 
 ### F13 — Optional config file · **P3** · M
 
