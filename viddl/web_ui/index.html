@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Viddl</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Viddl</h1>
+        <p class="lead">
+          Downloads run on this computer, with the same yt-dlp and ffmpeg the
+          terminal app uses.
+        </p>
+      </header>
+
+      <form id="lookup" autocomplete="off">
+        <label for="link">A video link, or a name to search for</label>
+        <div class="row">
+          <input
+            id="link"
+            name="link"
+            type="text"
+            spellcheck="false"
+            placeholder="https://… or a song name"
+            autofocus
+          />
+          <button id="look-up" type="submit">Look up</button>
+        </div>
+      </form>
+
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+
+      <section id="video" hidden>
+        <h2 id="title"></h2>
+        <p id="meta" class="meta"></p>
+        <p id="note" class="note" hidden></p>
+        <fieldset id="options">
+          <legend>Which quality?</legend>
+        </fieldset>
+        <button id="download" type="button">Download</button>
+      </section>
+
+      <section id="progress" hidden>
+        <p id="download-title" class="meta"></p>
+        <progress id="bar" max="100" value="0"></progress>
+        <p id="numbers" class="numbers" role="status" aria-live="polite"></p>
+        <button id="stop" type="button" class="quiet">Stop</button>
+      </section>
+
+      <section id="done" hidden>
+        <p id="saved" class="saved"></p>
+        <p id="saved-note" class="meta"></p>
+        <button id="again" type="button">Download another</button>
+      </section>
+
+      <footer>
+        <p>
+          This page exists on this computer only. It is not a website, and it
+          cannot be put on one: the download tools have to run here.
+        </p>
+      </footer>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

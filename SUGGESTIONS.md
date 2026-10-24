@@ -10,8 +10,10 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **33 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 in section 3, U4 in section 4, D2–D3 in section 6.
+Progress so far: **34 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U4 in section 4, D2–D3 in section 6.
+F15 is ◐: the Firefox build and the store packaging landed; the submissions
+are the publisher's to make.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
 down keeps a secret, and a web page can no longer start it *doing* anything —
@@ -2000,7 +2002,7 @@ installing does not require Developer mode.
 > not track the app's, which matters only when uploading: both stores refuse a
 > version that has already been used.
 
-### F16 — The local web UI, done safely · **P3** · L
+### F16 — The local web UI, done safely · **P3** · L · ✅ **Done**
 
 The natural "second front door": a `viddl --web` that serves a page on
 `127.0.0.1`, reusing `probe_video` and `DownloadJob`, with real format choices
@@ -2013,6 +2015,77 @@ and real downloads. Two constraints worth writing down before anyone builds it:
    so a public site can only ever be a demo unless it proxies through a paid
    third-party download API. Anyone promising a hosted version is promising
    someone else's infrastructure.
+
+> **Built, and checked against a real server over a real socket.** `viddl --web`
+> prints `http://127.0.0.1:<port>/<token>/` and serves `viddl/web_ui/` —
+> `index.html`, `app.js`, `app.css`, shipped as package data like the extension
+> — with `viddl/web.py` behind it. Every download on the page is the one the app
+> makes: the look-up is `probe_video`, the rows are its `MediaOption`s, the
+> bytes come from `DownloadJob`, and the page polls the job it started.
+>
+> The four constraints are enforced in that order of importance.
+> **Loopback:** `127.0.0.1` only. **Token:** `secrets.token_urlsafe(24)` per run,
+> compared with `compare_digest`; a missing and a wrong token get the identical
+> 404, so guessing learns nothing, and the token is written into no file the
+> browser loads (the script uses relative URLs). **Cross-site:** there is no
+> `Access-Control-Allow-Origin` on any response; a POST carrying a foreign
+> `Origin` is refused; a POST must be `application/json`, which a plain HTML form
+> cannot send, so another tab cannot start a download; bodies over 64 KB are
+> refused before they are read; and a `Host` header that is not this
+> `127.0.0.1:<port>` is not answered at all, which is what a domain pointed at
+> 127.0.0.1 looks like. The page also carries `default-src 'none'`,
+> `frame-ancestors 'none'`, `no-store`, `nosniff` and `no-referrer`.
+> **Trust:** the browser sends back a link and a row *key*, never an option
+> object; the server asks the (remembered) look-up again and picks the row from
+> that, so a page cannot choose the yt-dlp arguments a download runs with.
+>
+> It is a front door, not a second app: the session's own flags flow through —
+> `--cookies-from-browser`, `--extras`, `--download-archive`, the four network
+> options and `--live-from-start` — so the page downloads under the same terms
+> the run was started with. Stopping a live recording hands over what arrived,
+> as the app does (F12). Ctrl+C stops whatever is still running before the
+> server closes; closing the tab does not, because the download is not the tab's.
+>
+> **Verified against a real server.** `viddl --web` bound
+> `127.0.0.1:35117` and `ss` showed the listener on the loopback address only.
+> With real **yt-dlp 2026.10.21** and a real 43,160-byte 3-second H.264/AAC MP4
+> served over local HTTP: the page answered 200 `text/html` with the policy and
+> no CORS header; `POST /<token>/api/lookup` returned the title and **10 rows**;
+> `POST /<token>/api/download` started the job and the saved file was **43,160
+> bytes**, which ffmpeg reads as `Duration: 00:00:03.00`, h264 320×240 with AAC.
+> Restarted with `--download-archive`, a second download of the same link
+> answered `alreadyHad: true` with the same path and wrote no third file. The
+> refusals held against that live server too: no token **404**, wrong token
+> **404**, `Host: evil.example` **404**, foreign `Origin` **403**,
+> `Content-Type: text/plain` **415**, `--exec=calc` **400** with *“That does not
+> look like a link or a name to search for.”*, unknown job **400**. The page's
+> own `app.js` was driven in jsdom against the running server: typed the link,
+> submitted, got the title and ten rows with the first one checked, clicked
+> **Download**, watched it finish, and read *“Already had it: … 43.2 KB”*, then
+> **Download another** cleared it back to the box.
+>
+> **42 new tests** in `tests/test_web.py` (1049 → 1091): the loopback bind, the
+> token and its absence, the Host and Origin checks, the content-type and size
+> limits, the method refusal, the headers, the redirect, the page never carrying
+> the token or a remote resource, a link that is not one, a name being searched
+> for, a failed look-up, the chosen row reaching the job, the session flags
+> reaching it, unknown rows and jobs, stopping, a stopped live recording, a
+> failed download, `stop_all`, and the command line's `--web` paths. `pyflakes`
+> clean; coverage **93 %** overall (`web.py` 96 %, `cli.py` 98 %). A real
+> `pip install` ships `web_ui/`, so an installed copy serves the page.
+>
+> **Not done, on purpose.** No playlists on the page (one look-up is one video;
+> the app and `--plain --playlist` remain the way to take a list), no settings
+> screen — quality, cookies, extras and the archive are whatever the page was
+> started with — and no ffmpeg setup prompt: a row that needs an ffmpeg the
+> machine does not have fails with yt-dlp's reason and the `--update-ffmpeg`
+> hint rather than opening a 150 MB download nobody agreed to. There is no
+> reattach list either: reloading the tab forgets a running job (the download
+> itself carries on and lands in the folder). No real browser was available in
+> this environment, so the page was driven through jsdom rather than by hand —
+> sort order, colours and a phone's layout are unverified by eye. And it still
+> cannot be hosted, which is the point: yt-dlp and ffmpeg have to run on the
+> computer the page is opened from.
 
 ---
 

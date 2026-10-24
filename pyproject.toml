@@ -27,6 +27,9 @@ viddl = [
     "browser_extension/*.html",
     "browser_extension/*.css",
     "browser_extension/icons/*.png",
+    "web_ui/*.html",
+    "web_ui/*.js",
+    "web_ui/*.css",
 ]
 
 [tool.pytest.ini_options]

@@ -73,6 +73,48 @@ after launch. It is the one part of this program that touches text nobody gave
 it, so it is kept to a single question at the one moment the answer is useful —
 and the answer never starts anything on its own.
 
+## The local page (`--web`)
+
+`viddl --web` is the one part of Viddl that listens. It is a separate front door,
+started deliberately, and it is built to be reachable only from this machine and
+only by the page it just printed:
+
+* **A loopback socket.** It binds `127.0.0.1`, never `0.0.0.0`, so another
+  machine cannot connect at all.
+* **A token that is nowhere else.** The URL carries 32 characters of randomness
+  (`secrets.token_urlsafe(24)`), compared with `compare_digest`; a request
+  without it — or with a wrong one — gets the same 404. The page's script uses
+  relative addresses, so the token is never written into a file the browser
+  loads, and it is not kept in the log: request lines record `<token>` in its
+  place.
+* **No other site can use it.** No `Access-Control-Allow-Origin` is sent on any
+  response, so a page on another origin cannot read the answers. A `POST` with a
+  foreign `Origin` is refused with 403, and a `POST` must be `application/json`,
+  which a form cannot send — so a page in another tab cannot start a download
+  even if it guesses an endpoint. A `Host` header naming anything but this
+  loopback address is answered with 404, which is what a domain pointed at
+  127.0.0.1 (DNS rebinding) would look like.
+* **A small body and a small surface.** Requests over 64 KB are refused before
+  they are read; only three `GET`s (the page, its script, its stylesheet) and
+  three `POST`s (look a link up, start a download, stop one) exist.
+* **The browser cannot choose the download's arguments.** It sends a link and a
+  row *key*; the server asks the remembered look-up again and takes the row from
+  that, so what reaches yt-dlp is a `MediaOption` Viddl built, not a string from
+  a page.
+* **Nothing is loaded from elsewhere,** and the page cannot be framed: the
+  policy is `default-src 'none'` with `frame-ancestors 'none'`, plus `no-store`
+  and `nosniff`.
+
+The earlier note about listening sockets does not contradict this: that note is
+about adding a socket to focus a window, a nuisance problem solved with a new
+surface. A page is a feature someone has to start, and the controls above are
+what keep its surface small.
+
+What it does not change: a process already running as you can connect to the
+port and, if it can read the URL, use the page. That is not a new capability —
+such a process can run yt-dlp itself — and it is why the page stays a local
+convenience rather than a service.
+
 ## Not defended against
 
 * **The sites themselves, or what you download.** Viddl delegates all extraction

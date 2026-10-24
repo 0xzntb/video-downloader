@@ -130,6 +130,7 @@ Nothing is installed system-wide and no configuration files are created.
 | See what you have downloaded lately | Press `r` (or **Recent**) on the home screen |
 | Use the link you already copied | Click **Paste link** on the home screen (or press `p` when the box is not focused) |
 | Download several links in one go | Paste them into the link box separated by spaces, then **Download all** on the links screen |
+| Download from a browser tab instead of a terminal | `viddl --web` (see [A page in your browser](#a-page-in-your-browser)) |
 | Check that everything is set up | `viddl --doctor` |
 | Fetch the newest video engine (the usual fix for a link that stopped working) | Press **Update engine** on the home or failure screen, or `viddl --update` |
 | Fetch the newest ffmpeg build | `viddl --update-ffmpeg` |
@@ -544,6 +545,52 @@ The `id` in `manifest.firefox.json` is what keeps an add-on's identity across
 updates, and it cannot be changed after the first submission — set your own
 before uploading if you would rather it were not the placeholder.
 
+## A page in your browser
+
+`viddl --web` serves the same downloads as a page, for when a browser tab is
+easier than a terminal:
+
+```sh
+viddl --web
+# Viddl is open at http://127.0.0.1:51337/abCdEf.../
+```
+
+Paste a link or a name, pick a quality, watch the bytes, and the saved path is
+shown when it ends. **Stop** keeps the part that arrived, exactly as `Esc` does
+in the app, and stopping a live stream that way hands over the recording. The
+page uses the session you started it with:
+
+```sh
+viddl --web --cookies-from-browser firefox --extras subs --download-archive --limit-rate 2M
+```
+
+Those flags then mean the same thing for every download begun there, and
+`--live-from-start` records whole streams.
+
+It is deliberately small and local:
+
+* **Loopback only.** It binds `127.0.0.1`, never `0.0.0.0`, so nothing on your
+  network can reach it. A request whose `Host` header is some other name — a
+  domain pointed at 127.0.0.1 — is not answered at all.
+* **A token in the URL.** Every request must carry the random token printed
+  when the page started. Without it the server answers 404, which is the same
+  answer a wrong token gets, so guessing learns nothing. The token is never
+  written into the page's own files.
+* **No CORS, and no cross-site writes.** No `Access-Control-Allow-Origin` is
+  ever sent, so another site cannot read the answers. A request carrying a
+  foreign `Origin` is refused, a POST has to be `application/json` (a plain
+  HTML form cannot send that), and bodies are capped at 64 KB.
+* **Nothing loaded from elsewhere.** The page fetches only its own script and
+  stylesheet, under a `default-src 'none'` content policy.
+
+Closing the terminal stops whatever is still downloading; a download that had
+already finished is in your downloads folder either way.
+
+What the page does not do: no playlists, no settings screen, and no ffmpeg
+setup prompt — a quality that needs an ffmpeg you do not have fails with the
+reason, and `viddl --update-ffmpeg` is the fix. It also cannot be hosted: yt-dlp
+and ffmpeg have to run on your computer, which is the whole point.
+
 ## When something goes wrong
 
 Errors are written for people, not for log files. A private video says *"That
@@ -643,6 +690,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 | `viddl/queue.py` | Several videos, one at a time: which one is running, a count that is honest at the end, and a bad video that costs one item rather than the list. |
 | `viddl/plain.py` | The line-oriented `--plain` path: ASCII-only text, one progress line, the saved path alone on stdout. |
 | `viddl/config.py` | The optional settings file: a small TOML subset it can read on every Python it supports, and the order that decides whether a flag, a variable, the file or the default wins. |
+| `viddl/web.py` | The local page behind `--web`: a loopback server with a token in the URL, the same look-up and download behind it, and no way in from another machine or another site. |
 | `viddl/search.py` | What text typed where a link goes actually is: a link, a name to search for, or neither — and the link a search turned out to mean, so the download names a video rather than a query. |
 | `viddl/errors.py` | Maps raw tool output onto plain-language explanations, and says whether the failure is one another attempt may fix. |
 | `viddl/protocol.py` | The `viddl://` hand-off and its per-OS registration. |
@@ -820,7 +868,9 @@ sequential queue behind them, `viddl://` parsing and registration, the plain
 with clicks, arrow keys, ticking a checklist and the cancel path. The
 extension is checked too: both manifests, every file each references, and its
 JavaScript via Node — twice over, once through Chromium's `chrome.*` API and
-once through Firefox's `browser.*` promises. The Windows installer files are checked from any
+once through Firefox's `browser.*` promises. The local page (`--web`) is driven over real HTTP on a loopback socket: the
+token, the Host and Origin checks, the headers, the refusals, and a download
+that comes out the other end. The Windows installer files are checked from any
 platform, and the suite runs on Windows in CI.
 
 Regenerate the extension icons with `python3 tools/make_icons.py`.

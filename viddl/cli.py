@@ -18,6 +18,7 @@ piece is also reachable from the command line:
 * ``viddl --register-protocol``          wire up the ``viddl://`` hand-off
 * ``viddl --install-browser-extension``  copy the extension out for loading
 * ``viddl --extension-zip firefox``      write the add-on store upload (F15)
+* ``viddl --web``             serve the same downloads as a page on 127.0.0.1 (F16)
 """
 
 from __future__ import annotations
@@ -275,6 +276,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the folder holding the bundled browser extension",
     )
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help=(
+            "open a page on this computer (127.0.0.1 only) that downloads with "
+            "the same tools, for when a browser tab is easier than a terminal"
+        ),
+    )
     parser.add_argument("--version", action="version", version=f"{APP_TITLE} {__version__}")
     return parser
 
@@ -514,6 +523,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.download_archive:
         os.environ[appdata.ENV_ARCHIVE] = "1"
 
+    # What remembers what has already been downloaded, when the run asked for
+    # one (F6). Read after the flag above has set the variable, and shared by
+    # every front door — the app, --plain and the page (F16) — so they agree
+    # about what "already have this" means.
+    archive = appdata.archive_path() if appdata.archive_enabled() else None
+
     # One browser name, checked before it reaches a command line (F1). What
     # comes back is a key from the closed list, or nothing at all.
     cookies = ""
@@ -625,6 +640,46 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 0
 
+    if args.web:
+        # A page is not a link: the link goes into the page's own box, where it
+        # can be changed without starting Viddl again (F16).
+        if args.plain:
+            return _fail(
+                "--web is a page of its own; --plain is a line at a time.",
+                "Run one or the other.",
+            )
+        if args.target or args.uri:
+            return _fail(
+                "--web opens the page empty.",
+                "Run viddl --web, then paste the link into the box it shows.",
+            )
+        if args.list_qualities:
+            # Both are answers to one question asked before the page opens, and
+            # a page is a place to ask them; silently doing one and not the
+            # other would be the worst of the three.
+            return _fail(
+                "--web is a page; --list-qualities is an answer about one link.",
+                "Look the link up in the page, or run --list-qualities on its own.",
+            )
+        from .web import serve
+
+        try:
+            # The session's own choices come with it: cookies, extras, the
+            # archive, the network options and live recording mean the same
+            # thing on the page as they do in the app (F1, F5, F6, F11, F12).
+            return serve(
+                cookies=cookies,
+                extras=extras,
+                archive=archive,
+                network=network,
+                live_from_start=bool(args.live_from_start),
+            )
+        except OSError as exc:
+            return _fail(
+                "Viddl could not open a page on this computer.",
+                f"The port could not be used: {exc}",
+            )
+
     if args.list_qualities:
         # A link, or a name to search for (F14): the question "what qualities
         # does this have" is worth answering for either.
@@ -668,10 +723,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     quality = (args.quality or "").strip()
     if not quality and not audio:
         quality = config.quality()
-    # What remembers what has already been downloaded, when the run asked for
-    # one (F6). Both front doors get the same answer, so the app and --plain
-    # agree about what "already have this" means.
-    archive = appdata.archive_path() if appdata.archive_enabled() else None
 
     raw = args.uri or args.target or ""
     if raw.lower().startswith("viddl:"):
