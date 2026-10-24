@@ -49,6 +49,7 @@ from .. import engine as engine_mod
 from .. import errors
 from .. import history as history_mod
 from .. import search
+from .. import theme as theme_mod
 from ..download import (
     DownloadCancelled,
     DownloadJob,
@@ -63,7 +64,7 @@ from ..formats import MediaInfo, MediaOption, Playlist, PlaylistEntry
 from ..network import NetworkOptions
 from ..queue import QueueItem, QueueJob, QueueSummary
 from ..util import human_duration, human_size, redact, safe_video_link, shorten
-from .widgets import ChoiceList, ExtraToggle
+from .widgets import ChoiceList, ExtraToggle, ThemeRow
 
 _ARP = "·"
 LOGGER = logging.getLogger("viddl")
@@ -306,6 +307,25 @@ class ViddlApp(App):
         height: auto;
     }
 
+    #theme-row {
+        /* The one settings row the app has (U1). Quiet, because it is not a
+           step in the flow, but reachable with Tab and clickable. */
+        color: $text-muted;
+        text-align: center;
+        width: 100%;
+        padding-top: 1;
+        height: auto;
+    }
+
+    #theme-row:focus {
+        color: $text;
+        text-style: bold underline;
+    }
+
+    #theme-row:hover {
+        background: $primary 25%;
+    }
+
     #options-heading {
         text-style: bold;
         color: $text;
@@ -358,7 +378,9 @@ class ViddlApp(App):
 
     .extra-toggle.on {
         background: $primary;
-        color: $text;
+        /* Text on a bright block is its own colour decision: $text was chosen
+           to be read against the panel, not against $primary (U1). */
+        color: $on-primary;
         text-style: bold;
     }
 
@@ -393,7 +415,7 @@ class ViddlApp(App):
 
     .choice-row.active {
         background: $primary;
-        color: $text;
+        color: $on-primary;
     }
 
     #download-panel ProgressBar {
@@ -448,8 +470,20 @@ class ViddlApp(App):
         network: Optional[NetworkOptions] = None,
         live_from_start: bool = False,
         services: Optional[Services] = None,
+        theme_name: str = "",
     ) -> None:
         super().__init__()
+        # The three schemes are registered before one is chosen, because
+        # Textual refuses a theme it has not been given, and the home screen's
+        # row moves between them at run time (U1).
+        for scheme in theme_mod.THEMES:
+            self.register_theme(scheme)
+        self.theme_name = theme_mod.palette(theme_name or theme_mod.DARK).name
+        self.theme = theme_mod.THEME_PREFIX + self.theme_name
+        # NO_COLOR is honoured by Textual itself (the screen is drawn in
+        # monochrome); this is only so the app can say so instead of leaving
+        # the row looking like a theme that did nothing.
+        self.theme_note = theme_mod.no_colour_reason()
         self.services = services or Services(engine=Engine())
         # A link arriving from the command line or a browser hand-off is still
         # a link from outside: it is checked here as well as at the CLI.
@@ -481,6 +515,40 @@ class ViddlApp(App):
     def on_mount(self) -> None:
         self.push_screen(HomeScreen())
         self.bootstrap_engine()
+
+    def get_theme_variable_defaults(self) -> dict:
+        """The names our stylesheet uses, with the dark scheme's values (U1).
+
+        A theme that forgot one would otherwise be a stylesheet that fails to
+        parse, which is a blank screen rather than a slightly wrong colour.
+        """
+        return theme_mod.default_variables()
+
+    # -- the colours (U1) ----------------------------------------------------
+    @property
+    def theme_title(self) -> str:
+        """How the scheme in force is named on screen: ``High contrast``."""
+        return theme_mod.title(self.theme_name)
+
+    def set_theme(self, name: str) -> None:
+        """Draw in another scheme, for the rest of this run.
+
+        Textual restyles the screen by itself. A quality row is the one thing
+        it cannot restyle — its size and note are Rich text with a colour baked
+        in at paint time — and those rows are built after this screen closes,
+        so they read the new theme when they mount instead.
+        """
+        self.theme_name = theme_mod.palette(name).name
+        self.theme = theme_mod.THEME_PREFIX + self.theme_name
+        for screen in self.screen_stack:
+            if isinstance(screen, HomeScreen):
+                screen.refresh_theme_row()
+
+    def cycle_theme(self) -> None:
+        """The next scheme in the cycle, wrapping round."""
+        order = theme_mod.SCHEMES
+        position = (order.index(self.theme_name) + 1) % len(order)
+        self.set_theme(order[position])
 
     def _post(self, callback: Callable[..., None], *args: Any) -> None:
         """Call a UI callback from a worker thread.
@@ -721,6 +789,9 @@ class HomeScreen(Screen):
         # same reason and with the same caveat: with the box focused, ``p`` is
         # a letter. The button beside it is what the mouse reaches for.
         Binding("p", "paste_clipboard", "Paste link", show=True),
+        # The colours are one key away, and Ctrl+T cannot be confused with the
+        # letters typed into the link box the way a bare `t` would (U1).
+        Binding("ctrl+t", "cycle_theme", "Theme", show=True),
     ]
 
     #: The link the clipboard offered, waiting for a yes (F8). Empty until the
@@ -744,6 +815,7 @@ class HomeScreen(Screen):
                 id="url-input",
             )
             yield Static("", id="clipboard-offer")
+            yield ThemeRow(id="theme-row")
             with Horizontal(classes="buttons"):
                 # Offered only when the clipboard really holds a link (F8), and
                 # hidden rather than disabled when it does not: a permanently
@@ -761,6 +833,7 @@ class HomeScreen(Screen):
         # one the button would fetch the same release for nothing.
         self.query_one("#update-engine", Button).add_class("hidden")
         self.refresh_engine_status()
+        self.refresh_theme_row()
         if self.app.state.url:
             # A search opens with the name in the box, not its plumbing, so it
             # can be edited and tried again (F14).
@@ -841,6 +914,25 @@ class HomeScreen(Screen):
         field = self.query_one("#url-input", Input)
         field.value = ""
         field.focus()
+
+    def refresh_theme_row(self) -> None:
+        """Say which colours are in force, and how to change them (U1).
+
+        Written out rather than shown as a swatch: a colour is not a label, and
+        the person who needs the light theme is the one least able to tell the
+        dark one from it.
+        """
+        row = self.query_one("#theme-row", ThemeRow)
+        text = f"Theme: {self.app.theme_title}"
+        if self.app.theme_note:
+            text += f"  {_ARP}  {self.app.theme_note}, so colour is off"
+        else:
+            text += f"  {_ARP}  click, or press Ctrl+T, to change"
+        row.update(_plain(text))
+        row.tooltip = (
+            "Dark, light and high contrast. "
+            "To keep one between runs: viddl --set theme light"
+        )
 
     def refresh_engine_status(self) -> None:
         widget = self.query_one("#engine-status", Static)
@@ -946,6 +1038,14 @@ class HomeScreen(Screen):
     def action_update_engine(self) -> None:
         self.query_one("#update-engine", Button).disabled = True
         self.app.start_engine_update()
+
+    def action_cycle_theme(self) -> None:
+        """The next scheme; the row above the buttons says which (U1)."""
+        self.app.cycle_theme()
+
+    def on_theme_row_turned(self, message: ThemeRow.Turned) -> None:
+        message.stop()
+        self.app.cycle_theme()
 
     def action_quit_app(self) -> None:
         self.app.action_quit_app()
@@ -2994,6 +3094,7 @@ def run(
     network: Optional[NetworkOptions] = None,
     live_from_start: bool = False,
     services: Optional[Services] = None,
+    theme_name: str = "",
 ) -> None:
     """Start the terminal app."""
     app = ViddlApp(
@@ -3006,5 +3107,8 @@ def run(
         network=network,
         live_from_start=live_from_start,
         services=services,
+        # The scheme chosen by the flag, the variable or the file (U1); the
+        # home screen can change it from here.
+        theme_name=theme_name,
     )
     app.run()

@@ -18,6 +18,7 @@ piece is also reachable from the command line:
 * ``viddl --register-protocol``          wire up the ``viddl://`` hand-off
 * ``viddl --install-browser-extension``  copy the extension out for loading
 * ``viddl --extension-zip firefox``      write the add-on store upload (F15)
+* ``viddl --theme light <link>``  draw the app in a light or high-contrast scheme (U1)
 * ``viddl --web``             serve the same downloads as a page on 127.0.0.1 (F16)
 """
 
@@ -31,7 +32,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from . import APP_TITLE, __version__
-from . import appdata, config, cookies as cookies_mod, logfile, search
+from . import appdata, config, cookies as cookies_mod, logfile, search, theme
 from .engine import Engine, Tool, ToolError, staleness_advice
 from .extras import Extras
 from .formats import format_rows
@@ -195,13 +196,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--theme",
+        metavar="THEME",
+        help=(
+            "the colours the full-screen app draws in: dark, light, "
+            "high-contrast, or auto to follow the terminal's background"
+        ),
+    )
+    parser.add_argument(
         "--set",
         dest="set_setting",
         nargs=2,
         metavar=("SETTING", "VALUE"),
         help=(
             "remember a preference in Viddl's settings file: "
-            "download-dir, quality or archive"
+            "download-dir, quality, archive or theme"
         ),
     )
     parser.add_argument(
@@ -456,6 +465,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"{args.unset_setting} was not set.")
         return 0
 
+    # The plain path prints one ASCII line at a time and has no colour to
+    # choose, so a theme asked for there would be a flag that did nothing (U1).
+    if args.theme and args.plain:
+        return _fail(
+            "--plain is one colour already; --theme is for the full-screen app.",
+            "Run viddl --theme light <link> without --plain.",
+        )
+
     if not args.plain and (args.quality or args.yes or args.playlist or args.quiet):
         hint = "Try: viddl --plain --quality 720 <link>"
         if args.playlist and not (args.quality or args.yes):
@@ -512,6 +529,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "socks5://127.0.0.1:1080 <link>",
         )
 
+    # A theme named on the command line is the person's own typing, so a typo
+    # is refused here whether or not the run ends up drawing anything (U1).
+    # ``VIDDL_THEME`` and the file are resolved where they are used, so
+    # ``--doctor`` can report a bad value instead of dying on it.
+    if args.theme:
+        try:
+            theme.clean(args.theme)
+        except ValueError as exc:
+            return _fail(
+                str(exc), "Try: viddl --theme light, or viddl --set theme light"
+            )
+
     if args.download_dir:
         os.environ["VIDDL_DOWNLOAD_DIR"] = str(Path(args.download_dir).expanduser())
 
@@ -550,7 +579,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # places the sentences are built from, not from parsing them.
             from . import machine
 
-            print(machine.dumps(machine.doctor_report()), end="")
+            print(
+                machine.dumps(machine.doctor_report(theme_flag=args.theme or "")),
+                end="",
+            )
             return 0
         # The report says what the settings file holds (F13), which overrides
         # are set, what Viddl is actually waiting for whether or not one is
@@ -558,6 +590,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # could read a sign-in from (F1).
         for line in [
             *config.report(),
+            # The scheme in force, where it came from, and the smallest contrast
+            # it reaches — the number the tests hold it to (U1).
+            theme.doctor_line(args.theme or "", config.theme_name()),
             *Engine().report(),
             appdata.archive_note(),
             appdata.recent_note(),
@@ -660,6 +695,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return _fail(
                 "--web is a page; --list-qualities is an answer about one link.",
                 "Look the link up in the page, or run --list-qualities on its own.",
+            )
+        if args.theme:
+            # The page carries its own stylesheet, so a theme here would be a
+            # flag that changed nothing (U1).
+            return _fail(
+                "--web draws its own page; --theme is for the full-screen app.",
+                "Run viddl --theme light <link> to use it.",
             )
         from .web import serve
 
@@ -789,6 +831,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except KeyboardInterrupt:  # pragma: no cover - interactive
             return 130
 
+    # The scheme in force: the flag, the variable, the file, or the terminal's
+    # own answer (U1). Resolved where it is used, so a bad variable is a
+    # sentence here and a reported problem in the doctor.
+    try:
+        chosen_theme = theme.choose(args.theme or "", config.theme_name())
+    except ValueError as exc:
+        return _fail(str(exc), "Unset VIDDL_THEME, or set it to dark, light or auto")
+
+    # Textual needs a terminal that can move the cursor; TERM=dumb is the
+    # setting whose whole meaning is that nothing can. Refused with the command
+    # that does work, rather than drawing a full-screen app into a stream (U1).
+    if theme.terminal_is_dumb():
+        return _fail(
+            "TERM=dumb cannot draw Viddl's screen.",
+            "Set TERM to what your terminal really is (xterm-256color), or "
+            "use: viddl --plain --yes <link>",
+        )
+
     from .tui.app import run
 
     try:
@@ -805,6 +865,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # The row to start the cursor on, from the settings file or
             # VIDDL_QUALITY (F13). Empty means the best row, as before.
             prefer_quality=quality,
+            # The scheme resolved above (U1).
+            theme_name=chosen_theme.name,
         )
     except KeyboardInterrupt:  # pragma: no cover - interactive
         return 130

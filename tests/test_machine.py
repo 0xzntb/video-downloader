@@ -161,3 +161,27 @@ def test_the_doctor_report_names_the_settings_file():
     assert report["settings"]["file"] is True
     assert report["settings"]["values"] == {"quality": "720"}
     assert report["settings"]["problems"] == []
+
+
+def test_the_doctor_report_carries_the_theme(monkeypatch):
+    """The same facts as the sentences, including the measured contrast (U1)."""
+    for name in ("VIDDL_THEME", "NO_COLOR", "COLORFGBG"):
+        monkeypatch.delenv(name, raising=False)
+
+    report = machine.doctor_report()
+
+    assert report["theme"]["name"] == "dark"
+    assert report["theme"]["source"] == "the default"
+    assert report["theme"]["requested"] == "auto"
+    assert report["theme"]["colour"] is True
+    assert report["theme"]["note"] == ""
+    assert report["theme"]["worst_text_contrast"] >= 4.5
+
+
+def test_the_doctor_report_names_a_theme_variable_it_cannot_use(monkeypatch):
+    monkeypatch.setenv("VIDDL_THEME", "banana")
+
+    report = machine.doctor_report()
+
+    assert report["theme"]["name"] is None
+    assert "not a theme" in report["theme"]["problem"]

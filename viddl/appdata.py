@@ -15,7 +15,8 @@ The sixth, ``VIDDL_TIMEOUT``, decides how long Viddl waits for the network (R11)
 
 The seventh, ``VIDDL_ARCHIVE``, remembers what has already been downloaded so
 the same video is not fetched twice (F6). The eighth, ``VIDDL_QUALITY``, picks
-the quality ``--plain`` uses when ``--quality`` is not given (F13).
+the quality ``--plain`` uses when ``--quality`` is not given (F13). The ninth,
+``VIDDL_THEME``, picks the colour scheme the app draws in (U1).
 
 Each of them outranks the optional settings file in ``~/.config/viddl`` (see
 :mod:`viddl.config`), and a flag outranks both: a preference is a default, not
@@ -45,7 +46,7 @@ from typing import List, Optional, Tuple
 from . import APP_NAME
 from . import config
 
-# The seven variables Viddl reads, named once so the documentation, the doctor
+# The nine variables Viddl reads, named once so the documentation, the doctor
 # output and the tests cannot drift from the code that reads them.
 ENV_HOME = "VIDDL_HOME"
 ENV_DOWNLOAD_DIR = "VIDDL_DOWNLOAD_DIR"
@@ -58,6 +59,10 @@ ENV_ARCHIVE = "VIDDL_ARCHIVE"
 #: with the settings file's own rules, so the flag, the variable and the file
 #: cannot accept three different spellings.
 ENV_QUALITY = config.ENV_QUALITY
+#: The one that names a colour scheme rather than a folder (U1). Like the
+#: quality, it lives with the settings file's rules so the flag, the variable
+#: and the file cannot accept three different spellings.
+ENV_THEME = config.ENV_THEME
 ENVIRONMENT_VARIABLES = (
     ENV_HOME,
     ENV_DOWNLOAD_DIR,
@@ -67,6 +72,7 @@ ENVIRONMENT_VARIABLES = (
     ENV_TIMEOUT,
     ENV_ARCHIVE,
     ENV_QUALITY,
+    ENV_THEME,
 )
 
 # Options Viddl builds for itself, by short and long name. A value that sets one
@@ -455,12 +461,20 @@ def overrides() -> List[Override]:
             problem = archive_problem()
         elif name == ENV_QUALITY:
             problem = config.quality_problem()
+        elif name == ENV_THEME:
+            problem = config.theme_problem()
         else:
             problem = _refuse(value)
         if not problem:
             if name in (ENV_YTDLP, ENV_FFMPEG):
                 problem = "" if program_override(name) else "not a program Viddl can run"
-            elif name not in (ENV_YTDLP_ARGS, ENV_TIMEOUT, ENV_ARCHIVE, ENV_QUALITY):
+            elif name not in (
+                ENV_YTDLP_ARGS,
+                ENV_TIMEOUT,
+                ENV_ARCHIVE,
+                ENV_QUALITY,
+                ENV_THEME,
+            ):
                 problem = "" if folder_override(name) else "not a folder"
         found.append(Override(name, value, problem))
     return found

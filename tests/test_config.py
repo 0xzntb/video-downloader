@@ -103,12 +103,12 @@ def test_a_yes_or_no_is_stored_as_a_boolean(no_environment):
 
 def test_a_comment_and_an_unknown_key_are_read_and_kept(no_environment):
     """A comment is ignored; a key from a newer version is preserved (F13)."""
-    path = write_config('# a note\n\ntheme = "dark"   # not ours yet\nquality = "480"\n')
+    path = write_config('# a note\n\nvolume = "loud"   # not ours yet\nquality = "480"\n')
 
     config.set_value("archive", "on")
 
     text = path.read_text(encoding="utf-8")
-    assert 'theme = "dark"' in text
+    assert 'volume = "loud"' in text
     assert "archive = true" in text
     assert config.read().values == {"quality": "480", "archive": "true"}
 
@@ -168,14 +168,14 @@ def test_a_value_with_an_escape_viddl_does_not_write_is_refused(no_environment):
 
 def test_an_unknown_setting_name_is_refused_with_the_list(no_environment):
     with pytest.raises(ValueError) as caught:
-        config.set_value("theme", "dark")
+        config.set_value("volume", "loud")
 
-    assert "Unknown setting 'theme'" in str(caught.value)
-    assert "download-dir, quality, archive" in str(caught.value)
+    assert "Unknown setting 'volume'" in str(caught.value)
+    assert "download-dir, quality, archive, theme" in str(caught.value)
     assert not config.config_path().exists()
 
     with pytest.raises(ValueError):
-        config.unset("theme")
+        config.unset("volume")
 
 
 def test_a_folder_that_is_really_a_file_is_refused(no_environment, tmp_path):
@@ -311,6 +311,57 @@ def test_the_doctor_lists_the_quality_variable_with_its_verdict(no_environment, 
     monkeypatch.setenv("VIDDL_QUALITY", "ultra")
     assert any(
         "VIDDL_QUALITY=ultra (ignored" in line for line in appdata.environment_report()
+    )
+
+
+def test_a_theme_is_written_and_read_back(no_environment):
+    """The fourth preference, and the only one that changes a colour (U1)."""
+    assert config.set_value("theme", " Light ") == "light"
+
+    assert config.config_path().read_text(encoding="utf-8") == 'theme = "light"\n'
+    assert config.theme_name() == "light"
+
+
+def test_a_theme_must_be_one_the_app_can_draw(no_environment):
+    with pytest.raises(ValueError) as caught:
+        config.set_value("theme", "banana")
+    assert "not a theme" in str(caught.value)
+    assert not config.config_path().exists()
+
+
+def test_the_theme_variable_beats_the_file(no_environment, monkeypatch):
+    config.set_value("theme", "light")
+
+    monkeypatch.setenv("VIDDL_THEME", "high-contrast")
+    assert config.theme_name() == "high-contrast"
+
+    # Empty still counts as spoken: it means auto, not "ask the file".
+    monkeypatch.setenv("VIDDL_THEME", "")
+    assert config.theme_name() == ""
+    assert config.theme_problem() == ""
+
+
+def test_the_theme_variable_is_checked_before_it_is_used(no_environment, monkeypatch):
+    assert config.theme_problem() == ""
+
+    monkeypatch.setenv("VIDDL_THEME", "auto")
+    assert config.theme_problem() == ""
+
+    monkeypatch.setenv("VIDDL_THEME", "banana")
+    assert "not a theme" in config.theme_problem()
+
+
+def test_the_doctor_lists_the_theme_variable_with_its_verdict(
+    no_environment, monkeypatch
+):
+    monkeypatch.setenv("VIDDL_THEME", "light")
+    assert any(
+        "VIDDL_THEME=light (in use)" in line for line in appdata.environment_report()
+    )
+
+    monkeypatch.setenv("VIDDL_THEME", "banana")
+    assert any(
+        "VIDDL_THEME=banana (ignored" in line for line in appdata.environment_report()
     )
 
 

@@ -9,7 +9,12 @@ description = "A friendly terminal app that downloads videos and MP3s by pasting
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-dependencies = ["textual>=0.80"]
+# The app's themes (U1) need Textual 0.86, but the screen already needed more:
+# its stylesheet uses text-wrap/text-overflow, which 1.0 refuses, and 2.0's
+# test pilot is still loose enough to fail four of our tests. 3.0 is the oldest
+# release the whole suite passes on (1148 tests, measured); 8.2.8 is the one it
+# is developed against.
+dependencies = ["textual>=3.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-asyncio>=0.23"]

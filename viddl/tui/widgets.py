@@ -46,16 +46,43 @@ class ChoiceRow(Static):
             parts.append(f"({self.row_note})")
         return "   ".join(part for part in parts if part)
 
+    def _theme_colour(self, name: str) -> str:
+        """A colour the current theme gives a name, or ``""`` before there is one (U1).
+
+        A Rich ``Text`` carries its colour with it, so it cannot be written in
+        the stylesheet like the rest of the screen — but it is still read from
+        the theme instead of being a literal called ``cyan``.
+        """
+        try:
+            variables = self.app.theme_variables
+        except Exception:
+            # Built before it has an app: the first real paint happens after
+            # ``on_mount``, which is where the colours are filled in.
+            return ""
+        return str(variables.get(name, ""))
+
     def _refresh_content(self) -> None:
         text = Text()
         label = self.row_label
         if len(label) > LABEL_WIDTH:
             label = label[: LABEL_WIDTH - 1].rstrip() + "…"
         text.append(label.ljust(LABEL_WIDTH), style="bold" if self.is_active else "")
-        text.append(self.row_size.rjust(SIZE_WIDTH), style="cyan")
+        # On the active row the background is $primary, and the theme's own
+        # on-primary colour is the readable choice there; elsewhere the size
+        # is the scheme's accent (U1).
+        size_style = "" if self.is_active else self._theme_colour("size-foreground")
+        text.append(self.row_size.rjust(SIZE_WIDTH), style=size_style)
         if self.row_note:
-            text.append("   " + self.row_note, style="dim italic")
+            muted = self._theme_colour("text-muted")
+            note_style = "italic" if self.is_active or not muted else f"italic {muted}"
+            text.append("   " + self.row_note, style=note_style)
         self.update(text)
+
+    def on_mount(self) -> None:
+        # The theme is only reachable once the row is on screen, and the choice
+        # is made on the home screen, so every row here is built after it: this
+        # is where its colours are read (U1).
+        self._refresh_content()
 
     def set_active(self, active: bool) -> None:
         if active != self.is_active:
@@ -136,6 +163,36 @@ class ExtraToggle(Static, can_focus=True):
         event.stop()
         self.focus()
         self.post_message(self.Pressed(self.extra_key))
+
+
+class ThemeRow(Static, can_focus=True):
+    """The one settings row the app has: which colours it draws in (U1).
+
+    A setting that only exists as a command-line flag is a setting the person
+    who needs it will never find, and the light theme is exactly the one
+    somebody wants *because* the screen they are looking at is hard to read.
+    So it is a row: one line, in words rather than a colour swatch, clickable
+    and reachable with the keyboard, and it says which scheme is in force.
+
+    The label is the screen's to write — it knows about ``NO_COLOR`` and this
+    widget does not — which is why the row carries no text of its own.
+    """
+
+    BINDINGS = [
+        ("enter", "turn", "Change theme"),
+        ("space", "turn", "Change theme"),
+    ]
+
+    class Turned(Message):
+        """Posted when the row is clicked or pressed with the keyboard."""
+
+    def action_turn(self) -> None:
+        self.post_message(self.Turned())
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        self.focus()
+        self.post_message(self.Turned())
 
 
 class ChoiceList(VerticalScroll):

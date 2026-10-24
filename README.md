@@ -126,7 +126,8 @@ Nothing is installed system-wide and no configuration files are created.
 | Keep a call, a game or a stream usable while it downloads | `viddl --limit-rate 2M <link>` (see [A slow connection, a busy one, or a proxy](#a-slow-connection-a-busy-one-or-a-proxy)) |
 | Download through a proxy | `viddl --proxy socks5://127.0.0.1:1080 <link>` |
 | Record a live stream from its beginning | Press **Record from the start** on the qualities screen (`l`), or `viddl --live-from-start <link>` (see [Live streams](#live-streams)) |
-| Remember a folder, quality or archive between runs | `viddl --set quality 720` (see [Settings](#settings-optional)) |
+| Remember a folder, quality, archive or theme between runs | `viddl --set quality 720` (see [Settings](#settings-optional)) |
+| Make it easier to read on a bright or dim screen | `viddl --theme light <link>` (see [Colours and contrast](#colours-and-contrast)) |
 | See what you have downloaded lately | Press `r` (or **Recent**) on the home screen |
 | Use the link you already copied | Click **Paste link** on the home screen (or press `p` when the box is not focused) |
 | Download several links in one go | Paste them into the link box separated by spaces, then **Download all** on the links screen |
@@ -142,6 +143,7 @@ In the app:
 * **Keyboard** — `↑`/`↓` or `j`/`k` to move, `Enter` to download, `Tab` between
   buttons, `Esc` to go back, `Ctrl+Q` to quit. On the qualities screen `s`,
   `m` and `t` switch subtitles, details and the cover image on and off.
+  On the home screen `Ctrl+T` changes the colour scheme.
 * Paste with `Ctrl+V` / `Cmd+V`, or just type the link. If the clipboard already
   holds a link when Viddl opens, the home screen says so and offers **Paste
   link**; it never fills the box or starts anything by itself.
@@ -690,6 +692,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 | `viddl/queue.py` | Several videos, one at a time: which one is running, a count that is honest at the end, and a bad video that costs one item rather than the list. |
 | `viddl/plain.py` | The line-oriented `--plain` path: ASCII-only text, one progress line, the saved path alone on stdout. |
 | `viddl/config.py` | The optional settings file: a small TOML subset it can read on every Python it supports, and the order that decides whether a flag, a variable, the file or the default wins. |
+| `viddl/theme.py` | The three colour schemes: the palettes, the WCAG contrast maths that proves they are readable, and the order that decides whether the flag, the variable, the file or the terminal picks one. |
 | `viddl/web.py` | The local page behind `--web`: a loopback server with a token in the URL, the same look-up and download behind it, and no way in from another machine or another site. |
 | `viddl/search.py` | What text typed where a link goes actually is: a link, a name to search for, or neither — and the link a search turned out to mean, so the download names a video rather than a query. |
 | `viddl/errors.py` | Maps raw tool output onto plain-language explanations, and says whether the failure is one another attempt may fix. |
@@ -741,12 +744,14 @@ it was asked to do. Leave it off, as by default, and every click downloads.
 Viddl works with nothing configured, and that stays the default: no file is
 read, none is written, and every choice is the one the app shipped with. When
 you do want to remember something — a folder on another disk, the quality you
-always take, an archive so repeats are skipped — one command writes it:
+always take, an archive so repeats are skipped, the colours you can read — one
+command writes it:
 
 ```sh
 viddl --set download-dir ~/Videos
 viddl --set quality 720
 viddl --set archive on
+viddl --set theme light
 ```
 
 The file is `~/.config/viddl/config.toml` (`$XDG_CONFIG_HOME/viddl/config.toml`
@@ -760,6 +765,7 @@ removing the last one deletes the file, which puts the zero-config default back.
 | `download-dir` | a folder | `--download-dir`, `VIDDL_DOWNLOAD_DIR` |
 | `quality` | `720`, `1080p`, `best`, `audio`, `mp3-192` … | `--quality`, `--audio`, `VIDDL_QUALITY` |
 | `archive` | `on` or `off` | `--download-archive`, `VIDDL_ARCHIVE` |
+| `theme` | `dark`, `light`, `high-contrast` or `auto` | `--theme`, `VIDDL_THEME` |
 
 **What wins:** a flag on the command line, then an environment variable, then
 this file, then the built-in default. That order is the point of a preference
@@ -782,16 +788,62 @@ qualities screen opens with that row under the cursor (or the best row, when
 this link does not have it), and `--plain` downloads it when `--quality` is
 silent.
 
+## Colours and contrast
+
+The app draws in one of three colour schemes. The home screen says which one is
+in force — a quiet line above the buttons, `Theme: Dark` — and `Ctrl+T` (or a
+click on it) moves to the next one.
+
+| Scheme | What it is for |
+| --- | --- |
+| `dark` | Light text on a near-black page. The default, and what the app drew before there was a choice. |
+| `light` | Dark text on a pale page, for a bright room or a terminal with a white background. |
+| `high-contrast` | Black and white with bright edges, every piece of text at 7:1 or better. For a projector, a washed-out laptop screen, or eyes that want the extra separation. |
+| `auto` | Not a fourth scheme: look at what the terminal says about its own background (`COLORFGBG`) and pick `dark` or `light`. A terminal that says nothing gets `dark`. |
+
+```sh
+viddl --theme light <link>          # this run
+VIDDL_THEME=high-contrast viddl     # this shell
+viddl --set theme light             # remembered, until --unset theme
+```
+
+A flag beats the variable, the variable beats the file, the file beats the
+default — the same order every other preference follows (see
+[Settings](#settings-optional)). `Ctrl+T` changes the scheme for that run only:
+writing the file is `--set`'s job, and a click should not leave one behind on a
+machine that never asked for it.
+
+**The colours are measured, not eyeballed.** Every scheme names the pairs that
+have to be readable — text on the panel, a muted note, a warning, a saved path,
+the chosen quality's own label sitting on a bright background, the border — and
+the WCAG contrast ratio is computed for each: 4.5:1 for text, 3:1 for borders
+and disabled text, and 7:1 and 4.5:1 for high contrast. The test suite fails if
+a palette drifts below its own bar, and `viddl --doctor` prints the smallest
+text ratio of the scheme in force:
+
+```
+Theme:        light (the settings file; smallest text contrast 6.4:1)
+```
+
+**If colour is a problem.** With `NO_COLOR` set, Textual draws the screen in
+monochrome, and the home row says `NO_COLOR is set, so colour is off` instead of
+looking like a theme that did nothing. A terminal set to `TERM=dumb` cannot draw
+the app at all, so Viddl says so and names the `viddl --plain --yes` command
+that does work, rather than painting a full-screen app into a stream. `--plain`
+has no colours to choose, and `--theme` is refused with it rather than accepted
+and ignored; the `--web` page carries its own stylesheet, and is refused the
+same way.
+
 
 ## Environment variables
 
 Five variables change where Viddl looks, one changes what it asks for, one
 changes how long it waits for the network, one says what is remembered
-between runs, and one sets a default quality. None are needed for normal
-use; they exist for tests, shared machines, slow links and unusual setups,
-and every one of them outranks the settings file above. `viddl --doctor`
-prints the ones that are set and what became of each, so none of them is a
-secret.
+between runs, one sets a default quality and one picks the colours. None are
+needed for normal use; they exist for tests, shared machines, slow links and
+unusual setups, and every one of them outranks the settings file above.
+`viddl --doctor` prints the ones that are set and what became of each, so none
+of them is a secret.
 
 | Variable | What it does | Why you would use it |
 | --- | --- | --- |
@@ -803,6 +855,7 @@ secret.
 | `VIDDL_TIMEOUT` | How many seconds to wait for the network, per request: `45` or `45s`, between 1 and 3600. | Give a slow link more patience, or make a site that never answers fail in seconds instead of minutes. |
 | `VIDDL_ARCHIVE` | Keep a download archive and skip videos already in it: `1`/`on`/`yes`, or `0`/`off`/`no` to say so out loud. | Take a playlist again and only get the new videos; never fetch the same link twice. |
 | `VIDDL_QUALITY` | The quality `--plain` uses when `--quality` is not given, and the row the app starts on: `720`, `best`, `audio`, `mp3-192`. | Keep a default for this shell without writing a settings file; override one command. |
+| `VIDDL_THEME` | The colour scheme the app draws in: `dark`, `light`, `high-contrast`, or `auto` to follow the terminal's own background. | Try a scheme without writing a settings file, or change a plain terminal's mind for one shell. |
 
 Each value is checked before it is used, and one that cannot be honoured is
 ignored rather than half-applied. A value that looks like an option
@@ -810,7 +863,7 @@ ignored rather than half-applied. A value that looks like an option
 folder that is really a file is refused, rather than failing later in a way
 nobody can explain; and a bare program name means your `PATH` — never the
 working directory, which is not something Viddl gets to choose when a browser
-starts it. `viddl --doctor` says which of the eight are in use, which were
+starts it. `viddl --doctor` says which of the nine are in use, which were
 ignored, and why. `VIDDL_ARCHIVE` is the one with no path to check — a value
 that is neither a yes nor a no is refused (and shown as such by the doctor)
 rather than quietly read as "off".

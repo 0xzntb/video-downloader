@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from . import APP_NAME
+from . import theme as theme_mod
 from .formats import AUDIO_FORMATS, ORIGINAL_AUDIO_KEY
 
 #: The environment variable that outranks the file for each setting (F13). The
@@ -43,6 +44,7 @@ from .formats import AUDIO_FORMATS, ORIGINAL_AUDIO_KEY
 ENV_DOWNLOAD_DIR = "VIDDL_DOWNLOAD_DIR"
 ENV_QUALITY = "VIDDL_QUALITY"
 ENV_ARCHIVE = "VIDDL_ARCHIVE"
+ENV_THEME = theme_mod.ENV_THEME
 
 #: The file, inside a folder named after the app in the platform's config place.
 FILE_NAME = "config.toml"
@@ -75,6 +77,12 @@ SETTINGS: Tuple[Setting, ...] = (
         ENV_ARCHIVE,
         "--download-archive",
         "remember downloads and skip videos you already have",
+    ),
+    Setting(
+        "theme",
+        ENV_THEME,
+        "--theme",
+        "the colours the app draws in",
     ),
 )
 
@@ -283,10 +291,17 @@ def _clean_archive(value: str) -> str:
     raise ValueError(f"'{value}' is not a yes or no (try on or off)")
 
 
+def _clean_theme(value: str) -> str:
+    # The spelling, the aliases and the refusal live with the palettes, so the
+    # flag, the variable and the file cannot accept three different lists (U1).
+    return theme_mod.clean(value)
+
+
 _CLEANERS = {
     "download-dir": _clean_download_dir,
     "quality": _clean_quality,
     "archive": _clean_archive,
+    "theme": _clean_theme,
 }
 
 
@@ -484,6 +499,26 @@ def archive() -> Optional[bool]:
     if raw is None:
         return None
     return raw == "true"
+
+
+def theme_name() -> str:
+    """The scheme the file asks for, unless ``VIDDL_THEME`` spoke (U1)."""
+    asked = _asked(ENV_THEME)
+    if asked is not None:
+        return asked.lower()
+    return read().values.get("theme", "")
+
+
+def theme_problem() -> str:
+    """Why ``VIDDL_THEME`` cannot be used, or ``""`` when it can (or is unset)."""
+    asked = _asked(ENV_THEME)
+    if asked is None or not asked:
+        return ""
+    try:
+        theme_mod.clean(asked)
+    except ValueError:
+        return "not a theme Viddl knows (try dark, light or high-contrast)"
+    return ""
 
 
 # ---------------------------------------------------------------------------

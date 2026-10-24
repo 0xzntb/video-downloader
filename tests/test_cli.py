@@ -881,8 +881,8 @@ def test_a_preference_that_cannot_be_used_is_refused(capsys):
 
 
 def test_an_unknown_setting_is_refused(capsys):
-    assert main(["--set", "theme", "dark"]) == 1
-    assert "Unknown setting 'theme'" in capsys.readouterr().err
+    assert main(["--set", "colour", "dark"]) == 1
+    assert "Unknown setting 'colour'" in capsys.readouterr().err
 
 
 def test_set_and_unset_at_once_are_refused(capsys):
@@ -997,3 +997,210 @@ def test_the_app_gets_a_search_when_the_link_is_a_name(monkeypatch):
     assert main(["some song"]) == 0
 
     assert seen["url"] == "ytsearch1:some song"
+
+
+# ---------------------------------------------------------------------------
+# the colours (U1)
+# ---------------------------------------------------------------------------
+
+
+def _capture_kwargs(monkeypatch) -> dict:
+    """Replace the app with a recorder that keeps every keyword it was given."""
+    seen: dict = {}
+    monkeypatch.setattr(
+        "viddl.tui.app.run",
+        lambda *, url, audio, **kwargs: seen.update(kwargs),
+    )
+    return seen
+
+
+def _a_real_terminal(monkeypatch) -> None:
+    """A terminal that can draw the app, and no opinions about colour."""
+    monkeypatch.setenv("TERM", "xterm-256color")
+    for name in ("NO_COLOR", "COLORFGBG", "VIDDL_THEME"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_the_theme_flag_reaches_the_app(monkeypatch):
+    _a_real_terminal(monkeypatch)
+    seen = _capture_kwargs(monkeypatch)
+
+    assert main(["--theme", "light", URL]) == 0
+
+    assert seen["theme_name"] == "light"
+
+
+def test_the_theme_flag_accepts_the_short_spellings(monkeypatch):
+    _a_real_terminal(monkeypatch)
+    seen = _capture_kwargs(monkeypatch)
+
+    assert main(["--theme", "High", URL]) == 0
+
+    assert seen["theme_name"] == "high-contrast"
+
+
+def test_a_theme_that_does_not_exist_is_refused(capsys, monkeypatch):
+    _a_real_terminal(monkeypatch)
+
+    assert main(["--theme", "banana", URL]) == 1
+
+    err = capsys.readouterr().err
+    assert "not a theme" in err
+    assert "viddl --theme light" in err
+
+
+def test_a_remembered_theme_reaches_the_app(monkeypatch):
+    _a_real_terminal(monkeypatch)
+    config.set_value("theme", "high-contrast")
+    seen = _capture_kwargs(monkeypatch)
+
+    assert main([URL]) == 0
+
+    assert seen["theme_name"] == "high-contrast"
+
+
+def test_the_theme_flag_beats_the_remembered_one(monkeypatch):
+    _a_real_terminal(monkeypatch)
+    config.set_value("theme", "high-contrast")
+    seen = _capture_kwargs(monkeypatch)
+
+    assert main(["--theme", "dark", URL]) == 0
+
+    assert seen["theme_name"] == "dark"
+
+
+def test_the_environment_beats_a_remembered_theme(monkeypatch):
+    _a_real_terminal(monkeypatch)
+    config.set_value("theme", "light")
+    monkeypatch.setenv("VIDDL_THEME", "high-contrast")
+    seen = _capture_kwargs(monkeypatch)
+
+    assert main([URL]) == 0
+
+    assert seen["theme_name"] == "high-contrast"
+
+
+def test_auto_follows_the_terminal_it_is_run_in(monkeypatch):
+    _a_real_terminal(monkeypatch)
+    monkeypatch.setenv("COLORFGBG", "0;15")
+    seen = _capture_kwargs(monkeypatch)
+
+    assert main(["--theme", "auto", URL]) == 0
+
+    assert seen["theme_name"] == "light"
+
+
+def test_a_theme_variable_that_is_not_one_is_refused(capsys, monkeypatch):
+    _a_real_terminal(monkeypatch)
+    monkeypatch.setenv("VIDDL_THEME", "banana")
+
+    assert main([URL]) == 1
+
+    err = capsys.readouterr().err
+    assert "not a theme" in err
+    assert "Unset VIDDL_THEME" in err
+
+
+def test_theme_with_plain_is_refused(capsys, monkeypatch):
+    _a_real_terminal(monkeypatch)
+
+    assert main(["--theme", "light", "--plain", "--yes", URL]) == 1
+
+    err = capsys.readouterr().err
+    assert "--plain is one colour already" in err
+    assert "without --plain" in err
+
+
+def test_theme_with_web_is_refused(capsys, monkeypatch):
+    _a_real_terminal(monkeypatch)
+
+    assert main(["--theme", "light", "--web"]) == 1
+
+    assert "--web draws its own page" in capsys.readouterr().err
+
+
+def test_term_dumb_refuses_the_app_and_names_the_plain_one(capsys, monkeypatch):
+    _a_real_terminal(monkeypatch)
+    monkeypatch.setenv("TERM", "dumb")
+    seen = _capture_kwargs(monkeypatch)
+
+    assert main([URL]) == 1
+
+    assert seen == {}
+    err = capsys.readouterr().err
+    assert "TERM=dumb cannot draw" in err
+    assert "viddl --plain --yes" in err
+
+
+def test_theme_with_a_command_that_draws_nothing_is_fine(monkeypatch):
+    """`--list-qualities` answers a question; a theme has nothing to colour."""
+    _a_real_terminal(monkeypatch)
+
+    assert main(["--theme", "light", "--doctor"]) == 0
+
+
+def test_set_theme_writes_it_and_says_how_to_change_it(capsys):
+    assert main(["--set", "theme", "light"]) == 0
+
+    out = capsys.readouterr().out
+    assert "Saved theme = light" in out
+    assert config.theme_name() == "light"
+
+
+def test_the_doctor_says_which_theme_is_in_force(capsys, monkeypatch):
+    _a_real_terminal(monkeypatch)
+
+    assert main(["--doctor"]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    theme_lines = [line for line in lines if line.startswith("Theme:")]
+    assert len(theme_lines) == 1
+    assert "dark" in theme_lines[0]
+    assert "the default" in theme_lines[0]
+    # The claim of the item, measured rather than eyeballed (U1).
+    assert "smallest text contrast" in theme_lines[0]
+
+
+def test_the_doctor_shows_a_remembered_theme(capsys, monkeypatch):
+    _a_real_terminal(monkeypatch)
+    config.set_value("theme", "high-contrast")
+
+    assert main(["--doctor"]) == 0
+
+    line = [line for line in capsys.readouterr().out.splitlines() if line.startswith("Theme:")][0]
+    assert "high-contrast" in line
+    assert "the settings file" in line
+
+
+def test_the_doctor_says_when_colour_is_off(capsys, monkeypatch):
+    _a_real_terminal(monkeypatch)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    assert main(["--doctor"]) == 0
+
+    line = [line for line in capsys.readouterr().out.splitlines() if line.startswith("Theme:")][0]
+    assert "NO_COLOR is set" in line
+
+
+def test_the_doctor_survives_a_theme_variable_it_cannot_use(capsys, monkeypatch):
+    _a_real_terminal(monkeypatch)
+    monkeypatch.setenv("VIDDL_THEME", "banana")
+
+    assert main(["--doctor"]) == 0
+
+    out = capsys.readouterr().out
+    assert "not a theme" in out
+    assert "VIDDL_THEME=banana (ignored" in out
+
+
+def test_the_doctor_as_json_has_the_theme(capsys, monkeypatch):
+    _a_real_terminal(monkeypatch)
+
+    assert main(["--doctor", "--json"]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["theme"]["name"] == "dark"
+    assert report["theme"]["source"] == "the default"
+    assert report["theme"]["colour"] is True
+    assert report["theme"]["worst_text_contrast"] >= 4.5

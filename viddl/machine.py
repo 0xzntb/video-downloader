@@ -27,6 +27,7 @@ from . import appdata
 from . import config
 from . import cookies as cookies_mod
 from . import engine as engine_mod
+from . import theme as theme_mod
 from .engine import Engine, Tool
 from .formats import MediaInfo, MediaOption
 
@@ -45,7 +46,9 @@ def _tool(tool: Optional[Tool]) -> Optional[Dict[str, Any]]:
     }
 
 
-def doctor_report(engine: Optional[Engine] = None) -> Dict[str, Any]:
+def doctor_report(
+    engine: Optional[Engine] = None, theme_flag: str = ""
+) -> Dict[str, Any]:
     """Everything ``viddl --doctor`` says, as one object (F10).
 
     The folder problem is reported rather than raised: a doctor that cannot run
@@ -56,6 +59,31 @@ def doctor_report(engine: Optional[Engine] = None) -> Dict[str, Any]:
     problem = appdata.ensure_dirs()
     ytdlp = engine.find_ytdlp()
     stored = config.read()
+    # The scheme in force (U1), the same facts as the doctor's Theme line; a
+    # value the file or the variable got wrong is named rather than dropped.
+    theme: Dict[str, Any]
+    try:
+        chosen_theme = theme_mod.choose(theme_flag, config.theme_name())
+    except ValueError as exc:
+        # ``None`` is "no scheme is in force", which is what a refused value
+        # means: the app does not start, so naming a default would be a lie.
+        theme = {
+            "name": None,
+            "problem": str(exc),
+        }
+    else:
+        theme = {
+            "name": chosen_theme.name,
+            "requested": chosen_theme.requested,
+            "source": chosen_theme.source,
+            "colour": chosen_theme.colour,
+            "note": chosen_theme.note,
+            # The smallest ratio among the scheme's text pairs, which is the
+            # number the tests hold every scheme to (U1).
+            "worst_text_contrast": round(
+                theme_mod.worst_text_ratio(chosen_theme.name), 2
+            ),
+        }
 
     try:
         downloads = str(appdata.downloads_dir())
@@ -101,6 +129,7 @@ def doctor_report(engine: Optional[Engine] = None) -> Dict[str, Any]:
             "path": str(appdata.archive_path()),
         },
         "recent": {"path": str(appdata.history_path())},
+        "theme": theme,
         "cookies": {
             "browsers": [
                 {"key": browser.key, "label": browser.label}

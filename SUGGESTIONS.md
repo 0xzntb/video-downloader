@@ -10,8 +10,9 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **34 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U4 in section 4, D2–D3 in section 6.
+Progress so far: **35 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1 and U4 in section 4, D2–D3 in
+section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
 That is the security pass on section 1: nothing the app downloads is run
@@ -47,7 +48,7 @@ in `SECURITY.md`, which is what **D3** asked for.
 | 7 | ✅ **S2** + **S3** — verify and lock down downloaded helpers | Executables were fetched and `chmod +x`'d with no hash check, into a folder anyone could read — **both done** |
 | 8 | **D1** — make the log tell the truth | README promises last-run details; the log is almost always empty |
 | 9 | **E7** — one real end-to-end test | Unit tests stub the engine; nothing proves the pipeline works together |
-| 10 | **U1** — theme and `NO_COLOR` support | Hardcoded colours; no light-terminal or high-contrast story |
+| 10 | ✅ **U1** — theme and `NO_COLOR` support | Three schemes, `NO_COLOR` and `TERM=dumb` handled, contrast measured rather than eyeballed — **done** |
 
 ---
 
@@ -1840,7 +1841,7 @@ thing that silently misbehaves.
 >
 > **Not done** (and not asked for here): there is no settings screen in the app,
 > so changing a preference is `--set` on the command line or a hand-edited file;
-> "theme" from the item has no setting because there is no theme yet (**U1**);
+> "theme" had no setting because there was no theme yet — **U1** added one;
 > `--set` alongside a link writes the preference and does not download, without
 > complaining about the link; the file keeps no comments and cannot hold a
 > per-site default; and the four network choices from **F11** are still flags
@@ -2091,7 +2092,84 @@ and real downloads. Two constraints worth writing down before anyone builds it:
 
 ## 4. Aesthetics and user experience
 
-### U1 — Theme, `NO_COLOR`, and light terminals · **P2** · M
+### U1 — Theme, `NO_COLOR`, and light terminals · **P2** · M · ✅ **Done**
+
+> **Done, and measured rather than eyeballed.** Three schemes live in
+> `viddl/theme.py` — `dark` (the default, and close to what the app already
+> drew), `light`, and `high-contrast` — plus `auto`, which is not a fourth
+> scheme but the instruction to read `COLORFGBG` and pick `dark` or `light` (a
+> terminal that says nothing gets `dark`). Each is registered as a Textual
+> `Theme`, so the stylesheet's `$primary`, `$surface` and `$text-muted` now come
+> from the palette, and the last hardcoded colours in the UI are gone: the
+> `cyan` size column and the `dim` note in `widgets.py` read `$size-foreground`
+> and `$text-muted`, and text that sits *on* a bright block (the chosen row, a
+> primary button, an "on" extra) uses a new `$on-primary`. That last one was a
+> real bug: `$text` was chosen to be read **next to** `$primary`, and the
+> chosen row measured **3.4:1** on the old palette — below the 4.5:1 the
+> standard asks of text.
+>
+> **Who wins** is the order every preference follows (F13): `--theme`, then
+> `VIDDL_THEME`, then `theme` in the settings file (`viddl --set theme light`),
+> then `auto`/the default. `--theme` is refused with `--plain` and with `--web`
+> rather than accepted and ignored; a typo is refused with the list of schemes;
+> a bad `VIDDL_THEME` refuses the app with its own hint, and `--doctor` reports
+> it instead of dying on it.
+>
+> **The settings row** is on the home screen: `Theme: Light · click, or press
+> Ctrl+T, to change`. Clicking it, pressing Enter on it (Tab reaches it), or
+> `Ctrl+T` cycles dark → light → high-contrast → dark, and the row says which
+> is in force in words, not as a colour swatch. The change lasts for the run:
+> saving it is `--set`'s job, and a click should not leave a config file behind
+> on a machine that never asked for one.
+>
+> **Readability is arithmetic.** Twelve pairs per scheme are named in the module
+> — text on the panel and on the page, a muted note, the brand, a warning, a
+> failure, a saved path, the chosen row's own text on `$primary`, disabled text,
+> and the border — and each is checked with the WCAG 2 formula. Normal schemes
+> must reach 4.5:1 (3:1 for borders and disabled text); high contrast must reach
+> 7:1 and 4.5:1. Measured minimum text ratios: **dark 4.63:1, light 6.39:1,
+> high-contrast 9.25:1**. The suite fails if a palette drifts below its bar, and
+> `viddl --doctor` prints the number for the scheme in force:
+>
+> ```
+> Theme:        light (the settings file; smallest text contrast 6.4:1)
+> ```
+>
+> **The terminal's own preferences are honoured.** In a real pty (`script`, with
+> a stand-in engine): `--theme high-contrast` drew `Theme: High contrast` as
+> 256-colour 253-on-16 (near-white on black); `COLORFGBG=0;15 --theme auto` drew
+> `Theme: Light`; `NO_COLOR=1` turned the brand's accent from colour **94** to
+> grey **239**, and the row said *"NO_COLOR is set, so colour is off"*;
+> `TERM=dumb` refused to start with *"TERM=dumb cannot draw Viddl's screen"* and
+> named the `viddl --plain --yes` command instead.
+>
+> **57 new tests** (1091 → 1148): 32 in `tests/test_theme.py` (the contrast
+> maths, every pair of every scheme, the strict high-contrast thresholds, the
+> precedence order, `auto` both ways, `NO_COLOR`, `TERM=dumb`, the doctor line,
+> the row, `Ctrl+T`, the click, the keyboard, and the two theme colours inside a
+> quality row), 18 in `tests/test_cli.py`, 5 in `tests/test_config.py` and 2 in
+> `tests/test_machine.py`. `pyflakes` clean; coverage **93 %** overall
+> (`theme.py` 99 %, `tui/widgets.py` 95 %).
+>
+> **The dependency floor moved, because it had to.** Themes arrive in Textual
+> 0.86 — and the stylesheet already used `text-wrap`/`text-overflow`, which 0.86,
+> 0.89 and 1.0 refuse to parse, so the old `textual>=0.80` was already a bound
+> the app could not meet. Measured: 2.0.0 draws the app but fails four
+> pilot-timing tests; **3.0.0 passes the same 1148 tests**, and 8.2.8 is what it
+> is developed against. `pyproject.toml` now says `textual>=3.0`, with the reason
+> beside it.
+>
+> **Not done, on purpose.** The row's change is not remembered (that is `--set
+> theme`), and there is no settings screen. `NO_COLOR` means Textual's
+> monochrome — greys, no hue — not "no escape sequences at all": the chosen row
+> still differs from the others, and the panel still has a border. Contrast is
+> measured; colour *blindness* is not, so a deuteranope telling the warning row
+> from the failure row is unverified, as is a phone-sized terminal. The `--web`
+> page keeps its own stylesheet, so `--theme` is refused there rather than
+> half-applied. There is no pixel or snapshot test, and the terminal's
+> 256-colour downgrade of these RGB values is not measured either — the maths is
+> about the palette, not the rasteriser. And **E4** still wants the upper bound
+> and a lockfile: the floor is honest now; the ceiling is still open.
 
 `ViddlApp.CSS` is a single hardcoded stylesheet. There is no theme selection, no
 `NO_COLOR` handling, and no high-contrast variant, so the app looks the same on a
