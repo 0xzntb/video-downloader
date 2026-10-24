@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -14,11 +15,14 @@ import pytest
 from viddl import URL_SCHEME
 from viddl import appdata, protocol
 from viddl.protocol import (
+    CHROMIUM,
+    FIREFOX,
     SchemeRequest,
     build_scheme_url,
     extension_source_dir,
     install_extension,
     launch_command,
+    package_extension,
     parse_scheme,
     parse_scheme_url,
     register,
@@ -184,6 +188,69 @@ def test_install_extension_replaces_an_older_copy(tmp_path):
     assert again == target
     assert not stale.exists(), "a stale file would confuse the browser"
     assert (target / "manifest.json").is_file()
+
+
+def test_the_firefox_copy_gets_a_manifest_firefox_will_load(tmp_path):
+    """Firefox has no extension service worker, so the build says "scripts" (F15)."""
+    target = install_extension(tmp_path / "out", browser=FIREFOX)
+    manifest = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["manifest_version"] == 3
+    assert manifest["background"] == {"scripts": ["background.js"]}
+    assert manifest["browser_specific_settings"]["gecko"]["id"]
+    # The Firefox manifest is a build instruction, not a file anyone loads.
+    assert not (target / "manifest.firefox.json").exists()
+    assert (target / "background.js").is_file()
+
+
+def test_the_two_builds_are_the_same_code(tmp_path):
+    """One set of files, two manifests — nothing else may drift apart (F15)."""
+    chromium = install_extension(tmp_path / "chrome", browser=CHROMIUM)
+    firefox = install_extension(tmp_path / "firefox", browser=FIREFOX)
+    chromium_files = {path.relative_to(chromium) for path in chromium.rglob("*") if path.is_file()}
+    firefox_files = {path.relative_to(firefox) for path in firefox.rglob("*") if path.is_file()}
+    assert chromium_files == firefox_files
+    for relative in chromium_files - {Path("manifest.json")}:
+        assert (chromium / relative).read_bytes() == (firefox / relative).read_bytes()
+    assert (chromium / "manifest.json").read_bytes() != (firefox / "manifest.json").read_bytes()
+
+
+def test_installing_one_browser_leaves_the_other_alone():
+    chromium = install_extension(browser=CHROMIUM)
+    firefox = install_extension(browser=FIREFOX)
+    assert chromium != firefox
+    assert chromium.is_dir() and firefox.is_dir()
+    assert chromium.parent == firefox.parent
+    # Installing again replaces only its own folder.
+    assert install_extension(browser=FIREFOX) == firefox
+    assert chromium.is_dir()
+
+
+def test_a_browser_viddl_does_not_build_for_is_refused_at_the_source(tmp_path):
+    with pytest.raises(ValueError) as caught:
+        install_extension(tmp_path / "out", browser="netscape")
+    assert "netscape" in str(caught.value)
+
+
+def test_package_extension_writes_the_zip_a_store_accepts(tmp_path):
+    bundle_path = package_extension(FIREFOX, tmp_path / "firefox.zip")
+    with zipfile.ZipFile(bundle_path) as bundle:
+        names = set(bundle.namelist())
+        manifest = json.loads(bundle.read("manifest.json"))
+        background = bundle.read("background.js")
+    assert bundle_path.is_file()
+    # The store installs whatever manifest.json is at the root of the zip.
+    assert "manifest.json" in names
+    assert "manifest.firefox.json" not in names
+    assert "icons/icon128.png" in names
+    assert manifest["background"] == {"scripts": ["background.js"]}
+    assert b"document.createElement" in background
+
+
+def test_a_packaged_zip_lands_beside_the_install_folders():
+    bundle_path = package_extension(CHROMIUM)
+    assert bundle_path.parent == appdata.data_dir() / "browser-extension"
+    assert bundle_path.name.startswith("viddl-chromium-")
+    assert bundle_path.suffix == ".zip"
 
 
 def test_install_extension_reports_a_missing_source(tmp_path, monkeypatch):

@@ -1,5 +1,7 @@
 /** Viddl — popup. Sends whatever page you are looking at to the terminal app. */
 
+const api = typeof browser !== 'undefined' ? browser : chrome;
+
 const statusLine = document.getElementById('status');
 
 function setStatus(text, isError) {
@@ -8,7 +10,7 @@ function setStatus(text, isError) {
 }
 
 async function activeTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const [tab] = await api.tabs.query({ active: true, currentWindow: true });
   return tab;
 }
 
@@ -19,21 +21,27 @@ async function send(audio) {
     return;
   }
   setStatus('Opening Viddl…');
-  chrome.runtime.sendMessage(
-    { type: 'viddl-send', url: tab.url, audio, tabId: tab.id },
-    (response) => {
-      if (chrome.runtime.lastError || !response || !response.ok) {
-        setStatus('Viddl did not start. Is the app installed and registered?', true);
-        return;
-      }
-      setStatus(
-        audio
-          ? 'Sent as audio — check the terminal window that just opened.'
-          : 'Sent — pick a quality in the terminal window that just opened.'
-      );
-      window.setTimeout(() => window.close(), 1200);
+  try {
+    const response = await api.runtime.sendMessage({
+      type: 'viddl-send',
+      url: tab.url,
+      audio,
+      tabId: tab.id,
+    });
+    if (!response || !response.ok) {
+      setStatus('Viddl did not start. Is the app installed and registered?', true);
+      return;
     }
-  );
+    setStatus(
+      audio
+        ? 'Sent as audio — check the terminal window that just opened.'
+        : 'Sent — pick a quality in the terminal window that just opened.'
+    );
+    window.setTimeout(() => window.close(), 1200);
+  } catch (error) {
+    // No background script listening, or it failed to answer.
+    setStatus('Viddl did not start. Is the app installed and registered?', true);
+  }
 }
 
 document.getElementById('video').addEventListener('click', () => send(false));

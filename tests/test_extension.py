@@ -19,8 +19,12 @@ NODE = shutil.which("node")
 EXTENSION = extension_source_dir()
 
 
+def load_manifest(name: str) -> dict:
+    return json.loads((EXTENSION / name).read_text(encoding="utf-8"))
+
+
 def test_manifest_is_valid_mv3():
-    manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
+    manifest = load_manifest("manifest.json")
     assert manifest["manifest_version"] == 3
     assert manifest["background"]["service_worker"] == "background.js"
     assert manifest["action"]["default_popup"] == "popup.html"
@@ -31,18 +35,81 @@ def test_manifest_is_valid_mv3():
     assert manifest["content_scripts"][0]["matches"] == ["*://*.youtube.com/*"]
 
 
+def test_the_firefox_manifest_is_one_firefox_will_load():
+    """Firefox runs an event page and wants an add-on id (F15)."""
+    manifest = load_manifest("manifest.firefox.json")
+    assert manifest["manifest_version"] == 3
+    # Firefox has no extension service worker; a manifest asking for one is
+    # refused outright, which is why the two builds differ here.
+    assert "service_worker" not in manifest["background"]
+    assert manifest["background"]["scripts"] == ["background.js"]
+    gecko = manifest["browser_specific_settings"]["gecko"]
+    assert "@" in gecko["id"], "a stable add-on id is what keeps updates attached"
+    assert gecko["strict_min_version"] >= "109"
+    # Since November 2025 Mozilla requires add-ons to declare this; this one
+    # collects and sends nothing, which is the declaration for that.
+    assert gecko["data_collection_permissions"] == {"required": ["none"]}
+    assert {"contextMenus", "activeTab", "scripting"} <= set(manifest["permissions"])
+
+
+def test_the_two_builds_describe_the_same_extension():
+    """One code base, two manifests: only what the browsers disagree on differs."""
+    chromium = load_manifest("manifest.json")
+    firefox = load_manifest("manifest.firefox.json")
+    for key in (
+        "manifest_version",
+        "name",
+        "version",
+        "description",
+        "permissions",
+        "content_scripts",
+        "action",
+        "icons",
+    ):
+        assert chromium[key] == firefox[key], key
+    assert chromium["background"] != firefox["background"]
+    assert set(chromium) ^ set(firefox) == {
+        "author",
+        "developer",
+        "browser_specific_settings",
+        "host_permissions",
+    }
+
+
 def test_every_referenced_file_exists():
-    manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
-    referenced = [
-        manifest["background"]["service_worker"],
-        manifest["action"]["default_popup"],
-        *manifest["icons"].values(),
-    ]
-    for block in manifest["content_scripts"]:
-        referenced += block.get("js", [])
-        referenced += block.get("css", [])
-    for relative in referenced:
-        assert (EXTENSION / relative).is_file(), f"missing {relative}"
+    for name in ("manifest.json", "manifest.firefox.json"):
+        manifest = load_manifest(name)
+        background = manifest["background"]
+        referenced = [
+            manifest["action"]["default_popup"],
+            *manifest["icons"].values(),
+            *background.get("scripts", []),
+        ]
+        if background.get("service_worker"):
+            referenced.append(background["service_worker"])
+        for block in manifest["content_scripts"]:
+            referenced += block.get("js", [])
+            referenced += block.get("css", [])
+        for relative in referenced:
+            assert (EXTENSION / relative).is_file(), f"{name}: missing {relative}"
+
+
+def test_no_script_assumes_the_api_is_called_chrome():
+    """A callback handed to Firefox's ``browser.*`` is ignored, not queued (F15)."""
+    for name in ("background.js", "content-youtube.js", "popup.js"):
+        lines = (EXTENSION / name).read_text(encoding="utf-8").splitlines()
+        code = [
+            line
+            for line in lines
+            if not line.strip().startswith(("//", "*", "/*"))
+        ]
+        body = "\n".join(code)
+        shims = [line for line in code if "typeof browser !== 'undefined'" in line]
+        assert len(shims) == 1, f"{name} needs exactly one browser/chrome choice"
+        assert "chrome." not in body.replace(shims[0], ""), name
+        assert "api." in body, name
+        # ``lastError`` only exists for the callback style this file avoids.
+        assert "lastError" not in body, name
 
 
 def test_the_extension_runs_no_server():

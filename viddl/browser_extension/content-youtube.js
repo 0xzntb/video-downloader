@@ -9,6 +9,8 @@
  * the operating system start the terminal app.
  */
 
+const api = typeof browser !== 'undefined' ? browser : chrome;
+
 const BUTTON_ID = 'viddl-button';
 const PANEL_ID = 'viddl-panel';
 const TOAST_ID = 'viddl-toast';
@@ -58,21 +60,27 @@ function showToast(text, isError) {
 }
 
 function sendToViddl(url, audio) {
+  const failed = () => showToast('Viddl could not start. Reload this page and try again.', true);
+  let reply;
   try {
-    chrome.runtime.sendMessage({ type: 'viddl-send', url, audio }, (response) => {
-      if (chrome.runtime.lastError || !response || !response.ok) {
-        showToast('Viddl could not start. Reload this page and try again.', true);
-        return;
-      }
-      showToast(
-        audio
-          ? 'Sent to Viddl as audio — look for the terminal window.'
-          : 'Sent to Viddl — pick a quality in the terminal window.'
-      );
-    });
+    reply = api.runtime.sendMessage({ type: 'viddl-send', url, audio });
   } catch (error) {
-    showToast('Viddl could not start. Reload this page and try again.', true);
+    failed();
+    return;
   }
+  // Firefox answers with a promise here and Chromium's Manifest V3 does too,
+  // so a callback would be ignored in one of them.
+  Promise.resolve(reply).then((response) => {
+    if (!response || !response.ok) {
+      failed();
+      return;
+    }
+    showToast(
+      audio
+        ? 'Sent to Viddl as audio — look for the terminal window.'
+        : 'Sent to Viddl — pick a quality in the terminal window.'
+    );
+  }, failed);
 }
 
 function closePanel() {

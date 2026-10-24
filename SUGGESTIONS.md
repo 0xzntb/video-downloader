@@ -1925,7 +1925,7 @@ strings contain spaces and colons, and the fix there is what makes it safe.
 > search term is a different archive question — the archive remembers the video,
 > so it will still be skipped, but the name itself is not remembered anywhere.
 
-### F15 — Broader browser support · **P3** · M
+### F15 — Broader browser support · **P3** · M · ◐ **partly done**
 
 The extension is Chromium-only (`chrome.*` APIs, MV3 manifest, no
 `browser_specific_settings`), yet Edge and Brave are mentioned in the install
@@ -1935,6 +1935,70 @@ unpacked" is a developer workflow, not a distribution strategy.
 **Do:** a Firefox build (MV3 with `browser_specific_settings`, or an MV2 fallback
 while Firefox's MV3 support settles), and publish to the Chrome Web Store so
 installing does not require Developer mode.
+
+> **The Firefox build and the store packaging landed; the submissions did not.**
+>
+> One set of files, two manifests. `manifest.json` is Chromium's (service
+> worker); the new `manifest.firefox.json` is what Firefox will actually load —
+> MV3 with a `background.scripts` event page, because Firefox has no extension
+> service worker at all, a stable `browser_specific_settings.gecko.id`, a
+> `strict_min_version` of 109 (the first Firefox that runs MV3), and
+> `data_collection_permissions: {"required": ["none"]}`, which Mozilla now
+> requires of new add-ons and which happens to be true: nothing is collected.
+>
+> The scripts stopped assuming the API object is called `chrome`. Each one picks
+> `browser` when it exists and `chrome` otherwise, and every call is awaited — a
+> callback handed to Firefox's `browser.*` is *ignored*, not queued, so the old
+> `sendMessage(…, callback)` would have looked exactly like "nothing happened"
+> on the YouTube button and in the popup. The runtime message listener keeps the
+> portable "return `true`, then `sendResponse`" shape, which both browsers
+> honour. The Firefox manifest lists YouTube under `host_permissions` — the site
+> its content script already runs on — because the button's hand-off from the
+> page is an injection, and `activeTab` is not granted by a click inside a
+> content script.
+>
+> `viddl --install-browser-extension` now writes one folder per browser
+> (`browser-extension/chromium`, `browser-extension/firefox`) and prints the
+> clicks each one actually needs — `chrome://extensions` + Developer mode +
+> **Load unpacked**, versus `about:debugging#/runtime/this-firefox` + **Load
+> Temporary Add-on…**. `--install-browser-extension firefox` (also `chrome`,
+> `edge`, `brave`, or a comma-separated list) does one of them, and installing
+> one leaves the other folder untouched rather than wiping the build already
+> loaded in the other browser. `viddl --extension-zip [BROWSER]` writes
+> `viddl-firefox-1.0.0.zip` / `viddl-chromium-1.0.0.zip` beside them, which is
+> already the shape both stores take — `manifest.json` at the root — so what is
+> left of "publish" is an account and a review.
+>
+> **Verified.** Mozilla's own add-on validator (`web-ext lint` 8, the checker
+> addons.mozilla.org runs) reports **0 errors, 0 warnings, 0 notices** on the
+> installed Firefox folder — and again on the zip `viddl --extension-zip
+> firefox` wrote, after extracting it; `web-ext build` accepted the same folder
+> and packaged the 11 expected files. The two installed builds were compared
+> byte-for-byte: identical payload, only `manifest.json` differs. The same
+> `background.js` was exercised through a stub `browser.*` (promises) and a stub
+> `chrome.*` in the Node suite — injection target, the `viddl://` argument, the
+> `tabs.create` fallback when a page refuses injection, and the refusal of a
+> non-`http(s)` message. **1049 tests pass** (1035 → 1049: 6 in
+> `tests/test_protocol.py`, 3 in `tests/test_extension.py`, 5 in
+> `tests/test_cli.py`, plus 7 new cases inside the Node run), `pyflakes` clean,
+> coverage **93 %** overall (`protocol.py` 90 %). A real `pip install` of the
+> project ships `manifest.firefox.json`, so an installed copy cannot end up with
+> half a build.
+>
+> **Not done.** Nothing was submitted to either store: both need an account, a
+> listing (description, screenshots, privacy statement) and a review, and the
+> Chrome Web Store charges a one-off registration fee — that is the publisher's
+> decision, not a build step. The Firefox build is therefore a **temporary**
+> add-on (`about:debugging`) until it is signed, and Firefox forgets it on
+> restart; the README says so rather than implying a permanent install. No
+> automated test loads the add-on in a real Firefox: this environment has no
+> GTK/X libraries (the browser binary dies on `libmozgtk.so`), so the checks are
+> Mozilla's static validator plus Node simulations, and the real
+> `about:debugging` load and the `viddl://` prompt are unverified by machine.
+> Safari and mobile Firefox are still out — Safari needs a different toolchain
+> and is a separate project. The extension's own version stays `1.0.0` and does
+> not track the app's, which matters only when uploading: both stores refuse a
+> version that has already been used.
 
 ### F16 — The local web UI, done safely · **P3** · L
 

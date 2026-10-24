@@ -15,6 +15,7 @@ puts before the link.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import shlex
@@ -22,6 +23,7 @@ import stat
 import subprocess
 import sys
 import time
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -456,13 +458,99 @@ def extension_source_dir() -> Path:
     return Path(__file__).resolve().parent / "browser_extension"
 
 
-def install_extension(destination: Optional[Path] = None) -> Path:
-    """Copy the extension somewhere stable and return the folder to load."""
+# Two browsers, one set of files. A copy is the same JavaScript with a different
+# manifest in it, because that is the only part the two browsers disagree about:
+# Chromium insists on a service worker where Firefox refuses one and runs an
+# event page instead, and Firefox wants an add-on id where Chromium rejects the
+# key that holds it (F15).
+CHROMIUM = "chromium"
+FIREFOX = "firefox"
+BROWSERS = (CHROMIUM, FIREFOX)
+
+_MANIFESTS = {CHROMIUM: "manifest.json", FIREFOX: "manifest.firefox.json"}
+
+
+def _manifest_for(browser: str) -> str:
+    """The manifest file a build of ``browser`` is given, or a refusal."""
+    try:
+        return _MANIFESTS[browser]
+    except KeyError:
+        raise ValueError(
+            f"Unknown browser '{browser}'. Choose one of: {', '.join(BROWSERS)}."
+        ) from None
+
+
+def _extension_payload(browser: str) -> List[Path]:
+    """Every file a build carries, relative to the extension folder.
+
+    The manifests are left out: one of them is added back under the name
+    ``manifest.json``, and the other is a build instruction rather than part of
+    any build. That is also why the folder can be loaded unpacked as it is.
+    """
+    _manifest_for(browser)
+    source = extension_source_dir()
+    payload = []
+    for path in sorted(source.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(source)
+        if relative.parts[0] == "__pycache__":
+            continue
+        if relative.parent == Path(".") and relative.name.startswith("manifest"):
+            continue
+        payload.append(relative)
+    return payload
+
+
+def install_extension(
+    destination: Optional[Path] = None, browser: str = CHROMIUM
+) -> Path:
+    """Copy one browser's build somewhere stable and return the folder to load."""
     source = extension_source_dir()
     if not source.is_dir():  # pragma: no cover - packaging problem
         raise FileNotFoundError(f"The bundled extension is missing from {source}")
-    target = Path(destination) if destination else appdata.data_dir() / "browser-extension"
+    manifest = source / _manifest_for(browser)
+    target = (
+        Path(destination)
+        if destination
+        else appdata.data_dir() / "browser-extension" / browser
+    )
     if target.exists():
         shutil.rmtree(target, ignore_errors=True)
-    shutil.copytree(source, target)
+    target.mkdir(parents=True, exist_ok=True)
+    for relative in _extension_payload(browser):
+        copy_to = target / relative
+        copy_to.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / relative, copy_to)
+    shutil.copyfile(manifest, target / "manifest.json")
+    return target
+
+
+def package_extension(
+    browser: str = CHROMIUM, destination: Optional[Path] = None
+) -> Path:
+    """Write one browser's build as the zip a store accepts, and return it.
+
+    Both stores take the same shape — ``manifest.json`` at the root of a zip —
+    so a submission is this command and an upload rather than a folder the
+    person has to zip themselves. Signing and review are still theirs to do.
+    """
+    source = extension_source_dir()
+    manifest = source / _manifest_for(browser)
+    try:
+        version = json.loads(manifest.read_text(encoding="utf-8"))["version"]
+    except (OSError, ValueError, KeyError):  # pragma: no cover - packaging problem
+        version = __version__
+    target = (
+        Path(destination)
+        if destination
+        else appdata.data_dir()
+        / "browser-extension"
+        / f"viddl-{browser}-{version}.zip"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as bundle:
+        bundle.write(manifest, "manifest.json")
+        for relative in _extension_payload(browser):
+            bundle.write(source / relative, relative.as_posix())
     return target

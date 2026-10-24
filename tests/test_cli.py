@@ -215,12 +215,53 @@ def test_extension_path_prints_a_real_folder(capsys):
 def test_install_browser_extension_copies_out(capsys):
     assert main(["--install-browser-extension"]) == 0
     output = capsys.readouterr().out
-    copied = appdata.data_dir() / "browser-extension"
-    assert (copied / "manifest.json").is_file()
-    assert str(copied) in output
+    root = appdata.data_dir() / "browser-extension"
+    chromium = root / "chromium"
+    firefox = root / "firefox"
+    assert (chromium / "manifest.json").is_file()
+    assert (firefox / "manifest.json").is_file()
+    assert str(chromium) in output and str(firefox) in output
     assert "chrome://extensions" in output
-    manifest = json.loads((copied / "manifest.json").read_text(encoding="utf-8"))
+    # Each build says where it is loaded, in the place that browser keeps it.
+    assert "about:debugging#/runtime/this-firefox" in output
+    manifest = json.loads((chromium / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["manifest_version"] == 3
+
+
+def test_one_browser_can_be_installed_on_its_own(capsys):
+    """Naming a browser copies that build and only that one (F15)."""
+    assert main(["--install-browser-extension", "firefox"]) == 0
+    output = capsys.readouterr().out
+    root = appdata.data_dir() / "browser-extension"
+    assert (root / "firefox" / "manifest.json").is_file()
+    assert not (root / "chromium").exists()
+    assert "about:debugging" in output
+    # No Chrome instructions for a Firefox-only install.
+    assert "chrome://extensions" not in output
+
+
+def test_edge_and_brave_mean_the_chromium_build(capsys):
+    assert main(["--install-browser-extension", "edge"]) == 0
+    output = capsys.readouterr().out
+    assert "chrome://extensions" in output
+    assert "about:debugging" not in output
+
+
+def test_a_browser_viddl_does_not_build_for_is_refused(capsys):
+    assert main(["--install-browser-extension", "netscape"]) == 1
+    err = capsys.readouterr().err
+    assert "'netscape' is not a browser" in err
+    assert "viddl --install-browser-extension firefox" in err
+    assert not (appdata.data_dir() / "browser-extension").exists()
+
+
+def test_the_extension_can_be_written_as_a_store_zip(capsys):
+    assert main(["--extension-zip", "firefox"]) == 0
+    output = capsys.readouterr().out
+    bundle = appdata.data_dir() / "browser-extension" / "viddl-firefox-1.0.0.zip"
+    assert bundle.is_file()
+    assert str(bundle) in output
+    assert "addons.mozilla.org" in output
 
 
 def test_a_name_is_searched_for_rather_than_refused(monkeypatch):
@@ -360,7 +401,7 @@ def test_list_qualities_explains_a_failed_probe(monkeypatch, capsys):
 
 
 def test_extension_copy_failure_is_explained(monkeypatch, capsys):
-    def boom(destination=None):
+    def boom(destination=None, browser="chromium"):
         raise OSError("No space left on device")
 
     monkeypatch.setattr("viddl.cli.install_extension", boom)
@@ -368,6 +409,17 @@ def test_extension_copy_failure_is_explained(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "Could not copy the extension" in err
     assert "No space left on device" in err
+
+
+def test_extension_zip_failure_is_explained(monkeypatch, capsys):
+    def boom(browser="chromium", destination=None):
+        raise OSError("Read-only file system")
+
+    monkeypatch.setattr("viddl.cli.package_extension", boom)
+    assert main(["--extension-zip"]) == 1
+    err = capsys.readouterr().err
+    assert "Could not write the extension zip" in err
+    assert "Read-only file system" in err
 
 
 # ---------------------------------------------------------------------------

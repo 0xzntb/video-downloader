@@ -477,15 +477,30 @@ The extension adds a **Viddl** button to YouTube (next to the like/share row)
 and a **right-click option everywhere else**. Clicking either hands the link to
 the app on your computer — no server, no port, no account.
 
+It is one set of files with two manifests, because the browsers disagree about
+exactly one thing: Chromium runs the background code as a service worker, and
+Firefox refuses that key outright, running an event page instead.
+
 ```sh
-viddl --install-browser-extension     # copies it out and tells you where
+viddl --install-browser-extension            # both builds, and where they are
+viddl --install-browser-extension firefox    # just one; also chrome, edge, brave
 ```
 
-Then, once:
+**Chrome, Edge or Brave** — the folder ending in `chromium`:
 
 1. Open `chrome://extensions` (or `edge://extensions`, `brave://extensions`).
 2. Turn on **Developer mode** (top right).
-3. Click **Load unpacked** and choose the folder the command printed.
+3. Click **Load unpacked** and choose that folder.
+
+**Firefox** — the folder ending in `firefox`:
+
+1. Open `about:debugging#/runtime/this-firefox`.
+2. Click **Load Temporary Add-on…**.
+3. Choose `manifest.json` inside that folder.
+
+Firefox forgets a temporary add-on when it restarts, and release builds only
+run signed add-ons, so that is a way to try it rather than to live with it. For
+a permanent install, load it again each time or sign it (see below).
 
 The extension talks to the app through a custom `viddl://` link, the same way
 `mailto:` opens your mail program. The installer already registered it; if you
@@ -500,7 +515,34 @@ The first time you click the button your browser asks whether to allow
 window opens with the link already loaded, ready for you to pick a quality.
 
 The extension asks for very little: it only reads a page when you use the
-button or the menu on it, and it never touches sites in the background.
+button or the menu on it, and it never touches sites in the background. The
+Firefox build also names YouTube in `host_permissions` — the same site its
+content script already runs on — because without it the button on a watch page
+could not hand the link over without a second click on the toolbar icon.
+
+### Putting it in a store
+
+```sh
+viddl --extension-zip              # both builds
+viddl --extension-zip firefox      # one
+```
+
+That writes `viddl-firefox-1.0.0.zip` (and the Chromium one) beside the install
+folders. The zip is already the shape both stores take — `manifest.json` at the
+root — so what is left is an account and a review, not a build:
+
+* **Chrome Web Store** — upload the Chromium zip in the developer dashboard.
+  A one-off registration fee and a review later, installs are a single click
+  and developer mode is no longer part of the instructions.
+* **addons.mozilla.org** — upload the Firefox zip to have it signed. Firefox
+  only runs signed add-ons in release builds, so this is also what makes the
+  extension survive a restart.
+
+Neither submission is done by this project: both need an account, a listing
+(description, screenshots, a privacy statement) and someone to answer a review.
+The `id` in `manifest.firefox.json` is what keeps an add-on's identity across
+updates, and it cannot be changed after the first submission — set your own
+before uploading if you would rather it were not the placeholder.
 
 ## When something goes wrong
 
@@ -604,7 +646,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 | `viddl/search.py` | What text typed where a link goes actually is: a link, a name to search for, or neither — and the link a search turned out to mean, so the download names a video rather than a query. |
 | `viddl/errors.py` | Maps raw tool output onto plain-language explanations, and says whether the failure is one another attempt may fix. |
 | `viddl/protocol.py` | The `viddl://` hand-off and its per-OS registration. |
-| `viddl/browser_extension/` | The Chromium (Manifest V3) extension. |
+| `viddl/browser_extension/` | The browser extension: one set of files, a manifest for Chromium (service worker) and one for Firefox (event page). |
 
 Nothing is ever written outside `~/.local/share/viddl` (plus your Downloads
 folder, and the optional settings file in `~/.config/viddl` described under
@@ -776,8 +818,9 @@ runner and its progress parsing, error translation, playlist listings and the
 sequential queue behind them, `viddl://` parsing and registration, the plain
 `--plain` path, and the whole interface driven through Textual's test pilot —
 with clicks, arrow keys, ticking a checklist and the cancel path. The
-extension is checked too: its manifest, every file it references, and its pure
-JavaScript logic via Node. The Windows installer files are checked from any
+extension is checked too: both manifests, every file each references, and its
+JavaScript via Node — twice over, once through Chromium's `chrome.*` API and
+once through Firefox's `browser.*` promises. The Windows installer files are checked from any
 platform, and the suite runs on Windows in CI.
 
 Regenerate the extension icons with `python3 tools/make_icons.py`.

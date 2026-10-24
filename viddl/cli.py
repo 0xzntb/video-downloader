@@ -17,6 +17,7 @@ piece is also reachable from the command line:
 * ``viddl --plain <link>``    download a line at a time, in plain ASCII
 * ``viddl --register-protocol``          wire up the ``viddl://`` hand-off
 * ``viddl --install-browser-extension``  copy the extension out for loading
+* ``viddl --extension-zip firefox``      write the add-on store upload (F15)
 """
 
 from __future__ import annotations
@@ -36,8 +37,12 @@ from .formats import format_rows
 from .network import NetworkOptions
 from . import protocol
 from .protocol import (
+    BROWSERS,
+    CHROMIUM,
+    FIREFOX,
     extension_source_dir,
     install_extension,
+    package_extension,
     parse_scheme,
     register,
     unregister,
@@ -248,8 +253,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--install-browser-extension",
-        action="store_true",
-        help="copy the browser extension to a folder you can load in Chrome",
+        nargs="?",
+        const="all",
+        default=None,
+        metavar="BROWSER",
+        help=(
+            "copy the browser extension to folders you can load: chrome (also "
+            "Edge and Brave) or firefox; give nothing for both"
+        ),
+    )
+    parser.add_argument(
+        "--extension-zip",
+        nargs="?",
+        const="all",
+        default=None,
+        metavar="BROWSER",
+        help="write the extension as the zip an add-on store accepts",
     )
     parser.add_argument(
         "--extension-path",
@@ -285,6 +304,33 @@ def _fail(message: str, hint: Optional[str] = None) -> int:
         for line in str(hint).splitlines():
             print(f"  {line}", file=sys.stderr)
     return 1
+
+
+# What people call their browser, and which build that name means. Edge and
+# Brave run the same Chromium build as Chrome, so asking for either of them is
+# not a mistake worth correcting.
+_BROWSER_NAMES = {
+    "chrome": CHROMIUM,
+    "chromium": CHROMIUM,
+    "edge": CHROMIUM,
+    "brave": CHROMIUM,
+    "firefox": FIREFOX,
+}
+
+
+def _browsers_named(value: str) -> Optional[Sequence[str]]:
+    """The builds a command-line value asks for, or ``None`` if it names none."""
+    words = [word.strip().lower() for word in str(value).split(",") if word.strip()]
+    if not words or words in (["all"], ["both"]):
+        return list(BROWSERS)
+    chosen: list = []
+    for word in words:
+        browser = _BROWSER_NAMES.get(word)
+        if browser is None:
+            return None
+        if browser not in chosen:
+            chosen.append(browser)
+    return chosen
 
 
 def _describe_update(name: str, before: Optional[Tool], after: Tool) -> str:
@@ -521,16 +567,62 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     if args.install_browser_extension:
+        wanted = _browsers_named(args.install_browser_extension)
+        if wanted is None:
+            return _fail(
+                f"{args.install_browser_extension!r} is not a browser Viddl has a "
+                f"build for ({', '.join(_BROWSER_NAMES)}).",
+                "Try: viddl --install-browser-extension firefox",
+            )
         try:
-            folder = install_extension()
+            folders = [(browser, install_extension(browser=browser)) for browser in wanted]
         except OSError as exc:
             return _fail(f"Could not copy the extension ({exc}).")
-        print(f"Extension copied to:\n  {folder}\n")
-        print("Load it once in your browser:")
-        print("  1. Open chrome://extensions (or edge://extensions, brave://extensions)")
-        print("  2. Turn on Developer mode (top right)")
-        print("  3. Click “Load unpacked” and choose the folder above")
-        print("\nThen run: viddl --register-protocol")
+        print("Extension copied to:")
+        for _, folder in folders:
+            print(f"  {folder}")
+        print()
+        for browser, _ in folders:
+            # Each browser is told the two or three clicks it actually takes, in
+            # the place it actually keeps them (F15).
+            if browser == FIREFOX:
+                print("Firefox:")
+                print("  1. Open about:debugging#/runtime/this-firefox")
+                print("  2. Click “Load Temporary Add-on…”")
+                print("  3. Choose manifest.json inside the folder above")
+                print(
+                    "  Firefox forgets a temporary add-on when it restarts. A permanent "
+                    "install\n  has to be signed — viddl --extension-zip firefox writes the "
+                    "file to submit."
+                )
+            else:
+                print("Chrome, Edge and Brave:")
+                print("  1. Open chrome://extensions (or edge://extensions, brave://extensions)")
+                print("  2. Turn on Developer mode (top right)")
+                print("  3. Click “Load unpacked” and choose the folder above")
+            print()
+        print("Then run: viddl --register-protocol")
+        return 0
+
+    if args.extension_zip:
+        wanted = _browsers_named(args.extension_zip)
+        if wanted is None:
+            return _fail(
+                f"{args.extension_zip!r} is not a browser Viddl has a build for "
+                f"({', '.join(_BROWSER_NAMES)}).",
+                "Try: viddl --extension-zip firefox",
+            )
+        try:
+            bundles = [(browser, package_extension(browser)) for browser in wanted]
+        except OSError as exc:
+            return _fail(f"Could not write the extension zip ({exc}).")
+        for browser, path in bundles:
+            print(f"{browser.capitalize()} extension zip:\n  {path}")
+        print()
+        print(
+            "Upload it as a new version in the Chrome Web Store or on "
+            "addons.mozilla.org; signing and review happen there."
+        )
         return 0
 
     if args.list_qualities:
