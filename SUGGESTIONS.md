@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **35 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1 and U4 in section 4, D2–D3 in
+Progress so far: **36 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1, U2 and U4 in section 4, D2–D3 in
 section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -2179,7 +2179,85 @@ bright office terminal as it does on a dark one.
 `TERM=dumb`, add `--theme light|dark|high-contrast` (and a Settings row), and
 check contrast ratios rather than eyeballing them.
 
-### U2 — Put progress in the terminal title · **P2** · S
+### U2 — Put progress in the terminal title · **P2** · S · ✅ **Done**
+
+> **Done, and read back out of a real terminal rather than trusted.** While a
+> download runs, the window title says where it is — `Viddl — 42% — Killing
+> Time.mp4`, or `Viddl — 42% — 3 of 9 — Killing Time.mp4` for a playlist — and
+> goes back to `Viddl` when the download ends, fails, or is stopped. The module
+> is `viddl/tui/title.py`: `compose()` builds the text, `clean()` is what a site's
+> name has to survive, and `TerminalTitle` sends it.
+>
+> **One escape sequence, through the app's own driver.** It is OSC 0
+> (`ESC ] 0 ; … BEL`), which every terminal with a title bar reads — Textual
+> does not send it (`App.title` is only the in-app header, which Viddl never
+> draws), so the app writes it the way Textual writes its own clipboard
+> sequence. Nothing is written when the app is running without a terminal.
+>
+> **The percentage comes before the name.** A task bar, a tab strip or a narrow
+> title bar truncates the tail, and the number is the part that has to survive
+> that; the name is capped at 48 characters and the whole title at 96, both with
+> an ellipsis. A live recording has no total, so it has no percentage and says
+> only what is being recorded. A queue shows one number — the whole list's — and
+> `3 of 9`, because a title bar cannot hold nine bars.
+>
+> **A site's name cannot end the sequence early.** The title is an escape
+> sequence whose payload is a name chosen by a website, so `clean()` drops
+> control characters (ESC and BEL would end it; the rest draw nothing), NEL and
+> the Unicode line separators become spaces, the bidirectional overrides are
+> removed — they would let a title render `exe.png` for a file called
+> `gnp.exe` — whitespace is collapsed, and the text is NFC-normalised. The
+> zero-width joiner is left alone: an emoji family needs it. Measured on a real
+> pty with the video title `Killing ESC ] 0 ; pwned BEL RLO Time`: the title sent
+> was `Viddl — 42% — Killing]0;pwned Time [dQw4w9WgXcQ]`, one OSC and one BEL,
+> no ESC and no RLO in the payload.
+>
+> **It is written only when it changes.** yt-dlp reports several times a second
+> and many terminals redraw their title bar per write, so the text is composed
+> from whole percentages and compared with the last one: 1000 progress reports
+> become **101 writes** (0% to 100%), and a repeated value is not written at all.
+>
+> **The title bar is given back.** Starting the app pushes xterm's title stack
+> (`CSI 22 ; 0 t`); closing writes the app's name and then pops
+> (`CSI 23 ; 0 t`), so the shell's own title returns on a terminal that keeps a
+> stack, and a terminal that ignores both is left with `Viddl` rather than
+> `42%`. A screen torn down during shutdown cannot write after the pop — the
+> flag is checked inside the writer, not in each caller — which is what keeps a
+> late progress line from painting over the restored title.
+>
+> **Measured in a real pty** (`script`, a stand-in engine, driven through
+> `App.run(auto_pilot=…)` with the real driver), byte offsets in the capture:
+> alternate screen in at 125, **push at 184**, `Viddl` at 191, the progress
+> title at 47188, alternate screen out at 52597, `Viddl` at 52619, **pop at
+> 52629** — three title writes for the whole run, in the right order.
+>
+> **27 new tests** (1148 → 1175): 23 in `tests/test_title.py` (the format, the
+> caps, the clamping, the one-and-only-one sequence, a hostile name, a newline,
+> the bidi overrides, the emoji joiner, start/push-once, no-repeat, 1000 → 101,
+> reset, close-in-that-order, close-once, nothing-after-close, close-before-start,
+> and a writer that fails), 3 in `tests/test_tui.py` (the sequence reaches the
+> driver; the title goes back on the done screen and on a stop; quitting pops
+> the stack last) and 1 in `tests/test_playlist.py` (`1 of 3` and the video's
+> name while a playlist runs). `pyflakes` clean; coverage **94 %** overall,
+> `tui/title.py` **100 %**.
+>
+> **Not done, on purpose.** `--plain` sets no title, because its output is often
+> piped into something that would receive the sequence instead of a terminal;
+> the `--web` page has a browser tab, which is that page's business. A look-up
+> (`OptionsScreen`) sets no title either — it usually lasts seconds, and the
+> window already says what it is. `Ctrl+Z` leaves the last title in place until
+> the next update or the exit. Windows and macOS are implemented but only
+> simulated in the suite; which terminals honour the title stack (xterm does,
+> tmux only with `set-titles on`, legacy conhost has no title bar at all) is
+> not verified here, which is exactly why the app's name is written before the
+> pop.
+>
+> **Found while verifying, and not fixed here.** The *screen* draws the same
+> site-chosen name through Rich (`_plain()` escapes markup, not control
+> characters), so a video called `Killing ESC ] 0 ; pwned BEL Time` puts that
+> sequence into the terminal from the qualities heading — the capture shows it.
+> The title path above is guarded; the screen path is a separate hole, worth its
+> own item, and out of scope for this one.
 
 Long downloads happen in a window the user is not looking at. Setting the window
 title to `Viddl — 42% — Killing Time.mp4` (or restoring it on exit) is one escape
@@ -2447,7 +2525,8 @@ project's "nothing leaves your machine" promise.
 6. ✅ **S2** (verify downloads) — **done**; **R3** (expose the config escape hatch) still open. `--ignore-config` itself landed with **S1**.
 7. **F1** (cookies) — turns a documented dead end into a feature.
 8. **E7** (one real end-to-end test) + **E10** (coverage floor).
-9. **U1**/**U2**/**U3** (theme, title, done screen) — visible quality.
+9. ✅ **U1** and **U2** (theme, title) — **done**; **U3** (the richer done
+   screen) is the last of the visible-quality group and remains.
 10. ✅ **F6** (archive + recents) — **done**; **F9** (notifications) is the other
     half of the same "make it a daily tool" idea, and now has a natural home
     to hang off.

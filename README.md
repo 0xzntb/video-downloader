@@ -128,6 +128,7 @@ Nothing is installed system-wide and no configuration files are created.
 | Record a live stream from its beginning | Press **Record from the start** on the qualities screen (`l`), or `viddl --live-from-start <link>` (see [Live streams](#live-streams)) |
 | Remember a folder, quality, archive or theme between runs | `viddl --set quality 720` (see [Settings](#settings-optional)) |
 | Make it easier to read on a bright or dim screen | `viddl --theme light <link>` (see [Colours and contrast](#colours-and-contrast)) |
+| See how far a download has got from another window | Nothing to do: the title bar says it (see [The window title](#the-window-title)) |
 | See what you have downloaded lately | Press `r` (or **Recent**) on the home screen |
 | Use the link you already copied | Click **Paste link** on the home screen (or press `p` when the box is not focused) |
 | Download several links in one go | Paste them into the link box separated by spaces, then **Download all** on the links screen |
@@ -685,6 +686,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 | Piece | What it does |
 | --- | --- |
 | `viddl/tui/` | The terminal interface (Textual). Screens for home, qualities, the playlist checklist, progress, stopped, and the result. |
+| `viddl/tui/title.py` | The window title: what a download says in the task bar, the escape sequence that sets it, the cleaning a site's name has to survive, and the stack that puts the shell's own title back. |
 | `viddl/engine.py` | Finds yt-dlp and ffmpeg, or downloads its own copy into `~/.local/share/viddl/bin` — in pieces that survive an interruption, checked against a published checksum and only then unpacked. |
 | `viddl/formats.py` | Turns site metadata into the quality menu, with size estimates. |
 | `viddl/extras.py` | The optional additions — subtitles, details, cover image — what each one really asks yt-dlp for, and where it goes. |
@@ -834,6 +836,38 @@ has no colours to choose, and `--theme` is refused with it rather than accepted
 and ignored; the `--web` page carries its own stylesheet, and is refused the
 same way.
 
+## The window title
+
+A download runs for minutes, in a window you have usually clicked away from. So
+while it runs, the title bar says where it is:
+
+```
+Viddl — 42% — Killing Time.mp4
+Viddl — 42% — 3 of 9 — Killing Time.mp4      a playlist, or a batch of links
+```
+
+The percentage comes before the name on purpose: a task bar or a narrow title
+bar cuts off the end, and the number is the part worth keeping. A live
+recording has no percentage — it has no end — so its title names what is being
+recorded and stops there. When the download finishes, fails, or is stopped, the
+title goes back to `Viddl`.
+
+On the way out, the shell's own title comes back where the terminal keeps a
+title stack (xterm and most things that copy it: `ESC [ 22 ; 0 t` pushed when
+the app starts, `ESC [ 23 ; 0 t` popped when it closes). A terminal without a
+stack is left with `Viddl` rather than `42%`, because the app's name is written
+before the pop.
+
+The name in the title is the video's, so it came from a website — and a title
+*is* an escape sequence, so an ESC inside the name would end it early and start
+something else in the terminal. Names are cleaned first: control characters,
+the characters that reverse the direction text is drawn in, and line breaks go.
+Nothing else is changed — the name is not transliterated, and the file on disk
+keeps its full name.
+
+`--plain` sets no title: its output is often piped into something that would
+receive the sequence instead of a terminal. The `--web` page has a browser tab
+rather than a title bar, which is the page's own business.
 
 ## Environment variables
 

@@ -64,6 +64,7 @@ from ..formats import MediaInfo, MediaOption, Playlist, PlaylistEntry
 from ..network import NetworkOptions
 from ..queue import QueueItem, QueueJob, QueueSummary
 from ..util import human_duration, human_size, redact, safe_video_link, shorten
+from . import title as title_mod
 from .widgets import ChoiceList, ExtraToggle, ThemeRow
 
 _ARP = "·"
@@ -510,11 +511,38 @@ class ViddlApp(App):
         problem = appdata.ensure_dirs()
         if problem is not None:
             self.state.folder_problem = problem.line
+        # What the window title says while a download runs (U2). The writer is
+        # looked up late, because there is no driver yet when the app is built
+        # and none at all when it runs without a terminal.
+        self.window_title = title_mod.TerminalTitle(self._write_to_terminal)
 
     # -- lifecycle ----------------------------------------------------------
     def on_mount(self) -> None:
+        # The title bar is taken before the first screen, so the window is
+        # named the moment it appears rather than only once something happens.
+        self.window_title.start()
         self.push_screen(HomeScreen())
         self.bootstrap_engine()
+
+    def on_unmount(self) -> None:
+        # Hand the title bar back: the shell's own title, if the terminal keeps
+        # a stack of them, and "Viddl" if it does not (U2).
+        self.window_title.close()
+
+    def _write_to_terminal(self, data: str) -> None:
+        """Send one escape sequence to the terminal, if there is one to send to.
+
+        The same route Textual uses for its own clipboard write, so a run
+        without a terminal writes nothing rather than mangling a pipe. A write
+        that fails is a title nobody sees, which is not worth an error screen.
+        """
+        driver = getattr(self, "_driver", None)
+        if driver is None:
+            return
+        try:
+            driver.write(data)
+        except Exception:  # pragma: no cover - the terminal went away
+            LOGGER.debug("Viddl: could not write the window title", exc_info=True)
 
     def get_theme_variable_defaults(self) -> dict:
         """The names our stylesheet uses, with the dark scheme's values (U1).
@@ -2413,13 +2441,17 @@ class DownloadScreen(Screen):
             f"Video {item.position} of {item.total}  {_ARP}  {shorten(item.title, 48)}"
         )
         self.query_one("#download-detail", Static).update("")
+        self._show_title(0.0, item.title, item.position, item.total)
 
     def on_item_progress(self, item: QueueItem, progress: Progress) -> None:
         self.set_status(f"Video {item.position} of {item.total}  {_ARP}  {progress.status}")
+        overall = None
         if progress.percent is not None and progress.phase == "download":
-            self.query_one("#download-bar", ProgressBar).update(
-                progress=self._overall(item, progress.percent)
-            )
+            overall = self._overall(item, progress.percent)
+            self.query_one("#download-bar", ProgressBar).update(progress=overall)
+        # One number for the whole list, because the title bar cannot show nine
+        # bars: the percentage is the queue's, and "3 of 9" says which video.
+        self._show_title(overall, item.title, item.position, item.total)
         self._show_detail(progress)
 
     def on_item_end(self, item: QueueItem) -> None:
@@ -2433,6 +2465,7 @@ class DownloadScreen(Screen):
 
     def finish_queue(self, summary: QueueSummary) -> None:
         self.app.state.queue = None
+        self.app.window_title.reset()
         if not self._has_a_screen():
             return
         self.query_one("#download-bar", ProgressBar).update(progress=100.0)
@@ -2467,7 +2500,32 @@ class DownloadScreen(Screen):
             bar.update(progress=min(100.0, progress.percent))
         if progress.phase == "done":
             bar.update(progress=100.0)
+        info = self.app.state.info
+        self._show_title(progress.percent, info.title if info is not None else "")
         self._show_detail(progress)
+
+    def _show_title(
+        self,
+        percent: Optional[float],
+        name: str = "",
+        position: Optional[int] = None,
+        total: Optional[int] = None,
+    ) -> None:
+        """Put this download's progress on the window title (U2).
+
+        A title bar is the one part of the screen a person can read from
+        another window, so it says how far along the download is and what it
+        is. Live recordings have no percentage and a playlist has a count; both
+        go through the same call so there is only one spelling of the format.
+        """
+        self.app.window_title.show(
+            percent=percent, name=name, position=position, total=total
+        )
+
+    def on_unmount(self) -> None:
+        # Whatever ended the download — a result, a stop, going home or quitting
+        # — the title must not go on saying 42% with nothing behind it.
+        self.app.window_title.reset()
 
     def _show_detail(self, progress: Progress) -> None:
         detail_bits = []
@@ -2494,6 +2552,7 @@ class DownloadScreen(Screen):
         return self.app.is_running and bool(self.app.screen_stack)
 
     def finish_ok(self, path: Path) -> None:
+        self.app.window_title.reset()
         self.app.state.saved_path = path
         job = self.app.state.job
         attachments = list(getattr(job, "attachments", []))
@@ -2506,6 +2565,7 @@ class DownloadScreen(Screen):
         )
 
     def finish_error(self, error: ToolError) -> None:
+        self.app.window_title.reset()
         self.app.state.job = None
         if not self._has_a_screen():
             return
@@ -2514,6 +2574,7 @@ class DownloadScreen(Screen):
     def finish_cancelled(self) -> None:
         # The partial file is kept, so the honest thing is to ask what to do
         # with it rather than throw away work the user waited for.
+        self.app.window_title.reset()
         job = self.app.state.job
         self.app.state.job = None
         if not self._has_a_screen():

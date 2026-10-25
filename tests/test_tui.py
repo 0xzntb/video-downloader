@@ -41,6 +41,7 @@ from viddl.tui.app import (
     _links_from_text,
     _open_folder,
 )
+from viddl.tui import title as title_mod
 from viddl.tui.widgets import ChoiceList, ChoiceRow, ExtraToggle
 
 URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -3026,3 +3027,94 @@ async def test_the_audio_flag_beats_a_remembered_quality(tmp_path):
         chosen = app.screen.query_one("#choices", ChoiceList).highlighted_value
         assert isinstance(chosen, MediaOption)
         assert chosen.kind == "audio"
+
+
+# ---------------------------------------------------------------------------
+# the window title (U2)
+# ---------------------------------------------------------------------------
+
+
+def collected(app):
+    """Everything the app sends to the terminal, from this moment on.
+
+    The headless driver throws its writes away and renders nothing through it,
+    so this is escape sequences rather than screen content — but not only ours:
+    Textual writes one of its own (the cursor shape). :func:`titles` is the
+    filter, and it is what the assertions below use.
+    """
+    written: list = []
+    app._driver.write = written.append
+    return written
+
+
+def titles(written) -> list:
+    """The title texts among the writes, in order."""
+    prefix, suffix = title_mod.OSC, title_mod.BEL
+    return [
+        data[len(prefix) : -len(suffix)]
+        for data in written
+        if data.startswith(prefix) and data.endswith(suffix)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_window_says_what_the_download_is_doing(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path, job_class=ChattyJob))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        written = collected(app)
+        await settle(pilot)
+        await pilot.press("enter")
+        await wait_for_job(app, pilot)
+        await settle(pilot)
+
+        # One whole sequence, with the numbers and the name from the link.
+        assert "\x1b]0;Viddl — 42% — A Very Real Video\x07" in written
+        assert titles(written) == ["Viddl — 42% — A Very Real Video"]
+
+        # Stopping it hands the title back rather than leaving 42% behind.
+        await pilot.click("#cancel")
+        await settle(pilot)
+        assert app.window_title.current == "Viddl"
+        assert titles(written)[-1] == "Viddl"
+
+
+@pytest.mark.asyncio
+async def test_the_title_returns_to_the_apps_name_when_the_download_ends(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        written = collected(app)
+        await settle(pilot)
+        await pilot.press("enter")
+        assert await wait_for_screen(pilot, ResultScreen)
+        await settle(pilot)
+
+        assert "Viddl — 50% — A Very Real Video" in titles(written)
+        assert app.window_title.current == "Viddl"
+        assert titles(written)[-1] == "Viddl"
+
+
+@pytest.mark.asyncio
+async def test_quitting_gives_the_title_bar_back(tmp_path):
+    """The app must not leave "42%" in the task bar after it has gone."""
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path, job_class=ChattyJob))
+    written: list = []
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        written = collected(app)
+        await settle(pilot)
+        await pilot.press("enter")
+        await wait_for_job(app, pilot)
+        await settle(pilot)
+        assert "42%" in app.window_title.current
+
+        await pilot.press("ctrl+q")
+        await settle(pilot, rounds=12)
+
+    # Closing said the app's name, popped the terminal's title stack, and then
+    # stopped: a screen torn down during shutdown must not write over the title
+    # the shell has just got back.
+    assert app.window_title.restored is True
+    assert titles(written)[-1] == "Viddl"
+    assert written[-1] == title_mod.POP

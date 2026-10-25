@@ -956,3 +956,35 @@ def test_quiet_leaves_a_playlist_with_nothing_but_its_paths(monkeypatch):
     assert code == 0
     assert len(out.getvalue().splitlines()) == len(listing().entries)
     assert err.getvalue() == ""
+
+
+@pytest.mark.asyncio
+async def test_a_playlist_says_which_video_is_on_in_the_title(tmp_path):
+    """A title bar too narrow for "3 of 3" still has room for "1 of 3" (U2)."""
+    BlockingAppJob.release.clear()
+    services = Services(
+        engine=FakeEngine(),
+        probe=lambda engine, url, cancel=None, cookies="": media(),
+        make_job=BlockingAppJob,
+        downloads_dir=lambda: tmp_path / "Downloads",
+        browsers=lambda: [],
+        clipboard=lambda: "",
+        fetch_playlist=lambda engine, url, cookies="", **kwargs: listing(),
+    )
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("p")
+        await settle(pilot)
+        await pilot.press("d")
+        assert await wait_for_screen(pilot, DownloadScreen)
+        await settle(pilot)
+
+        assert app.window_title.current == "Viddl — 0% — 1 of 3 — First video"
+
+        await pilot.press("escape")
+        assert await wait_for_screen(pilot, QueueResultScreen)
+        await settle(pilot)
+        assert app.window_title.current == "Viddl"
+    BlockingAppJob.release.clear()
