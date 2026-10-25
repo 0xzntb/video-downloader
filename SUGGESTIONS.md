@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **36 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1, U2 and U4 in section 4, D2–D3 in
+Progress so far: **37 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U4 in section 4, D2–D3 in
 section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -2263,7 +2263,65 @@ Long downloads happen in a window the user is not looking at. Setting the window
 title to `Viddl — 42% — Killing Time.mp4` (or restoring it on exit) is one escape
 sequence and makes the app legible from the task bar.
 
-### U3 — A richer done screen · **P2** · S
+### U3 — A richer done screen · **P2** · S · ✅ **Done**
+
+> **Done.** The done screen now describes the file before offering to do anything
+> with it — `1080p · MP4 · 3:32 · 24.1 MB`, which is the chosen quality, the
+> container that actually landed (from the file's own name, not from the row that
+> was clicked), the video's length from the look-up, and the finished size — and
+> it offers **Play**, **Show in folder**, **Copy path** and **Download another**.
+> A stopped recording says "what had been recorded when you stopped" instead of a
+> running time, because that file is as long as the stop, not as long as the
+> stream was going to be.
+>
+> **Play** opens the saved file with the desktop's own handler (`open` on macOS,
+> `xdg-open` on Linux, the shell association through `os.startfile` on Windows);
+> only a path Viddl itself saved is ever passed to it. **Show in folder** selects
+> the file where the desktop can — `explorer /select,` and `open -R` — and opens
+> the folder on Linux, which has no portable "select this file"; the docstring
+> says so rather than pretending otherwise.
+>
+> **Why it failed** is now answerable without leaving the screen. The failure
+> screen keeps its one-sentence explanation and gains **Show details** (`d`),
+> which opens a scrollable panel with two sections: *What Viddl made of it* (the
+> message and the advice, the same strings `errors.explain` produced) and *What
+> the downloader said* — the last forty lines of the tool's own output, each
+> cleaned at 200 columns. **Copy details** (`c`, which copies the path on the done
+> screen and the details here) puts the same text on the clipboard, and the log
+> file is named when this run wrote one.
+>
+> **The tool's own words are cleaned and redacted**, for the reason U2 gives: that
+> output can quote a site's video name, so it goes through the same
+> `title.clean()` — no ESC, no BEL, no bidirectional overrides — and through
+> `util.redact`, so a signed link in it keeps its shape and loses its token.
+> Measured in a real pty with a token in the output: `<redacted>` drawn twice,
+> `SECRET123` never.
+>
+> **Five buttons had to fit.** Measured at 80 columns: with a button's default
+> 16-column minimum the row was 82 wide and the Quit button began at column 74,
+> off the screen; scoping `min-width: 0` to the result panel's buttons makes the
+> row 63 wide (11 + 6 + 16 + 18 + 6) and it fits. The details panel is a
+> `VerticalScroll` with `max-height: 10`, so sixty lines of tool output cannot
+> push the buttons off the screen: measured at 80×24, the panel is 23 rows, the
+> details 10, the buttons at row 17, the footer at 23.
+>
+> **14 new tests** (1175 → 1189, all in `tests/test_tui.py`): the done line names
+> container, length and size; an audio row does not say "MP3" twice; the Play
+> button and `p` launch the desktop's opener; `_play_file` and `_reveal_in_folder`
+> pick the right command on all three platforms and explain a refusal; the
+> details start closed, toggle by key and by button, quote both sections, carry
+> no escape sequence and no token, copy to the clipboard, still explain a failure
+> that has no output, and name the log only when it exists. `pyflakes` clean;
+> the whole suite passes.
+>
+> **Not done, on purpose.** The recent list still opens the folder rather than
+> selecting the file, and has no Play row — it is a list of fifty files, and one
+> `o` for all of them is the shape it already had. The playlist summary screen
+> (`QueueResultScreen`) does not offer details per failed video; it names each one
+> and its sentence, which is what a list can do. Linux gets no "reveal the file"
+> because no portable way exists. `--plain` is unchanged: it has no screen to put
+> a button on, and its saved line already carries the size. And Play trusts the
+> desktop for a file Viddl saved — it opens it, it does not play it itself.
 
 The done screen shows the full path with Copy/Open-folder/Download-another —
 already better than most tools. Missing: the file's size and duration, a Play
@@ -2525,8 +2583,8 @@ project's "nothing leaves your machine" promise.
 6. ✅ **S2** (verify downloads) — **done**; **R3** (expose the config escape hatch) still open. `--ignore-config` itself landed with **S1**.
 7. **F1** (cookies) — turns a documented dead end into a feature.
 8. **E7** (one real end-to-end test) + **E10** (coverage floor).
-9. ✅ **U1** and **U2** (theme, title) — **done**; **U3** (the richer done
-   screen) is the last of the visible-quality group and remains.
+9. ✅ **U1**, **U2** and **U3** (theme, title, richer done screen) — **all
+   done**; that whole visible-quality group is closed.
 10. ✅ **F6** (archive + recents) — **done**; **F9** (notifications) is the other
     half of the same "make it a daily tool" idea, and now has a natural home
     to hang off.

@@ -144,7 +144,9 @@ In the app:
 * **Keyboard** — `↑`/`↓` or `j`/`k` to move, `Enter` to download, `Tab` between
   buttons, `Esc` to go back, `Ctrl+Q` to quit. On the qualities screen `s`,
   `m` and `t` switch subtitles, details and the cover image on and off.
-  On the home screen `Ctrl+T` changes the colour scheme.
+  On the home screen `Ctrl+T` changes the colour scheme. On the done screen `p`
+  plays the file, `o` shows it in its folder and `c` copies its path; on the
+  failure screen `d` opens the details and `c` copies them.
 * Paste with `Ctrl+V` / `Cmd+V`, or just type the link. If the clipboard already
   holds a link when Viddl opens, the home screen says so and offers **Paste
   link**; it never fills the box or starts anything by itself.
@@ -175,8 +177,17 @@ overwritten by accident:
 ~/Downloads/Me at the zoo [jNQXAC9IVRw].mp4
 ```
 
-When it finishes, the app shows the **full path** on screen, along with buttons
-to copy it or open the folder.
+When it finishes, the app shows the **full path** on screen, with what landed
+next to it — the quality you picked, the file's own container, how long the video
+is and how big the file turned out:
+
+```
+1080p  ·  MP4  ·  3:32  ·  24.1 MB
+```
+
+and buttons that act on it: **Play** (in whatever your desktop plays video with),
+**Show in folder** — which selects the file on Windows and macOS, and opens its
+folder where Linux has no such thing — **Copy path**, and **Download another**.
 
 Every finished download is also written to a small **recent list** in Viddl's
 own folder. **Recent** on the home screen (`r`) shows the last fifty: the
@@ -637,6 +648,14 @@ failure that will not change on its own — private, removed, region-blocked, a
 full disk — is reported at once, because waiting for the same answer is just a
 longer way of saying no. If all three attempts fail, the message says how many
 times Viddl tried.
+
+**Why it failed.** The screen says what happened in one sentence, and **Show
+details** (or `d`) opens the rest: what Viddl made of the failure, then what the
+downloader itself said, line for line — the last forty lines of it, with the
+signed parameters in any link redacted and control characters removed, because
+that output can quote a site's own video name. **Copy details** (or `c`) puts
+the whole thing on the clipboard for a bug report, and the log file is named at
+the bottom when this run wrote one.
 
 If you need more detail:
 

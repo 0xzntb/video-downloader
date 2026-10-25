@@ -9,6 +9,7 @@ that gets shown at the end.
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import sys
 import threading
@@ -28,6 +29,9 @@ from viddl.network import NetworkOptions
 from viddl.protocol import build_scheme_url
 from viddl.tui.app import (
     DownloadScreen,
+    _failure_details,
+    _play_file,
+    _reveal_in_folder,
     HomeScreen,
     LinksScreen,
     OptionsScreen,
@@ -42,6 +46,7 @@ from viddl.tui.app import (
     _open_folder,
 )
 from viddl.tui import title as title_mod
+from viddl.util import REDACTED
 from viddl.tui.widgets import ChoiceList, ChoiceRow, ExtraToggle
 
 URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -3118,3 +3123,326 @@ async def test_quitting_gives_the_title_bar_back(tmp_path):
     assert app.window_title.restored is True
     assert titles(written)[-1] == "Viddl"
     assert written[-1] == title_mod.POP
+
+
+# ---------------------------------------------------------------------------
+# the done screen says more, and the failure screen can say why (U3)
+# ---------------------------------------------------------------------------
+
+
+class VerboseFailingJob(FakeJob):
+    """Fails the way a real download does: with the tool's own words attached."""
+
+    raw = (
+        "ERROR: unable to download video data: HTTP Error 403: Forbidden\n"
+        "WARNING: link has a token: https://x.test/v?token=SECRET123\n"
+        "Killing\x1b]0;pwned\x07 Time"
+    )
+
+    def run(self):
+        raise ToolError(
+            "The site refused the request (403).",
+            "This is often a moment's throttling rather than a real block.",
+            raw=self.raw,
+        )
+
+
+def failed_app(tmp_path, job_class=VerboseFailingJob) -> ViddlApp:
+    """An app that will fail the way a real download does."""
+    services = make_services(tmp_path, job_class=job_class)
+    return ViddlApp(initial_url=URL, services=services)
+
+
+async def reach_failure(pilot) -> None:
+    await settle(pilot)
+    await pilot.press("enter")
+    await settle(pilot)
+
+
+@pytest.mark.asyncio
+async def test_the_done_screen_names_the_container_and_the_length(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+
+        assert isinstance(app.screen, ResultScreen)
+        sub = shown(app.screen, "#result-sub")
+        # The quality that was picked, what the file actually is, how long the
+        # video is, and how big the download was.
+        assert "1080p" in sub
+        assert "MP4" in sub
+        assert "3:32" in sub
+        assert "KB" in sub
+
+
+class Mp3Job(FakeJob):
+    """A download that really lands an .mp3, so the file agrees with the row."""
+
+    def run(self):
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        target = self.out_dir / "A Very Real Video [dQw4w9WgXcQ].mp3"
+        target.write_bytes(b"x" * 2048)
+        return target
+
+
+@pytest.mark.asyncio
+async def test_an_audio_row_does_not_say_its_format_twice(tmp_path):
+    """The row already says "MP3 192 kbps"; the file's own suffix adds nothing."""
+    services = make_services(tmp_path, job_class=Mp3Job)
+    app = ViddlApp(initial_url=URL, prefer_quality="mp3-192", services=services)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+
+        sub = shown(app.screen, "#result-sub")
+        assert "MP3 192 kbps" in sub
+        assert sub.count("MP3") == 1
+        assert "3:32" in sub
+
+
+@pytest.mark.asyncio
+async def test_the_play_button_opens_the_file_in_the_desktops_player(tmp_path, monkeypatch):
+    launched: list = []
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: launched.append(command))
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+        await pilot.click("#play")
+        await settle(pilot)
+
+    assert launched == [["xdg-open", str(app.state.saved_path)]]
+
+
+@pytest.mark.asyncio
+async def test_p_plays_it_too(tmp_path, monkeypatch):
+    launched: list = []
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: launched.append(command))
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+        await pilot.press("p")
+        await settle(pilot)
+
+    assert launched and launched[0][-1] == str(app.state.saved_path)
+
+
+def test_play_picks_the_command_the_desktop_understands(monkeypatch, tmp_path):
+    launched: list = []
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: launched.append(command))
+    played: list = []
+    monkeypatch.setattr(os, "startfile", lambda path: played.append(path), raising=False)
+    inside = tmp_path / "A Video [abc].mp4"
+
+    for platform in ("linux", "darwin", "win32"):
+        monkeypatch.setattr(sys, "platform", platform)
+        assert _play_file(inside) is None
+
+    assert launched == [["xdg-open", str(inside)], ["open", str(inside)]]
+    assert played == [str(inside)]
+
+
+def test_play_explains_when_the_desktop_will_not_open_it(monkeypatch, tmp_path):
+    def refuse(command, **kwargs):
+        raise OSError("no display available")
+
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+    monkeypatch.setattr(sys, "platform", "linux")
+    problem = _play_file(tmp_path / "clip.mp4")
+
+    assert problem is not None
+    assert "Could not play the file" in problem
+
+
+def test_show_in_folder_picks_the_file_out_where_the_desktop_can(monkeypatch, tmp_path):
+    """Windows and macOS have "select this file"; Linux has only the folder."""
+    launched: list = []
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: launched.append(command))
+    inside = tmp_path / "Downloads" / "A Video [abc].mp4"
+
+    for platform in ("linux", "darwin", "win32"):
+        monkeypatch.setattr(sys, "platform", platform)
+        assert _reveal_in_folder(inside) is None
+
+    assert launched == [
+        ["xdg-open", str(inside.parent)],
+        ["open", "-R", str(inside)],
+        ["explorer", f"/select,{inside}"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_details_are_closed_until_they_are_asked_for(tmp_path):
+    app = failed_app(tmp_path)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await reach_failure(pilot)
+        panel = app.screen.query_one("#result-details")
+        button = app.screen.query_one("#details", Button)
+        assert panel.has_class("hidden")
+        assert str(button.label) == "Show details"
+
+        await pilot.press("d")
+        await pilot.pause()
+        assert not panel.has_class("hidden")
+        assert str(button.label) == "Hide details"
+
+        await pilot.press("d")
+        await pilot.pause()
+        assert panel.has_class("hidden")
+        assert str(button.label) == "Show details"
+
+
+@pytest.mark.asyncio
+async def test_the_details_quote_the_downloader_and_the_explanation(tmp_path):
+    app = failed_app(tmp_path)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await reach_failure(pilot)
+        await pilot.click("#details")
+        await pilot.pause()
+
+        details = shown(app.screen, "#details-text")
+        # What Viddl made of it, then what the tool actually said.
+        assert "What Viddl made of it" in details
+        assert "The site refused the request (403)." in details
+        assert "What the downloader said" in details
+        assert "HTTP Error 403: Forbidden" in details
+
+
+@pytest.mark.asyncio
+async def test_the_details_cannot_carry_an_escape_sequence_or_a_secret(tmp_path):
+    app = failed_app(tmp_path)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await reach_failure(pilot)
+        await pilot.click("#details")
+        await pilot.pause()
+
+        details = shown(app.screen, "#details-text")
+        # The tool's output can quote a site's name, and a control character
+        # in it would be obeyed by the terminal rather than drawn (U2's rule).
+        assert "\x1b" not in details
+        assert "\x07" not in details
+        assert "pwned" in details
+        # And the same lines can carry the signed link Viddl was handed.
+        assert "SECRET123" not in details
+        assert REDACTED in details
+
+
+@pytest.mark.asyncio
+async def test_the_details_can_be_copied_for_a_bug_report(tmp_path):
+    app = failed_app(tmp_path)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await reach_failure(pilot)
+
+        copied: list = []
+        app.copy_to_clipboard = lambda text: copied.append(text)
+        await pilot.click("#copy-details")
+        await settle(pilot, rounds=20)
+
+        assert copied
+        assert "HTTP Error 403: Forbidden" in copied[0]
+        assert "SECRET123" not in copied[0]
+
+
+@pytest.mark.asyncio
+async def test_c_copies_the_details_when_there_is_no_path(tmp_path):
+    app = failed_app(tmp_path)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await reach_failure(pilot)
+
+        copied: list = []
+        app.copy_to_clipboard = lambda text: copied.append(text)
+        await pilot.press("c")
+        await settle(pilot, rounds=20)
+
+        assert copied and "The site refused the request" in copied[0]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_with_nothing_to_add_still_explains_itself(tmp_path):
+    app = failed_app(tmp_path, job_class=FailingJob)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await reach_failure(pilot)
+        await pilot.press("d")
+        await pilot.pause()
+
+        details = shown(app.screen, "#details-text")
+        assert "That video is not available any more." in details
+        assert "It may have been deleted." in details
+        assert "What the downloader said" not in details
+
+
+def test_the_details_point_at_the_log_when_there_is_one(tmp_path):
+    from viddl import appdata
+
+    error = ToolError("It did not work.", "Try again.", raw="ERROR: no")
+    assert "The log file has the rest" not in _failure_details(error)
+
+    log = appdata.log_path()
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("a line\n", encoding="utf-8")
+
+    details = _failure_details(error)
+    assert "The log file has the rest" in details
+    assert str(log) in details
+
+
+def test_play_on_windows_explains_when_the_shell_will_not_open_it(monkeypatch, tmp_path):
+    def refuse(path):
+        raise OSError("no associated program")
+
+    monkeypatch.setattr(os, "startfile", refuse, raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    problem = _play_file(tmp_path / "clip.mp4")
+
+    assert problem is not None
+    assert "Could not play the file" in problem
+
+
+@pytest.mark.asyncio
+async def test_a_refused_play_says_so_rather_than_nothing(tmp_path, monkeypatch):
+    def refuse(command, **kwargs):
+        raise OSError("no display available")
+
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+        with captured_notifications(app) as noted:
+            await pilot.press("p")
+            await settle(pilot)
+
+        assert any("Could not play the file" in message for message in noted.messages)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_reveal_says_so_rather_than_nothing(tmp_path, monkeypatch):
+    def refuse(command, **kwargs):
+        raise OSError("no display available")
+
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+        with captured_notifications(app) as noted:
+            await pilot.press("o")
+            await settle(pilot)
+
+        assert any("Could not show the file" in message for message in noted.messages)

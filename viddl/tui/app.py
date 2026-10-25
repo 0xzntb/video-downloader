@@ -36,7 +36,7 @@ from typing import Any, Callable, List, Optional, Tuple
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, ProgressBar, Static
 
@@ -202,9 +202,24 @@ def _plain(value: Any) -> str:
     return escape(str(value))
 
 
+def _launch(command: List[str]) -> Optional[str]:
+    """Start a desktop program without waiting for it. Returns why, on failure."""
+    import subprocess
+
+    try:
+        subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        return str(exc)
+    return None
+
+
 def _open_folder(path: Path) -> Optional[str]:
     """Open a folder in the desktop's file manager. Returns an error, if any."""
-    import subprocess
     import sys
 
     target = path if path.is_dir() else path.parent
@@ -214,16 +229,108 @@ def _open_folder(path: Path) -> Optional[str]:
         command = ["open", str(target)]
     else:
         command = ["xdg-open", str(target)]
+    problem = _launch(command)
+    return f"Could not open the folder automatically ({problem})." if problem else None
+
+
+def _reveal_in_folder(path: Path) -> Optional[str]:
+    """Open the folder *with the file picked out*, where the desktop can (U3).
+
+    Windows and macOS both have a "show me this file" form — ``explorer
+    /select,`` and ``open -R`` — so those select it. Linux has no portable
+    equivalent (every file manager spells it differently), so the folder is
+    opened instead, which is the half that works everywhere: the name is on
+    screen and can be typed into the manager's own search.
+    """
+    import sys
+
+    if sys.platform.startswith("win"):
+        command = ["explorer", f"/select,{path}"]
+    elif sys.platform == "darwin":
+        command = ["open", "-R", str(path)]
+    else:
+        command = ["xdg-open", str(path.parent)]
+    problem = _launch(command)
+    return f"Could not show the file in its folder ({problem})." if problem else None
+
+
+def _play_file(path: Path) -> Optional[str]:
+    """Open the saved file in whatever the desktop plays it with (U3).
+
+    Only a path Viddl saved is ever passed here: the file on the other end is
+    the download the person just waited for, not something a page chose to
+    open. The extension is the one the download wrote, not one a site asked
+    for.
+    """
+    import os
+    import sys
+
+    if sys.platform.startswith("win"):
+        # Windows opens a document by asking the shell about it, so there is no
+        # program name to spell out — and ``start`` through cmd would bring its
+        # own quoting rules for a path with spaces.
+        starter = getattr(os, "startfile", None)
+        if starter is None:  # pragma: no cover - Windows always has one
+            return "Could not play the file automatically."
+        try:
+            starter(str(path))
+        except OSError as exc:
+            return f"Could not play the file automatically ({exc})."
+        return None
+    if sys.platform == "darwin":
+        command = ["open", str(path)]
+    else:
+        command = ["xdg-open", str(path)]
+    problem = _launch(command)
+    return f"Could not play the file automatically ({problem})." if problem else None
+
+
+#: How much of the downloader's own words the failure screen shows, and how
+#: long one line may be: the panel is 86 columns wide and a log line can be a
+#: page long.
+_DETAIL_LINES = 40
+_DETAIL_WIDTH = 200
+
+
+def _log_file() -> Optional[Path]:
+    """The log this run has written, if there is one to point at."""
     try:
-        subprocess.Popen(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-        )
-    except OSError as exc:
-        return f"Could not open the folder automatically ({exc})."
-    return None
+        path = appdata.log_path()
+    except Exception:  # pragma: no cover - a nicety, never a failure
+        return None
+    return path if path.is_file() else None
+
+
+def _failure_details(error: ToolError) -> str:
+    """What the failure screen shows when somebody asks *why* (U3).
+
+    Two things, in the order they help: what Viddl made of the failure, and what
+    the downloader actually said. Everything that came from a tool is cleaned
+    the way a window title is (U2): a video's name can be in that output, and a
+    control character there would be obeyed by the terminal rather than drawn.
+    It is redacted as well, because the same lines can carry the signed link
+    Viddl was handed.
+    """
+    lines = [
+        "What Viddl made of it",
+        f"  {title_mod.clean(error.message, _DETAIL_WIDTH)}",
+    ]
+    if error.hint:
+        lines.append(f"  {title_mod.clean(error.hint, _DETAIL_WIDTH)}")
+    said = [
+        title_mod.clean(line, _DETAIL_WIDTH)
+        for line in (error.raw or "").splitlines()
+    ]
+    said = [line for line in said if line]
+    if said:
+        # The last lines, not the first: a tool prints its explanation when it
+        # gives up, and the beginning of a log is where it said "hello".
+        lines += ["", "What the downloader said"]
+        lines += [f"  {redact(line)}" for line in said[-_DETAIL_LINES:]]
+    log = _log_file()
+    if log is not None:
+        lines += ["", f"The log file has the rest: {log}"]
+    return "\n".join(lines)
 
 
 class ViddlApp(App):
@@ -448,6 +555,26 @@ class ViddlApp(App):
     #result-message {
         width: 100%;
         height: auto;
+    }
+
+    /* Five actions on the done screen (U3), and a button's default sixteen
+       columns would push two of them off an eighty-column terminal. These
+       buttons are sized by their own labels instead. */
+    #result-panel .buttons Button {
+        min-width: 0;
+    }
+
+    #result-details {
+        width: 100%;
+        height: auto;
+        max-height: 10;
+        padding: 0 1;
+    }
+
+    #details-text {
+        width: 100%;
+        height: auto;
+        color: $text-muted;
     }
 
     .hidden {
@@ -2727,12 +2854,25 @@ class ResultScreen(Screen):
     delivered what it recorded (F12). The file is real and complete up to the
     moment of the stop, so it is shown like any other saved file, with the
     heading saying which kind of ending this was.
+
+    A saved file is described before it is acted on (U3): the quality, the
+    container that actually landed, how long the video is and how big the file
+    is, then Play / Show in folder / Copy path. The failure ending has the one
+    thing such screens usually leave out — *why* — behind a Show details
+    button, in the downloader's own words, cleaned and redacted, with Copy
+    details beside it for a bug report.
     """
 
     BINDINGS = [
         Binding("escape", "go_home", "Start over", show=True),
-        Binding("o", "open_folder", "Open folder", show=False),
-        Binding("c", "copy_path", "Copy path", show=False),
+        # Hidden from the footer rather than advertised on both endings: Play
+        # and Show in folder mean nothing when nothing was saved, and Details
+        # means nothing when the download worked. The buttons are the surface
+        # that says what this screen can do.
+        Binding("o", "show_in_folder", "Show in folder", show=False),
+        Binding("p", "play", "Play", show=False),
+        Binding("c", "copy", "Copy", show=False),
+        Binding("d", "toggle_details", "Details", show=False),
     ]
 
     def __init__(
@@ -2763,7 +2903,13 @@ class ResultScreen(Screen):
                 yield Static("Download failed", id="brand")
                 yield Static("", id="result-path")
                 yield Static("", id="result-message")
+                # Closed until it is asked for: the explanation above is what
+                # most failures need, and this is the part that can be long.
+                with VerticalScroll(id="result-details", classes="hidden"):
+                    yield Static("", id="details-text")
                 with Horizontal(classes="buttons"):
+                    yield Button("Show details", id="details")
+                    yield Button("Copy details", id="copy-details")
                     yield Button("Try another link", variant="primary", id="again")
                     yield Button("Quit", id="quit")
             else:
@@ -2772,7 +2918,8 @@ class ResultScreen(Screen):
                 yield Static("", id="result-path")
                 with Horizontal(classes="buttons"):
                     yield Button("Copy path", variant="primary", id="copy")
-                    yield Button("Open folder", id="open")
+                    yield Button("Play", id="play")
+                    yield Button("Show in folder", id="reveal")
                     yield Button("Download another", id="again")
                     yield Button("Quit", id="quit")
         yield Footer()
@@ -2782,16 +2929,33 @@ class ResultScreen(Screen):
             self.query_one("#result-path", Static).update(_plain(self.error.message))
             hint = self.error.hint or "Press Escape to try another link."
             self.query_one("#result-message", Static).update(_plain(hint))
+            # Built now rather than on the click, so the toggle is instant and
+            # a copy taken before opening it is the same text.
+            self.query_one("#details-text", Static).update(
+                _plain(_failure_details(self.error))
+            )
             return
         path = self.saved_path
         assert path is not None
         option = self.app.state.option
         label = option.label if option is not None else "File"
         size = human_size(path.stat().st_size) if path.exists() else "?"
-        # "Already had" instead of the quality, when the archive recognised
-        # the video (F6): the row would otherwise claim a quality for a file
-        # that was fetched at some other one, and this screen does not lie.
-        sub = f"{'Already had' if self.already_had else label}  ·  {size}"
+        info = self.app.state.info
+        bits = ["Already had" if self.already_had else label]
+        # What actually landed, from the file's own name rather than from the
+        # row that was clicked: they agree, and when they do not the file is
+        # the one that is there. An audio row already names its format
+        # ("MP3 192 kbps"), so that one is not said twice.
+        container = path.suffix.lstrip(".").upper()
+        if container and container.lower() not in label.lower():
+            bits.append(container)
+        # The length of the video, which the look-up already knew. Not for a
+        # stopped recording: that file is as long as it was pressed, not as
+        # long as the stream was going to be.
+        if not self.recorded and info is not None and info.duration:
+            bits.append(human_duration(info.duration))
+        bits.append(size)
+        sub = "  ·  ".join(bits)
         if self.recorded:
             # A live stream has no natural end, so the file is what had been
             # recorded when Stop was pressed — said out loud rather than left
@@ -2809,41 +2973,73 @@ class ResultScreen(Screen):
     def action_go_home(self) -> None:
         self.app.go_home()
 
-    def action_open_folder(self) -> None:
+    def action_show_in_folder(self) -> None:
         if self.saved_path is None:
             return
-        problem = _open_folder(self.saved_path)
+        problem = _reveal_in_folder(self.saved_path)
         if problem:
             self.notify(problem, severity="warning")
 
-    def action_copy_path(self) -> None:
+    def action_play(self) -> None:
+        if self.saved_path is None:
+            return
+        problem = _play_file(self.saved_path)
+        if problem:
+            self.notify(problem, severity="warning")
+
+    def action_copy(self) -> None:
+        """Copy what this screen is about: the path, or why it failed (U3)."""
+        if self.error is not None:
+            self.action_copy_details()
+            return
         if self.saved_path is None:
             return
         # Copying can be asynchronous, so it has to run in a worker: calling
         # the coroutine directly would silently do nothing at all.
         self.run_worker(self._copy(str(self.saved_path)))
 
-    async def _copy(self, text: str) -> None:
+    def action_copy_details(self) -> None:
+        if self.error is None:
+            return
+        self.run_worker(self._copy(_failure_details(self.error), "Details"))
+
+    def action_toggle_details(self) -> None:
+        if self.error is None:
+            return
+        panel = self.query_one("#result-details", VerticalScroll)
+        button = self.query_one("#details", Button)
+        if panel.has_class("hidden"):
+            panel.remove_class("hidden")
+            button.label = "Hide details"
+        else:
+            panel.add_class("hidden")
+            button.label = "Show details"
+
+    async def _copy(self, text: str, what: str = "Full path") -> None:
         try:
             result = self.app.copy_to_clipboard(text)
             if inspect.isawaitable(result):
                 await result
-            self.notify("Full path copied to the clipboard.", timeout=3)
+            self.notify(f"{what} copied to the clipboard.", timeout=3)
         except Exception as exc:  # pragma: no cover - terminal dependent
-            self.notify(f"Could not copy automatically ({exc}). The path is shown above.",
-                        severity="warning")
+            self.notify(f"Could not copy automatically ({exc}).", severity="warning")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
         if button_id == "copy":
-            self.action_copy_path()
-        elif button_id == "open":
-            self.action_open_folder()
-        elif button_id in ("again", "quit"):
-            if button_id == "again":
-                self.app.go_home()
-            else:
-                self.app.action_quit_app()
+            self.action_copy()
+        elif button_id == "copy-details":
+            self.action_copy_details()
+        elif button_id == "details":
+            self.action_toggle_details()
+        elif button_id == "play":
+            self.action_play()
+        elif button_id == "reveal":
+            self.action_show_in_folder()
+        elif button_id == "again":
+            self.app.go_home()
+        elif button_id == "quit":
+            self.app.action_quit_app()
 
 
 class RecentScreen(Screen):
