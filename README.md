@@ -130,6 +130,8 @@ Nothing is installed system-wide and no configuration files are created.
 | Make it easier to read on a bright or dim screen | `viddl --theme light <link>` (see [Colours and contrast](#colours-and-contrast)) |
 | See how far a download has got from another window | Nothing to do: the title bar says it (see [The window title](#the-window-title)) |
 | See what you have downloaded lately | Press `r` (or **Recent**) on the home screen |
+| Find out which key does what | Press `F1` in the app (or `?` where you are not typing a link) |
+| Try a failed download again | Press **Try again** (`r`) on the failure screen |
 | Use the link you already copied | Click **Paste link** on the home screen (or press `p` when the box is not focused) |
 | Download several links in one go | Paste them into the link box separated by spaces, then **Download all** on the links screen |
 | Download from a browser tab instead of a terminal | `viddl --web` (see [A page in your browser](#a-page-in-your-browser)) |
@@ -146,7 +148,12 @@ In the app:
   `m` and `t` switch subtitles, details and the cover image on and off.
   On the home screen `Ctrl+T` changes the colour scheme. On the done screen `p`
   plays the file, `o` shows it in its folder and `c` copies its path; on the
-  failure screen `d` opens the details and `c` copies them.
+  failure screen `d` opens the details, `c` copies them and `r` tries the same
+  link again.
+* **Every key, on one page** — press `F1`, or `?` anywhere that is not the link
+  box, for the keys that work where you are standing: the whole list, including
+  the ones the footer has no room for, gathered from the app itself so it cannot
+  go stale. `Esc` closes it.
 * Paste with `Ctrl+V` / `Cmd+V`, or just type the link. If the clipboard already
   holds a link when Viddl opens, the home screen says so and offers **Paste
   link**; it never fills the box or starts anything by itself.
@@ -648,6 +655,12 @@ failure that will not change on its own — private, removed, region-blocked, a
 full disk — is reported at once, because waiting for the same answer is just a
 longer way of saying no. If all three attempts fail, the message says how many
 times Viddl tried.
+
+**Trying again.** A failure is often a moment's bad luck rather than a dead
+link, so the screen's first button is **Try again** (`r`): the same link at the
+same quality, once more. It does not start from nothing — the half-finished file
+is where the first attempt left it, so this continues from there, the same way
+**Resume** does after a stop.
 
 **Why it failed.** The screen says what happened in one sentence, and **Show
 details** (or `d`) opens the rest: what Viddl made of the failure, then what the

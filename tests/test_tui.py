@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
+from textual.containers import VerticalScroll
 from textual.widgets import Button, Input, Static
 
 from viddl.download import DownloadCancelled, ProbeCancelled, Progress
@@ -30,6 +31,8 @@ from viddl.protocol import build_scheme_url
 from viddl.tui.app import (
     DownloadScreen,
     _failure_details,
+    _key_label,
+    HelpScreen,
     _play_file,
     _reveal_in_folder,
     HomeScreen,
@@ -3446,3 +3449,233 @@ async def test_a_refused_reveal_says_so_rather_than_nothing(tmp_path, monkeypatc
             await settle(pilot)
 
         assert any("Could not show the file" in message for message in noted.messages)
+
+
+# ---------------------------------------------------------------------------
+# the key page, and trying a failure again (U5)
+# ---------------------------------------------------------------------------
+
+
+def rows_of(page: str) -> dict:
+    """The key page as {key: what it does}, however wide its columns are."""
+    rows = {}
+    for line in page.splitlines():
+        if line.startswith("  ") and line.strip():
+            key, _, what = line.strip().partition("  ")
+            rows[key.strip()] = what.strip()
+    return rows
+
+
+def test_a_key_is_written_the_way_a_person_reads_it():
+    # Textual's own names, and how they are spelled out: ``question_mark`` is
+    # what a question mark becomes when it is bound to (U5).
+    assert _key_label("ctrl+q") == "Ctrl+Q"
+    assert _key_label("escape") == "Esc"
+    assert _key_label("question_mark") == "?"
+    assert _key_label("f1") == "F1"
+    assert _key_label("shift+tab") == "Shift+Tab"
+    assert _key_label("pagedown") == "PgDn"
+    # A key on its own is written as it is typed, not shouted.
+    assert _key_label("k") == "k"
+
+
+@pytest.mark.asyncio
+async def test_the_keys_page_says_what_travels_and_what_happens_here(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        await pilot.press("f1")
+        await settle(pilot)
+
+        assert isinstance(app.screen, HelpScreen)
+        page = shown(app.screen, "#help-text")
+        assert page.splitlines()[0] == "Anywhere"
+        assert "On this screen" in page
+        rows = rows_of(page)
+        # The app's own, wherever you are.
+        assert rows["Ctrl+Q"] == "Quit"
+        assert rows["F1"] == "Keys"
+        # And the home screen's.
+        assert rows["r"] == "Recent"
+        assert rows["p"] == "Paste link"
+        assert rows["Ctrl+T"] == "Theme"
+        # The text box's own editing keys are the box's, not Viddl's: a page of
+        # Ctrl+A, Ctrl+X and Shift+Home would bury the five keys that matter.
+        assert "Ctrl+X" not in rows
+
+
+@pytest.mark.asyncio
+async def test_the_keys_page_names_the_keys_the_footer_hides(tmp_path):
+    """The failure screen keeps Play, Copy and Details off its footer on
+    purpose, so the page is the only place they can be found (U5)."""
+    app = failed_app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await reach_failure(pilot)
+        # Nothing here is a text box, so the question mark opens the page
+        # itself; F1 is the way in from the home screen (see above).
+        await pilot.press("question_mark")
+        await settle(pilot)
+        assert isinstance(app.screen, HelpScreen)
+
+        rows = rows_of(shown(app.screen, "#help-text"))
+        assert rows["o"] == "Show in folder"
+        assert rows["p"] == "Play"
+        assert rows["c"] == "Copy"
+        assert rows["d"] == "Details"
+        assert rows["r"] == "Try again"
+        assert rows["Esc"] == "Start over"
+
+
+@pytest.mark.asyncio
+async def test_a_key_keeps_the_meaning_the_focused_list_gives_it(tmp_path):
+    """Enter on the qualities list chooses a row; on the screen it downloads.
+
+    Both are bound, and only one of them runs — the page has to say which.
+    """
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        assert isinstance(app.screen, OptionsScreen)
+        await pilot.press("f1")
+        await settle(pilot)
+
+        page = shown(app.screen, "#help-text")
+        rows = rows_of(page)
+        assert rows["Enter"] == "Choose"
+        assert page.count("Enter") == 1, "a key listed under two meanings"
+        # `d` still starts the download: nothing shadows it.
+        assert rows["d"] == "Download"
+
+
+@pytest.mark.asyncio
+async def test_the_page_opens_and_closes_with_either_key(tmp_path):
+    app = ViddlApp(services=make_services(tmp_path))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        # In the link box a question mark is a character being typed — the rule
+        # that keeps `p` and `r` letters while the box has the focus (F8).
+        await pilot.press("question_mark")
+        await settle(pilot)
+        assert isinstance(app.screen, HomeScreen)
+        assert app.screen.query_one("#url-input").value == "?"
+
+        await pilot.press("f1")
+        await settle(pilot)
+        assert isinstance(app.screen, HelpScreen)
+
+        await pilot.press("question_mark")
+        await settle(pilot)
+        assert isinstance(app.screen, HomeScreen)
+
+        await pilot.press("f1")
+        await settle(pilot)
+        assert isinstance(app.screen, HelpScreen)
+        await pilot.press("escape")
+        await settle(pilot)
+        assert isinstance(app.screen, HomeScreen)
+
+
+@pytest.mark.asyncio
+async def test_the_page_fits_a_small_terminal_and_scrolls_the_rest(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        await pilot.press("f1")
+        await settle(pilot)
+
+        panel = app.screen.query_one("#help-panel")
+        listing = app.screen.query_one("#help-list", VerticalScroll)
+        footer = app.screen.query_one("Footer")
+        assert panel.region.width <= 80
+        assert panel.region.height <= 24
+        # The list is capped and scrolls, so a screen with more keys than fit
+        # cannot push the footer off the bottom.
+        assert listing.region.height == 14
+        assert listing.virtual_size.height > listing.region.height
+        assert footer.region.y + footer.region.height <= 24
+
+
+@pytest.mark.asyncio
+async def test_a_failed_download_can_be_tried_again(tmp_path):
+    class CountingFailingJob(FailingJob):
+        made: list = []
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            CountingFailingJob.made.append(self)
+
+    CountingFailingJob.made.clear()
+    app = failed_app(tmp_path, job_class=CountingFailingJob)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await reach_failure(pilot)
+        assert isinstance(app.screen, ResultScreen)
+        option = app.state.option
+        assert option is not None
+
+        await pilot.press("r")
+        await settle(pilot)
+        await wait_for_screen(pilot, ResultScreen)
+
+        # The same link at the same quality, asked for a second time.
+        assert len(CountingFailingJob.made) == 2
+        assert CountingFailingJob.made[1].option is option
+        assert app.state.url == URL
+        # One failure screen, not a stack of them: trying again replaces it.
+        assert len(app.screen_stack) == 4
+        assert sum(isinstance(screen, DownloadScreen) for screen in app.screen_stack) == 0
+
+
+@pytest.mark.asyncio
+async def test_the_try_again_button_does_the_same(tmp_path):
+    class CountingFailingJob(FailingJob):
+        made: list = []
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            CountingFailingJob.made.append(self)
+
+    CountingFailingJob.made.clear()
+    app = failed_app(tmp_path, job_class=CountingFailingJob)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await reach_failure(pilot)
+        await pilot.click("#retry")
+        await settle(pilot)
+        await wait_for_screen(pilot, ResultScreen)
+
+        assert len(CountingFailingJob.made) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_failure_buttons_fit_an_eighty_column_terminal(tmp_path):
+    app = failed_app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await reach_failure(pilot)
+
+        buttons = list(app.screen.query("Button"))
+        assert [button.id for button in buttons] == [
+            "retry",
+            "details",
+            "copy-details",
+            "again",
+            "quit",
+        ]
+        for button in buttons:
+            assert button.region.x >= 0, button.id
+            assert button.region.x + button.region.width <= 80, button.id
+
+
+@pytest.mark.asyncio
+async def test_a_saved_download_is_not_tried_again(tmp_path):
+    """The key belongs to a failure; on the done screen it does nothing."""
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await settle(pilot)
+        assert isinstance(app.screen, ResultScreen)
+        saved = app.state.saved_path
+
+        await pilot.press("r")
+        await settle(pilot)
+        assert isinstance(app.screen, ResultScreen)
+        assert app.state.saved_path == saved

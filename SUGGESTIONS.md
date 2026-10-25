@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **37 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U4 in section 4, D2–D3 in
+Progress so far: **38 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U5 in section 4, D2–D3 in
 section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -2349,7 +2349,7 @@ the right capabilities, in CI, or with a screen reader.
 prints progress on one line and the final path on its own — usable from scripts,
 `ssh`, and a11y tooling. This also removes the need for the `OSError` dead end.
 
-### U5 — Keyboard affordances · **P2** · S · ◐ **partly done**
+### U5 — Keyboard affordances · **P2** · S · ✅ **Done**
 
 Bindings today: `Esc`, `Tab`, `Ctrl+Q`, `Ctrl+C`, arrows/`j`/`k`, `Enter`, `c`.
 Cheap wins: `p` to paste the clipboard link, `r` to retry a failed download,
@@ -2359,12 +2359,62 @@ older note here — that `Esc` cancels instantly and **R1** made that cost real
 progress — no longer applies: **R1** is done, so `Esc` keeps the part and the
 screen asks whether to resume it or throw it away.
 
-> **◐ Two of the four are in.** `p` pastes the clipboard link and `o` opens the
-> folder from the done screen; both arrived with the features that needed them
-> (**F8**, **F6**), and `p` follows the same rule `r` does — a letter typed into
-> the link box stays a letter, so the button is what a fresh launch uses.
-> Missing: `?` for a help overlay, and `r` is still only "resume" on the
-> **Stopped** screen, not a retry on the failure screen.
+> **All four are in.** `p` pastes the clipboard link and `o` opens the folder
+> from the done screen — both arrived with the features that needed them
+> (**F8**, **F6**) — and the last two landed together: a **key page** behind `?`
+> and `F1`, and `r` to try a failed download again.
+>
+> **Not a second list to keep in step.** The page is built when it is opened,
+> from the bindings Textual already routes: the focused widget's own, then the
+> screen's, then the app's, each key keeping the nearest meaning. On the
+> qualities list `Enter` therefore reads *Choose* (the list's) and not
+> *Download* (the screen's), and a key added tomorrow needs nothing written here.
+> Measured on the qualities screen at 80×24: four keys under **Anywhere**
+> (`Ctrl+Q`, `Ctrl+C`, `F1`, `?`) and sixteen under **On this screen**.
+>
+> **Only Viddl's bindings.** The toolkit's own are on the same chain — scrolling
+> sideways from a list, `Ctrl+C` to copy selected text, and the twenty-odd keys
+> a text box declares (`Ctrl+A`, `Ctrl+X`, `Shift+Home`…). Listing them would have
+> turned the home screen's five keys into twenty-eight, none of which Viddl
+> promises, one of which (copy) contradicts what Viddl means by that key.
+>
+> **`?` is a character in the link box**, by the rule that keeps `p` and `r`
+> letters while it has the focus (**F8**) — so the footer advertises `F1`, the
+> page opens with either, and either closes it again.
+>
+> **Retry.** The failure screen gains **Try again** (`r`): the same link at the
+> same quality, run again. Nothing starts from nothing — the half-finished file
+> is where the first attempt left it, so a retry carries on from it exactly as
+> **Resume** does (**R1**). The failure ending now *replaces* the progress screen
+> rather than covering it, so a run of retries leaves one screen instead of one
+> per attempt behind it. On a saved file the key does nothing: retry belongs to a
+> failure.
+>
+> **Measured at 80 columns.** The failure row is five buttons —
+> 11 + 14 + 14 + 14 + 6 columns with their gaps — spanning columns 7 to 70, so it
+> fits with ten columns to spare. "Try another link" became **Another link**,
+> because the `Try` in front of it now belongs to the button beside it. The page
+> is 62 columns wide and its list stops at 14 rows and scrolls (the qualities
+> page holds 20), which keeps the footer on row 23 of 24.
+>
+> **10 new tests** (1192 → 1202, all in `tests/test_tui.py`): the page separates
+> the keys that travel from the ones that only work here, names the keys the
+> footer hides (`o`, `p`, `c`, `d`, `r`), keeps the nearest meaning of a shadowed
+> key, opens and closes with `?`, `F1` and `Esc`, fits 80×24 and scrolls the
+> rest, tries again by key and by button at the same quality without leaving a
+> screen behind, keeps the failure buttons inside 80 columns, and leaves a saved
+> file alone. `pyflakes` clean and the whole suite green; the ten also pass on
+> **Textual 3.0.0**, the declared floor.
+>
+> **Shown working in a real terminal** (`script` + the real driver at 100×32): the
+> page was drawn with both headings and its box, `Esc` returned to the failure,
+> and `r` produced a second attempt — the captured session holds *attempt 1* and
+> *attempt 2*.
+>
+> **Not done, on purpose.** The page lists keys, it is not a tour of the flow; it
+> has no search of its own. `r` is not on the playlist summary screen either,
+> where **Download the rest** already exists and "try the failed ones again" would
+> need a decision the summary does not record.
 
 ### U6 — Accessibility · **P2** · M
 
@@ -2583,8 +2633,9 @@ project's "nothing leaves your machine" promise.
 6. ✅ **S2** (verify downloads) — **done**; **R3** (expose the config escape hatch) still open. `--ignore-config` itself landed with **S1**.
 7. **F1** (cookies) — turns a documented dead end into a feature.
 8. **E7** (one real end-to-end test) + **E10** (coverage floor).
-9. ✅ **U1**, **U2** and **U3** (theme, title, richer done screen) — **all
-   done**; that whole visible-quality group is closed.
+9. ✅ **U1**, **U2**, **U3** and **U5** (theme, title, richer done screen, key
+   page and retry) — **all done**; that whole visible-quality group is closed.
+   **U6** (accessibility) is the one left in section 4.
 10. ✅ **F6** (archive + recents) — **done**; **F9** (notifications) is the other
     half of the same "make it a daily tool" idea, and now has a natural home
     to hang off.

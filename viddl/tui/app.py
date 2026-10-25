@@ -333,6 +333,128 @@ def _failure_details(error: ToolError) -> str:
     return "\n".join(lines)
 
 
+#: How Textual names a key, and how a person reads it. Only the ones the app
+#: binds need an entry; anything else is capitalised, which is right for ``f1``
+#: and for the letters (U5).
+_KEY_NAMES = {
+    "backspace": "Backspace",
+    "delete": "Del",
+    "down": "Down",
+    "end": "End",
+    "enter": "Enter",
+    "escape": "Esc",
+    "home": "Home",
+    "left": "Left",
+    "pagedown": "PgDn",
+    "pageup": "PgUp",
+    "pgdn": "PgDn",
+    "pgup": "PgUp",
+    "question_mark": "?",
+    "right": "Right",
+    "space": "Space",
+    "tab": "Tab",
+    "up": "Up",
+}
+
+
+def _key_label(key: str) -> str:
+    """``ctrl+q`` as ``Ctrl+Q``, ``escape`` as ``Esc``, ``question_mark`` as ``?``.
+
+    Textual keeps a key by the name it was given (``escape``), or by a name it
+    had to invent for a character it cannot spell (``?`` becomes
+    ``question_mark``), and neither is what a person would call it.
+    """
+    parts = []
+    for position, part in enumerate(key.split("+")):
+        label = _KEY_NAMES.get(part)
+        if label is None:
+            if len(part) == 1:
+                # A held modifier names the letter it is held with, and that
+                # letter is written in capitals: Ctrl+Q, not Ctrl+q. A key on
+                # its own is written as it is typed (j, not J).
+                label = part.upper() if position else part
+            else:
+                label = part.capitalize()
+        parts.append(label)
+    return "+".join(parts)
+
+
+def _declared(node: Any) -> List[Binding]:
+    """The bindings ``node``'s own class declares, in the order it wrote them.
+
+    ``node.BINDINGS`` is no good here: Textual merges a class's inherited
+    bindings into the same list, so a list taken from a list widget contains
+    everything its toolkit base offers — scrolling sideways, copying selected
+    text — none of which Viddl promises. Only the class's own attribute is what
+    Viddl binds.
+
+    A toolkit widget the person is typing in is not Viddl's either. A text box
+    declares a page of its own — Ctrl+A, Ctrl+X, Shift+Home — and listing all
+    of it would bury the four keys Viddl actually offers on that screen. The
+    box's editing keys are the box's; the page is about the app's.
+    """
+    if not type(node).__module__.startswith("viddl"):
+        return []
+    declared = type(node).__dict__.get("BINDINGS") or []
+    return list(Binding.make_bindings(declared))
+
+
+def _key_rows(screen: Screen) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
+    """The keys in force on ``screen``: the app's own, then this screen's (U5).
+
+    Read from the same place Textual reads to route a key — the focused widget,
+    then the screen, then the app — so a page built from it cannot drift from
+    the app, and shadowing is worked out here the way it is worked out there: a
+    key keeps the nearest meaning, so ``Enter`` says what it does *here* rather
+    than on some other screen.
+
+    Hidden bindings are listed on purpose. The footer is not where ``o``, ``p``
+    or ``l`` can be found — this page is how they stay discoverable.
+    """
+    everywhere: List[Tuple[str, str]] = []
+    here: List[Tuple[str, str]] = []
+    seen: set = set()
+    # Nearest first, so the first meaning of a key is the one that wins.
+    nodes: List[Any] = []
+    widget = screen.focused
+    while widget is not None and widget is not screen:
+        nodes.append(widget)
+        widget = widget.parent
+    nodes += [screen, screen.app]
+    for node in nodes:
+        for binding in _declared(node):
+            if binding.key in seen or not binding.description:
+                # A key already listed was defined closer to the person, which
+                # is the one that runs; a binding with no words is the
+                # machine's, not the person's.
+                continue
+            seen.add(binding.key)
+            row = (_key_label(binding.key), str(binding.description))
+            if node is screen.app:
+                everywhere.append(row)
+            else:
+                here.append(row)
+    return everywhere, here
+
+
+def _key_table(rows: List[Tuple[str, str]]) -> str:
+    """One key per line, the descriptions lined up under each other."""
+    width = max((len(key) for key, _ in rows), default=0)
+    return "\n".join(f"  {key.ljust(width)}  {what}" for key, what in rows)
+
+
+def _help_text(
+    everywhere: List[Tuple[str, str]], here: List[Tuple[str, str]]
+) -> str:
+    """The page itself, as plain text (U5)."""
+    blocks = []
+    if everywhere:
+        blocks.append("Anywhere\n" + _key_table(everywhere))
+    if here:
+        blocks.append("On this screen\n" + _key_table(here))
+    return "\n\n".join(blocks)
+
+
 class ViddlApp(App):
     """The application object; screens live on top of it.
 
@@ -356,7 +478,7 @@ class ViddlApp(App):
     }
 
     #home-panel, #options-panel, #download-panel, #stopped-panel, #result-panel,
-    #recent-panel {
+    #recent-panel, #help-panel {
         width: 86;
         max-width: 98%;
         height: auto;
@@ -580,11 +702,49 @@ class ViddlApp(App):
     .hidden {
         display: none;
     }
+
+    /* The key page (U5). Narrower than the screens behind it, because it is
+       read rather than worked in, and the list scrolls because the qualities
+       screen binds more keys than fit above the footer on a 24-row terminal. */
+    #help-panel {
+        width: 62;
+    }
+
+    #help-list {
+        height: auto;
+        /* Measured at 80x24: two borders, two rows of padding, the heading,
+           the list's own margin and the closing hint leave room for fourteen
+           rows, so the qualities screen's twenty scroll instead of pushing the
+           footer off the bottom. */
+        max-height: 14;
+        margin-top: 1;
+        padding: 0 1;
+        background: transparent;
+        border: none;
+    }
+
+    #help-text {
+        width: 100%;
+        height: auto;
+    }
+
+    #help-hint {
+        color: $text-muted;
+        text-align: center;
+        width: 100%;
+        padding-top: 1;
+    }
     """
 
     BINDINGS = [
         Binding("ctrl+q", "quit_app", "Quit", show=True),
         Binding("ctrl+c", "quit_app", "Quit", show=False),
+        # F1 rather than `?` in the footer: on the home screen the link box has
+        # the focus, and there a question mark is a character being typed — the
+        # same rule that keeps `p` and `r` letters while the box is focused.
+        # Both keys work, and the page lists both of them (U5).
+        Binding("f1", "help", "Keys", show=True),
+        Binding("?", "help", "Keys", show=False),
     ]
 
     def __init__(
@@ -863,6 +1023,15 @@ class ViddlApp(App):
         self.notify(_plain(error.message), severity="error", timeout=10)
 
     # -- navigation ---------------------------------------------------------
+    def action_help(self) -> None:
+        """The keys that work where the person is standing, and what they do (U5).
+
+        Asked of the screen in front *now*, before the page covers it: the page
+        is about that screen, not about itself.
+        """
+        everywhere, here = _key_rows(self.screen)
+        self.push_screen(HelpScreen(everywhere=everywhere, here=here))
+
     def go_home(self) -> None:
         """Return to a fresh home screen, ready for the next link."""
         while len(self.screen_stack) > 2:
@@ -2696,7 +2865,10 @@ class DownloadScreen(Screen):
         self.app.state.job = None
         if not self._has_a_screen():
             return
-        self.app.push_screen(ResultScreen(error=error))
+        # Replaced rather than covered, as a stop is: Try again starts a fresh
+        # download screen, and leaving the finished one underneath would stack
+        # a second copy of the same screen for every retry (U5).
+        self.app.switch_screen(ResultScreen(error=error))
 
     def finish_cancelled(self) -> None:
         # The partial file is kept, so the honest thing is to ask what to do
@@ -2873,6 +3045,9 @@ class ResultScreen(Screen):
         Binding("p", "play", "Play", show=False),
         Binding("c", "copy", "Copy", show=False),
         Binding("d", "toggle_details", "Details", show=False),
+        # Retry is the button and the key, and the button is what the footer
+        # would only repeat: a failure's business is on one row (U5).
+        Binding("r", "retry", "Try again", show=False),
     ]
 
     def __init__(
@@ -2908,9 +3083,10 @@ class ResultScreen(Screen):
                 with VerticalScroll(id="result-details", classes="hidden"):
                     yield Static("", id="details-text")
                 with Horizontal(classes="buttons"):
+                    yield Button("Try again", variant="primary", id="retry")
                     yield Button("Show details", id="details")
                     yield Button("Copy details", id="copy-details")
-                    yield Button("Try another link", variant="primary", id="again")
+                    yield Button("Another link", id="again")
                     yield Button("Quit", id="quit")
             else:
                 yield Static("Recording stopped" if self.recorded else "Saved", id="brand")
@@ -3003,6 +3179,19 @@ class ResultScreen(Screen):
             return
         self.run_worker(self._copy(_failure_details(self.error), "Details"))
 
+    def action_retry(self) -> None:
+        """Run the same link at the same quality again (U5).
+
+        A failed download is usually a few seconds of bad luck — a dropped
+        connection, a site that was busy — and trying the same thing again is
+        what people do before they read why. Nothing starts from nothing: what
+        was already fetched is in the folder, so the next attempt finds the
+        ``.part`` file and carries on from it, exactly as Resume does (R1).
+        """
+        if self.error is None or self.app.state.option is None:
+            return
+        self.app.switch_screen(DownloadScreen())
+
     def action_toggle_details(self) -> None:
         if self.error is None:
             return
@@ -3036,6 +3225,8 @@ class ResultScreen(Screen):
             self.action_play()
         elif button_id == "reveal":
             self.action_show_in_folder()
+        elif button_id == "retry":
+            self.action_retry()
         elif button_id == "again":
             self.app.go_home()
         elif button_id == "quit":
@@ -3339,6 +3530,59 @@ class QueueResultScreen(Screen):
             self.action_resume()
         elif button_id == "again":
             self.app.go_home()
+
+
+class HelpScreen(Screen):
+    """The keys in force, on one page (U5).
+
+    Most of them are hidden from the footer on purpose — ``o`` means nothing on
+    a failure, ``u`` only means something on a screen with an engine to update —
+    so the footer is not where they can be found. This is: it lists everything
+    bound where it was opened from, hidden or not, and says which keys stay with
+    you when the screen changes.
+
+    Nothing here is a second list to keep in step. Textual is asked what is
+    bound, so a key added to a screen tomorrow appears here without being
+    written down again (see :func:`_key_rows`).
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close", show=True),
+        # The page is opened with either key, so it closes with either key: a
+        # second question mark that did nothing would be the puzzle the page
+        # exists to solve.
+        Binding("f1", "close", "Close", show=False),
+        Binding("?", "close", "Close", show=False),
+        Binding("enter", "close", "Close", show=False),
+    ]
+
+    def __init__(
+        self,
+        everywhere: Optional[List[Tuple[str, str]]] = None,
+        here: Optional[List[Tuple[str, str]]] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.everywhere = list(everywhere or [])
+        self.here = list(here or [])
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="help-panel"):
+            yield Static("Keys", id="brand")
+            with VerticalScroll(id="help-list"):
+                yield Static("", id="help-text")
+            yield Static(
+                "F1 or ? opens this page; Esc closes it.", id="help-hint"
+            )
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#help-text", Static).update(
+            _plain(_help_text(self.everywhere, self.here))
+        )
+
+    def action_close(self) -> None:
+        self.app.pop_screen()
 
 
 def run(
