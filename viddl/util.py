@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Optional, TextIO
 from urllib.parse import urlsplit
 
 # Long enough for any real link, short enough to keep an odd paste out of argv.
@@ -55,6 +55,22 @@ _SECRET_VALUE = re.compile(
 )
 _CREDENTIALS_IN_LINK = re.compile(r"(?i)(https?://)[^/?#@\s\"'<>]+@")
 _BEARER = re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9._~+/=-]{8,})")
+
+
+def is_interactive(stream: TextIO) -> bool:
+    """Whether ``stream`` is a terminal that can be written over or asked on.
+
+    Asked of the stream that is actually used, rather than of "am I running
+    interactively": a download redirected to a log has a terminal on standard
+    input and a file on standard error, and it is the file that decides whether
+    a progress line may be redrawn (U4). A stream without ``isatty`` — a test
+    double, ``--quiet``'s sink — is not one, because the safe answer for
+    anything that is not known to be a terminal is "no".
+    """
+    try:
+        return bool(stream.isatty())
+    except (AttributeError, OSError):  # pragma: no cover - unusual streams
+        return False
 
 
 def human_size(num_bytes: Optional[float]) -> str:

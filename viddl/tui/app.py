@@ -521,6 +521,14 @@ class ViddlApp(App):
         margin: 0 1;
     }
 
+    /* Focus without colour (U6). Textual marks the focused control by its
+       border colour, and with NO_COLOR set — or on a terminal that has colour
+       switched off — that is a border that looks like every other border. Bold
+       and underline are attributes, not colours, so they survive both. */
+    Button:focus {
+        text-style: bold underline;
+    }
+
     #engine-status {
         color: $text-muted;
         text-align: center;
@@ -646,6 +654,14 @@ class ViddlApp(App):
     .choice-row.active {
         background: $primary;
         color: $on-primary;
+    }
+
+    /* The row the cursor is on also carries a character (see CURSOR_MARK), and
+       this is the second half of that: with the list focused the row is
+       reversed, which is visible in monochrome as well. Which control has the
+       focus is a state colour alone cannot say (U6). */
+    #choices:focus .choice-row.active {
+        text-style: bold reverse;
     }
 
     #download-panel ProgressBar {

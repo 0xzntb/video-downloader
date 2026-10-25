@@ -18,6 +18,13 @@ from textual.widgets import Static
 LABEL_WIDTH = 26
 SIZE_WIDTH = 11
 
+#: What the row under the cursor is marked with (U6). A character rather
+#: than a colour: ``NO_COLOR``, a monochrome terminal and a screen reader
+#: all get the same information from it, and — like every other character
+#: Viddl draws — it has to exist in cp1252 for the old console the plain
+#: path exists for. U+203A does; the arrow U+25B8 does not.
+CURSOR_MARK = "›"
+
 
 class ChoiceRow(Static):
     """One selectable line: a label, a right-aligned size, and a note."""
@@ -63,6 +70,10 @@ class ChoiceRow(Static):
 
     def _refresh_content(self) -> None:
         text = Text()
+        # The cursor is a mark, not only a background: the row under it has
+        # to be findable with colour turned off, which is what NO_COLOR and
+        # a monochrome terminal both do (U6).
+        text.append(f"{CURSOR_MARK} " if self.is_active else "  ")
         label = self.row_label
         if len(label) > LABEL_WIDTH:
             label = label[: LABEL_WIDTH - 1].rstrip() + "…"

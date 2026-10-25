@@ -36,7 +36,7 @@ from .extras import Extras
 from .formats import AUDIO_FORMATS, ORIGINAL_AUDIO_KEY, MediaInfo, MediaOption
 from .network import NetworkOptions
 from .queue import QueueJob
-from .util import human_duration, human_size
+from .util import human_duration, human_size, is_interactive
 
 #: Typography Viddl uses in its own sentences, mapped to what a console with a
 #: legacy code page can print: a plain one shows ``·`` and ``…`` as boxes or
@@ -122,31 +122,86 @@ class _Quiet:
 
 
 class _Line:
-    """One line of progress, overwritten in place.
+    """One line of progress: overwritten in place, or written whole.
 
-    A shorter update has to erase the tail of the longer one before it, or the
-    screen shows the two glued together — and when the download ends the line
-    is cleared so the sentence that follows starts at the left edge.
+    On a terminal the update is written over the last one. A shorter update has
+    to erase the tail of the longer one before it, or the screen shows the two
+    glued together — and when the download ends the line is cleared so the
+    sentence that follows starts at the left edge.
+
+    A file or a pipe cannot be overwritten, and a carriage return in a log is a
+    control character rather than a line ending: measured, the hundred updates
+    of one download came out as 2254 bytes holding 106 carriage returns and not
+    one newline, which is a log with a single unreadable line in it. So a stream
+    that is not a terminal gets whole lines instead (U4).
+
+    ``whole_lines`` is how a terminal is asked to behave like a log: the
+    accessible mode sets it, because a screen reader reads what is written and
+    cannot see a line that was painted over (U6).
     """
 
-    def __init__(self, stream: TextIO) -> None:
+    def __init__(self, stream: TextIO, whole_lines: bool = False) -> None:
         self.stream = stream
+        # Decided once: what a stream is does not change while it is written to,
+        # and every update asking again would be a syscall per report.
+        self.in_place = is_interactive(stream) and not whole_lines
         self.width = 0
+        # The last percentage (or status) written to a stream that cannot be
+        # overwritten. See _write_whole.
+        self.last: object = None
 
-    def show(self, text: str) -> None:
+    def show(self, text: str, percent: Optional[float] = None) -> None:
         # The status a merge or a retry reports is Viddl's own sentence, so it
         # goes through the same reduction as everything else: "Merging video and
         # audio…" must not put an ellipsis on a legacy console.
         text = ascii_text(text)
+        if not self.in_place:
+            self._write_whole(text, percent)
+            return
         self.stream.write("\r" + text.ljust(max(self.width, len(text))))
         self.stream.flush()
         self.width = len(text)
 
+    def _write_whole(self, text: str, percent: Optional[float]) -> None:
+        """A line for a stream that cannot take one back.
+
+        One line per whole percentage, not one per report: yt-dlp reports many
+        times a second, and a log that says the same percentage three times is a
+        log nobody reads. A status with no percentage at all — a merge, a retry
+        — is written whenever its wording changes, because that is the only
+        thing that makes it worth a line.
+        """
+        key = int(percent) if percent is not None else text
+        if key == self.last:
+            return
+        self.last = key
+        self.stream.write(text + "\n")
+        self.stream.flush()
+
     def clear(self) -> None:
+        if not self.in_place:
+            # Every update already ended with a newline: there is no line to
+            # erase, and a line of spaces in a log is just a line of spaces.
+            self.last = None
+            return
         if self.width:
             self.stream.write("\r" + " " * self.width + "\r")
             self.stream.flush()
             self.width = 0
+
+
+def _announce(err: TextIO, accessible: bool) -> None:
+    """Ring the terminal's bell at the end of a download (U6).
+
+    A terminal has no way to speak, and this is the one channel it does have for
+    asking somebody who is listening rather than looking to come back. It is
+    written only in the accessible mode: a bell nobody asked for is a nuisance,
+    and the outcome is already on the screen a line above.
+    """
+    if not accessible:
+        return
+    err.write("\a")
+    err.flush()
 
 
 def _engine_advice(engine: Engine) -> str:
@@ -174,13 +229,6 @@ def _explain_failure(err: TextIO, exc: ToolError, engine: Engine) -> None:
     advice = _engine_advice(engine)
     if advice:
         _say(err, f"  {advice}")
-
-
-def _is_interactive(stream: TextIO) -> bool:
-    try:
-        return bool(stream.isatty())
-    except (AttributeError, OSError):  # pragma: no cover - unusual streams
-        return False
 
 
 def _audio_row(options: list, wanted: str) -> Optional[MediaOption]:
@@ -392,6 +440,7 @@ def _set_up_ffmpeg(
     stdin: TextIO,
     assume_yes: bool,
     report: Optional[TextIO] = None,
+    accessible: bool = False,
 ) -> Optional[int]:
     """Fetch ffmpeg when the chosen quality needs it. ``None`` means carry on.
 
@@ -412,7 +461,7 @@ def _set_up_ffmpeg(
     _say(report, need)
 
     if not assume_yes:
-        if not _is_interactive(stdin):
+        if not is_interactive(stdin):
             _say(err, "error: ffmpeg is not set up and there is no terminal to ask on.")
             _say(
                 err,
@@ -427,11 +476,14 @@ def _set_up_ffmpeg(
             return 0
 
     _say(report, f"Fetching ffmpeg{about} - this is a one-time download...")
-    line = _Line(report)
+    line = _Line(report, whole_lines=accessible)
 
     def on_progress(done: int, total: Optional[int]) -> None:
         if total:
-            line.show(f"{done * 100 // total}%  {human_size(done)} of {human_size(total)}")
+            line.show(
+                f"{done * 100 // total}%  {human_size(done)} of {human_size(total)}",
+                percent=done * 100 / total,
+            )
         else:
             line.show(human_size(done))
 
@@ -467,6 +519,7 @@ def _run_playlist_plain(
     stdout: TextIO,
     stderr: TextIO,
     report: Optional[TextIO] = None,
+    accessible: bool = False,
 ) -> int:
     """Download every video of a playlist, one at a time (F2).
 
@@ -503,12 +556,20 @@ def _run_playlist_plain(
 
     needs_ffmpeg = chosen.needs_ffmpeg or extras.needs_ffmpeg_for(chosen)
     if needs_ffmpeg and engine.find_ffmpeg() is None:
-        answer = _set_up_ffmpeg(engine, chosen, stderr, stdin, assume_yes, report=report)
+        answer = _set_up_ffmpeg(
+            engine,
+            chosen,
+            stderr,
+            stdin,
+            assume_yes,
+            report=report,
+            accessible=accessible,
+        )
         if answer is not None:
             return answer
 
     if not assume_yes:
-        if not _is_interactive(stdin):
+        if not is_interactive(stdin):
             _say(stderr, "error: Viddl will not download without being asked.")
             _say(stderr, "  Pass --yes to download without a question, for scripts.")
             return 1
@@ -519,7 +580,7 @@ def _run_playlist_plain(
             _say(stderr, "Nothing was downloaded.")
             return 0
 
-    line = _Line(report)
+    line = _Line(report, whole_lines=accessible)
     # One piece of engine advice per run, not one per failed video: a playlist
     # of forty with a broken extractor must not print the same sentence forty
     # times.
@@ -529,7 +590,7 @@ def _run_playlist_plain(
         _say(report, f"[{item.position}/{item.total}] {item.title}")
 
     def on_progress(item, progress: Progress) -> None:
-        line.show(_progress_line(progress))
+        line.show(_progress_line(progress), percent=progress.percent)
 
     def on_end(item) -> None:
         line.clear()
@@ -599,6 +660,7 @@ def run_plain(
     network: Optional[NetworkOptions] = None,
     live_from_start: bool = False,
     quiet: bool = False,
+    accessible: bool = False,
     engine: Optional[Engine] = None,
     probe: Callable[..., MediaInfo] = probe_video,
     make_job: Callable[..., DownloadJob] = DownloadJob,
@@ -630,6 +692,13 @@ def run_plain(
     from the moment it is started (F12). It is the one choice a live stream
     gets: stopping it hands over what was recorded, as a finished file rather
     than a ``.part`` nobody can play.
+
+    ``accessible`` is for a screen reader, and it changes two things (U6). The
+    progress line is never painted over — every update becomes a line of its
+    own, one per whole percentage, so each one is written once and can be read
+    once — and the ending rings the terminal's bell, which is the only way this
+    side of the screen can ask for attention. Everything else is the plain
+    path, because a line at a time is already what a screen reader needs.
     """
     out = stdout or sys.stdout
     err = stderr or sys.stderr
@@ -717,6 +786,7 @@ def run_plain(
                 stdout=out,
                 stderr=err,
                 report=report,
+                accessible=accessible,
             )
         _say(report, f"  Viddl will download the first of the {info.playlist.count} videos.")
         _say(report, "  Add --playlist to download all of them.")
@@ -729,12 +799,14 @@ def run_plain(
     if needs_ffmpeg and engine.find_ffmpeg() is None:
         # ffmpeg is what joins the two streams; without it yt-dlp downloads both
         # and stops, and there is no finished video to report.
-        answer = _set_up_ffmpeg(engine, chosen, err, stdin, assume_yes, report=report)
+        answer = _set_up_ffmpeg(
+            engine, chosen, err, stdin, assume_yes, report=report, accessible=accessible
+        )
         if answer is not None:
             return answer
 
     if not assume_yes:
-        if not _is_interactive(stdin):
+        if not is_interactive(stdin):
             _say(err, "error: Viddl will not download without being asked.")
             _say(err, "  Pass --yes to download without a question, for scripts.")
             return 1
@@ -744,10 +816,10 @@ def run_plain(
             _say(report, "Nothing was downloaded.")
             return 0
 
-    line = _Line(report)
+    line = _Line(report, whole_lines=accessible)
 
     def on_progress(progress: Progress) -> None:
-        line.show(_progress_line(progress))
+        line.show(_progress_line(progress), percent=progress.percent)
 
     job = None
     try:
@@ -775,15 +847,18 @@ def run_plain(
         # Ctrl+C is how a live recording is finished, so what arrived is
         # delivered here rather than left as a ``.part`` nobody can play (F12).
         recorded = job.keep_recording() if job is not None and info.is_live else None
+        _announce(err, accessible)
         return _stopped(recorded, out, err)
     except DownloadCancelled:
         line.clear()
         # The job delivered the recording as it stopped (F12).
         recorded = getattr(job, "recorded", None) if job is not None else None
+        _announce(err, accessible)
         return _stopped(recorded, out, err)
     except ToolError as exc:
         line.clear()
         _explain_failure(err, exc, engine)
+        _announce(err, accessible)
         return 1
 
     line.clear()
@@ -798,6 +873,7 @@ def run_plain(
         _say(report, f"Already had ({size})")
     else:
         _say(report, f"Saved ({size})")
+    _announce(err, accessible)
     for attachment in getattr(job, "attachments", []):
         # Beside the file, never instead of it (F5).
         _say(report, f"Also saved: {Path(attachment).name}")

@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **38 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U5 in section 4, D2–D3 in
+Progress so far: **39 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U6 in section 4, D2–D3 in
 section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -2340,6 +2340,12 @@ Play, and give failures a "Show details" expander with the log lines and a
 > without a terminal Viddl refuses rather than acting unattended. The full
 > evidence — real measurements, the cp1252 tests, and the download bug it
 > turned up — is under **R10**.
+>
+> The clause R10 left open — that the mode should do away with the `viddl`
+> "needs a real terminal" dead end — landed with **U6**, together with the fix
+> for *where* it writes: a stream that is not a terminal now gets whole lines
+> instead of a carriage return per update, and the dead end names
+> `viddl --plain --yes <link>`.
 
 The TUI needs a real terminal; `cli.main()` catches `OSError` and says so
 politely. But Textual cannot render in some SSH sessions, in terminals without
@@ -2416,7 +2422,7 @@ screen asks whether to resume it or throw it away.
 > where **Download the rest** already exists and "try the failed ones again" would
 > need a decision the summary does not record.
 
-### U6 — Accessibility · **P2** · M
+### U6 — Accessibility · **P2** · M · ✅ **Done**
 
 Mostly good already: rows carry text labels alongside any colour, status is
 written out rather than implied, and errors are full sentences. Gaps: colour-only
@@ -2424,9 +2430,61 @@ state changes in some widgets, no screen-reader announcements (`aria-live`
 equivalent in Textual), no way to disable the alternate screen buffer, and no
 test that the UI is usable without colour.
 
-**Do:** audit the CSS for colour-only meaning, announce state changes
-(`app.bell()`/notifications already exist in places), and add an `--accessible`
-mode that implies `--plain`-style output.
+> **Done, and the last part carried the first two.** `--accessible` is
+> `--plain` with two changes of its own: no line is written over, and the end
+> rings the terminal's bell. Measured on a real terminal under `script`, the
+> same download that rewrote one line **203 times** in `--plain` came out as
+> **101 lines holding no carriage return at all** in `--accessible`, plus one
+> bell. A screen that redraws itself is the wrong shape for a screen reader, so
+> the answer is a stream of lines rather than a bell bolted onto the TUI.
+>
+> **The writer it is built on was wrong for a log.** `_Line` wrote `\r` and
+> padding whatever it was writing to, so a redirect or a pipe got one
+> unreadable line: measured, a hundred updates became 2254 bytes holding 106
+> carriage returns and no newline. A stream that is not a terminal now gets
+> whole lines — one per whole percentage, so two hundred reports become a
+> hundred and one lines — and `clear()` writes nothing there. `viddl --update`'s
+> own progress got the same rule, and the "no terminal" dead end now names
+> `viddl --plain --yes <link>` instead of only explaining itself.
+>
+> **The colour audit found two states that were colour only.** The row under
+> the cursor is marked with `›` in its first column — cp1252 has that
+> character, the obvious arrow U+25B8 does not, and the suite already fails any
+> string a legacy console cannot print — and a focused button is bold and
+> underlined rather than only outlined in a different colour, because
+> attributes survive `NO_COLOR` and a monochrome terminal where colour does
+> not. Everything else was already textual: `[x]`/`[ ]` on the extras and the
+> playlist, `Theme: Light`, `Download failed`, the engine line in words.
+>
+> **Announcements, honestly.** A terminal has no `aria-live`, and a full-screen
+> app redraws itself, which is what a screen reader cannot follow. The scalars
+> that do exist are the words already on screen (U1's contrast work, U2's title
+> bar saying how far a download has got) and the bell, which is now rung at the
+> end of an accessible run — and nowhere else, because an unasked-for bell is a
+> nuisance and the outcome is a line above it.
+>
+> **16 new tests** (1202 → 1218). Eight in `tests/test_plain.py`: a terminal
+> gets the line in place, a log gets whole lines and no carriage return,
+> `--accessible` writes lines even to a terminal, the bell rings once and only
+> in that mode (on success and on failure), the writer drops a repeated
+> percentage, `clear()` writes no line of spaces, and a shorter update erases
+> the tail of the longer one. Six in `tests/test_cli.py`: `--accessible` reaches
+> the plain path with `accessible=True`, `--plain` is not accessible, the flags
+> plain takes still work, and it is refused without a link, with `--theme` and
+> with `--web`. Two in `tests/test_tui.py`: the mark follows the cursor with
+> `NO_COLOR` set, and exactly one row carries it, inside eighty columns.
+> `pyflakes` clean, the whole suite green, and the new tests pass on Textual
+> 3.0.0.
+>
+> **Not done, on purpose.** No `--accessible` for the TUI — a redrawing screen
+> is the wrong shape for a reader, and a half-measure there would be a claim the
+> app cannot keep. `NO_COLOR` remains Textual's (U1 explains it), and the
+> alternate screen is avoided by not entering it: the accessible mode is the
+> plain path, which never does.
+>
+> **Do (as written):** audit the CSS for colour-only meaning, announce state
+> changes (`app.bell()`/notifications already exist in places), and add an
+> `--accessible` mode that implies `--plain`-style output.
 
 ### U7 — Localisation · **P3** · L
 
@@ -2633,9 +2691,9 @@ project's "nothing leaves your machine" promise.
 6. ✅ **S2** (verify downloads) — **done**; **R3** (expose the config escape hatch) still open. `--ignore-config` itself landed with **S1**.
 7. **F1** (cookies) — turns a documented dead end into a feature.
 8. **E7** (one real end-to-end test) + **E10** (coverage floor).
-9. ✅ **U1**, **U2**, **U3** and **U5** (theme, title, richer done screen, key
-   page and retry) — **all done**; that whole visible-quality group is closed.
-   **U6** (accessibility) is the one left in section 4.
+9. ✅ **U1**, **U2**, **U3**, **U5** and **U6** (theme, title, richer done
+   screen, key page and retry, accessible output) — **all done**; that whole
+   visible-quality group is closed, and section 4 with it.
 10. ✅ **F6** (archive + recents) — **done**; **F9** (notifications) is the other
     half of the same "make it a daily tool" idea, and now has a natural home
     to hang off.

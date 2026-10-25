@@ -580,6 +580,8 @@ def test_no_real_terminal_is_explained(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "needs a real terminal window" in err
     assert "Inappropriate ioctl for device" in err
+    # And not a dead end any more: the mode that needs no cursor is named (U6).
+    assert "viddl --plain --yes" in err
 
 
 # ---------------------------------------------------------------------------
@@ -783,6 +785,55 @@ def test_quiet_without_plain_is_refused(capsys):
     err = capsys.readouterr().err
     assert "--quiet only work with --plain" in err
     assert "viddl --plain --yes --quiet" in err
+
+
+def test_accessible_is_the_plain_path_with_its_own_two_changes(monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(plain, "run_plain", lambda url, **kwargs: seen.update(kwargs) or 0)
+
+    assert main(["--accessible", "--yes", URL]) == 0
+
+    assert seen["accessible"] is True
+    assert seen["assume_yes"] is True
+
+
+def test_plain_is_not_accessible(monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(plain, "run_plain", lambda url, **kwargs: seen.update(kwargs) or 0)
+
+    assert main(["--plain", "--yes", URL]) == 0
+
+    assert seen["accessible"] is False
+
+
+def test_accessible_can_take_the_flags_plain_takes(monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(plain, "run_plain", lambda url, **kwargs: seen.update(kwargs) or 0)
+
+    assert main(["--accessible", "--yes", "--quality", "720", URL]) == 0
+
+    assert seen["quality"] == "720"
+
+
+def test_accessible_needs_a_link(capsys):
+    assert main(["--accessible"]) == 1
+
+    err = capsys.readouterr().err
+    assert "--accessible needs a link" in err
+    assert "viddl --accessible --yes" in err
+
+
+def test_accessible_is_refused_with_a_theme(capsys):
+    """One colour already: a scheme asked for there would do nothing."""
+    assert main(["--accessible", "--theme", "light", URL]) == 1
+
+    assert "--theme is for the full-screen app" in capsys.readouterr().err
+
+
+def test_accessible_is_refused_with_the_page(capsys):
+    assert main(["--accessible", "--web"]) == 1
+
+    assert "page of its own" in capsys.readouterr().err
 
 
 def test_quiet_is_handed_to_the_plain_path(monkeypatch):

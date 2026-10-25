@@ -158,6 +158,29 @@ class FakeJob:
         self.force_cancelled = force
 
 
+class ChattyJob(FakeJob):
+    """Reports a download the way yt-dlp does: many times a second.
+
+    Two hundred updates cover a hundred whole percentages, which is what makes
+    the difference between a terminal and a log measurable (U6).
+    """
+
+    def run(self):
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        for step in range(0, 201):
+            self.on_progress(
+                Progress(
+                    percent=step / 2,
+                    downloaded=step * 10,
+                    total=2048,
+                    speed="1.0 MB/s",
+                )
+            )
+        target = self.out_dir / "A Very Real Video [dQw4w9WgXcQ].mp4"
+        target.write_bytes(b"x" * 2048)
+        return target
+
+
 class MergeJob(FakeJob):
     """Reports the phases the real job does: merging, then a retry wait."""
 
@@ -196,6 +219,13 @@ class Tty(io.StringIO):
         return True
 
 
+class TtyOut(io.StringIO):
+    """A stream that is a terminal, so a progress line can be written over."""
+
+    def isatty(self) -> bool:
+        return True
+
+
 @pytest.fixture(autouse=True)
 def no_jobs_left_over():
     FakeJob.made.clear()
@@ -205,8 +235,12 @@ def no_jobs_left_over():
     shutil.rmtree(DEST, ignore_errors=True)
 
 
-def run(url=URL, *, info=None, job_class=FakeJob, probe=None, engine=None, **kwargs):
-    out, err = io.StringIO(), io.StringIO()
+def run(url=URL, *, info=None, job_class=FakeJob, probe=None, engine=None, at_terminal=False, **kwargs):
+    if at_terminal:
+        out, err = TtyOut(), TtyOut()
+    else:
+        # A log file or a pipe: the default, because it is what a script sees.
+        out, err = io.StringIO(), io.StringIO()
     if probe is None:
         info = info if info is not None else media()
 
@@ -396,7 +430,93 @@ def test_the_saved_path_is_the_only_thing_on_stdout():
     assert out.splitlines() == [str(DEST / "A Very Real Video [dQw4w9WgXcQ].mp4")]
     assert "Selected: 1080p" in err
     assert "Saved (2.0 KB)" in err
-    assert "\r" in err, "progress is written in place, on one line"
+
+
+def test_a_terminal_has_the_progress_written_over_itself():
+    """In place, on one line: the screen must not scroll for a download."""
+    _, _, err = run(assume_yes=True, job_class=ChattyJob, at_terminal=True)
+
+    first, last = err.index("\r"), err.rindex("\r")
+    assert "\n" not in err[first:last], "progress became lines on a terminal"
+    assert err.count("\r") > 200, "every report was not written"
+
+
+def test_a_log_gets_whole_lines_and_no_carriage_return():
+    """A pipe cannot be overwritten, so the updates become lines (U6).
+
+    One line per whole percentage: yt-dlp reports many times a second, and a log
+    that repeats the same percentage is a log nobody reads.
+    """
+    _, _, err = run(assume_yes=True, job_class=ChattyJob)
+
+    assert "\r" not in err, "a carriage return in a log is not a line ending"
+    percents = [
+        line.split("%")[0].strip() for line in err.splitlines() if "%  " in line
+    ]
+    assert percents == [str(percent) for percent in range(101)]
+
+
+def test_the_accessible_mode_writes_lines_even_to_a_terminal():
+    """What a screen reader needs: each update written once, never painted over."""
+    code, out, err = run(assume_yes=True, job_class=ChattyJob, at_terminal=True, accessible=True)
+
+    assert code == 0
+    assert "\r" not in err
+    percents = [
+        line.split("%")[0].strip() for line in err.splitlines() if "%  " in line
+    ]
+    assert percents == [str(percent) for percent in range(101)]
+    # And the path is still the only thing on stdout.
+    assert out.splitlines() == [str(DEST / "A Very Real Video [dQw4w9WgXcQ].mp4")]
+
+
+def test_the_accessible_mode_rings_the_bell_once_when_it_is_done():
+    _, _, quiet_err = run(assume_yes=True)
+    assert "\a" not in quiet_err, "an ordinary run must not ring"
+
+    _, _, err = run(assume_yes=True, accessible=True)
+    assert err.count("\a") == 1
+    # After the outcome, not before it: the bell says "read the line above".
+    assert err.index("\a") > err.index("Saved")
+
+
+def test_the_accessible_mode_rings_the_bell_when_it_fails():
+    _, _, err = run(assume_yes=True, accessible=True, job_class=FailingJob)
+
+    assert "\a" in err
+    assert err.index("\a") > err.index("error:")
+
+
+def test_the_line_writer_asks_the_stream_it_is_writing_to():
+    log = io.StringIO()
+    line = plain._Line(log)
+    line.show("  1%  1.0 MB", percent=1.0)
+    line.show("  1%  1.1 MB", percent=1.4)  # the same percentage is not news
+    line.show("  2%  1.2 MB", percent=2.0)
+    line.show("Merging video and audio...", percent=None)
+    line.show("Merging video and audio...", percent=None)  # nor the same words
+
+    assert log.getvalue() == "  1%  1.0 MB\n  2%  1.2 MB\nMerging video and audio...\n"
+
+
+def test_clearing_a_log_line_writes_no_line_of_spaces():
+    """The newline already ended the line, and the next one starts fresh."""
+    log = io.StringIO()
+    line = plain._Line(log)
+    line.show("100%  done", percent=100.0)
+    line.clear()
+    line.show("  0%  next video", percent=0.0)
+
+    assert log.getvalue() == "100%  done\n  0%  next video\n"
+
+
+def test_a_shorter_update_erases_the_tail_of_the_longer_one():
+    screen = TtyOut()
+    line = plain._Line(screen)
+    line.show("100%  1.0 MB of 2.0 MB", percent=100.0)
+    line.show("Merging", percent=None)
+
+    assert screen.getvalue() == "\r100%  1.0 MB of 2.0 MB" + "\r" + "Merging".ljust(22)
 
 
 def test_progress_never_leaves_a_line_longer_than_the_screen():
@@ -720,6 +840,9 @@ def test_the_cli_hands_the_choices_to_the_plain_path(monkeypatch):
         # And nothing quiet: the menu and the notes are what a person reads
         # when they did not ask for silence (F10).
         "quiet": False,
+        # The plain path is not the accessible one: it keeps its progress on one
+        # line and does not ring (U6).
+        "accessible": False,
     }
 
 

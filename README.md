@@ -114,6 +114,7 @@ Nothing is installed system-wide and no configuration files are created.
 | Start on the audio options | `viddl --audio <link>` |
 | Download something that needs a sign-in | Choose **Sign in with my browser** on the qualities screen, or `viddl --cookies-from-browser auto <link>` |
 | Use it in a script, an old console or over SSH | `viddl --plain --yes <link>` |
+| Use it with a screen reader | `viddl --accessible --yes <link>` (see [Accessibility](#accessibility)) |
 | Get only the saved path, for a script | `viddl --plain --yes --quiet <link>` |
 | See a link's qualities as JSON | `viddl --json --list-qualities <link>` |
 | Check the setup as JSON | `viddl --doctor --json` |
@@ -272,7 +273,9 @@ path=$(viddl --plain --yes --quality 720 "https://www.youtube.com/watch?v=...")
 ```
 
 The title, uploader, quality list and progress go to stderr; only the path is
-on stdout. `--quality` takes a height (`720`, `1080`), `best`, or an audio
+on stdout. If a screen reader is what will be reading it, `--accessible` is the
+same path with its progress written as whole lines (see
+[Accessibility](#accessibility)). `--quality` takes a height (`720`, `1080`), `best`, or an audio
 choice: `audio` (the best sound the link has), a format (`mp3`, `m4a`, `opus`,
 `flac`, `wav`), or one preset (`mp3-192`).
 Without `--yes` Viddl asks before downloading, and refuses to start when there
@@ -867,6 +870,46 @@ that does work, rather than painting a full-screen app into a stream. `--plain`
 has no colours to choose, and `--theme` is refused with it rather than accepted
 and ignored; the `--web` page carries its own stylesheet, and is refused the
 same way.
+
+## Accessibility
+
+The app is written to be read, not only looked at: every piece of state is a
+word or a character rather than a colour.
+
+* The quality under the cursor carries `›` in its first column, and the row is
+  reversed while the list has the focus — so the cursor is still findable with
+  `NO_COLOR` set, or on a terminal with no colour at all.
+* The extras and the playlist say `[x] Subtitles` and `[ ] Subtitles`; statuses
+  are sentences (`Download failed`, `yt-dlp 2099.01.01 ready`) rather than a
+  colour that has to be learned.
+* The focused button is bold and underlined rather than only outlined in a
+different colour: those are attributes, so `NO_COLOR` cannot take them away.
+* The theme row names the scheme (`Theme: Light`), and the home screen says when
+  `NO_COLOR` is in force instead of looking like a setting that did nothing.
+* `F1` (or `?`) is the page of keys that work where you are standing, including
+  the ones the footer has no room for.
+
+**For a screen reader, use `viddl --accessible`.** It is `--plain` with two
+changes of its own: no line is ever written over, and the ending rings the
+terminal's bell.
+
+```sh
+viddl --accessible --yes "https://www.youtube.com/watch?v=..."
+```
+
+Every progress update becomes a line of its own, one per whole percentage —
+written once and read once — and the saved path is still the only thing on
+standard output, so it composes exactly as `--plain` does. Measured on a real
+terminal, the same download came out as one line holding 203 carriage returns
+in `--plain`, and 101 lines holding none at all in `--accessible`, with one
+bell at the end. `--quality`, `--yes`, `--playlist` and `--quiet` all work, and
+`--theme` and `--web` are refused with it for the same reason they are refused
+with `--plain`.
+
+**What a terminal cannot do.** There is no spoken announcement: a full-screen
+app redraws itself, and a screen reader reads the drawing. That is why the
+accessible mode prints instead of drawing, and why the only thing it can add at
+the end is the bell.
 
 ## The window title
 

@@ -15,6 +15,8 @@ piece is also reachable from the command line:
 * ``viddl --limit-rate 2M <link>``  a speed limit, a proxy, fewer pieces (F11)
 * ``viddl --live-from-start <link>``  record a live stream from its beginning (F12)
 * ``viddl --plain <link>``    download a line at a time, in plain ASCII
+* ``viddl --accessible <link>``  the same, for a screen reader: no line is
+  ever written over, and the end rings the bell (U6)
 * ``viddl --register-protocol``          wire up the ``viddl://`` hand-off
 * ``viddl --install-browser-extension``  copy the extension out for loading
 * ``viddl --extension-zip firefox``      write the add-on store upload (F15)
@@ -37,6 +39,7 @@ from .engine import Engine, Tool, ToolError, staleness_advice
 from .extras import Extras
 from .formats import format_rows
 from .network import NetworkOptions
+from .util import is_interactive
 from . import protocol
 from .protocol import (
     BROWSERS,
@@ -105,6 +108,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "download a line at a time instead of opening the full-screen app "
             "(plain ASCII, for scripts and older consoles)"
+        ),
+    )
+    parser.add_argument(
+        "--accessible",
+        action="store_true",
+        help=(
+            "download a line at a time for a screen reader: like --plain, but "
+            "no line is ever written over and the end rings the bell"
         ),
     )
     parser.add_argument(
@@ -391,15 +402,29 @@ def _update(engine: Engine, want_engine: bool, want_ffmpeg: bool) -> int:
         print(f"  {message}", file=sys.stderr)
 
     seen = {"percent": -1}
+    # Both modes say one line per per cent, not per chunk; they differ only in
+    # whether that line can be taken back. A terminal can, a log cannot, and a
+    # carriage return in a log is a control character rather than a line ending
+    # (U4, U6) — so a redirected update writes whole lines instead.
+    in_place = is_interactive(sys.stderr)
+
+    def end_line() -> None:
+        """Finish the progress line, on a stream that has one open."""
+        if in_place:
+            print(file=sys.stderr)
+        seen["percent"] = -1
 
     def progress(done: int, total: Optional[int]) -> None:
         if not total:
             return
         percent = done * 100 // total
         if percent == seen["percent"]:
-            return  # one line per per cent, not per chunk
+            return
         seen["percent"] = percent
-        print(f"\r  {percent}%", end="", file=sys.stderr, flush=True)
+        if in_place:
+            print(f"\r  {percent}%", end="", file=sys.stderr, flush=True)
+        else:
+            print(f"  {percent}%", file=sys.stderr, flush=True)
 
     try:
         # The running commentary goes to stderr and the outcome to stdout, so
@@ -407,7 +432,7 @@ def _update(engine: Engine, want_engine: bool, want_ffmpeg: bool) -> int:
         if want_engine:
             print("Updating yt-dlp…", file=sys.stderr)
             before, after = engine.update_ytdlp(on_status=status, on_progress=progress)
-            print(file=sys.stderr)
+            end_line()
             print(_describe_update("yt-dlp", before, after))
             note = _engine_in_use(engine)
             if note:
@@ -415,10 +440,10 @@ def _update(engine: Engine, want_engine: bool, want_ffmpeg: bool) -> int:
         if want_ffmpeg:
             print("Updating ffmpeg…", file=sys.stderr)
             old, new = engine.update_ffmpeg(on_status=status, on_progress=progress)
-            print(file=sys.stderr)
+            end_line()
             print(_describe_update("ffmpeg", old, new))
     except ToolError as exc:
-        print(file=sys.stderr)
+        end_line()
         return _fail(exc.message, exc.hint)
     return 0
 
@@ -465,15 +490,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"{args.unset_setting} was not set.")
         return 0
 
+    # A screen reader reads what is written and cannot see a line that was
+    # painted over, so the accessible mode is the plain path with two changes of
+    # its own (U6): every update is a line of its own, and the end rings the
+    # bell. Asking for it asks for --plain, because a screen that redraws itself
+    # is the last thing a screen reader can use.
+    plain_mode = bool(args.plain or args.accessible)
+
     # The plain path prints one ASCII line at a time and has no colour to
     # choose, so a theme asked for there would be a flag that did nothing (U1).
-    if args.theme and args.plain:
+    if args.theme and plain_mode:
         return _fail(
             "--plain is one colour already; --theme is for the full-screen app.",
             "Run viddl --theme light <link> without --plain.",
         )
 
-    if not args.plain and (args.quality or args.yes or args.playlist or args.quiet):
+    if not plain_mode and (args.quality or args.yes or args.playlist or args.quiet):
         hint = "Try: viddl --plain --quality 720 <link>"
         if args.playlist and not (args.quality or args.yes):
             hint = "Try: viddl --plain --playlist <link>"
@@ -678,7 +710,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.web:
         # A page is not a link: the link goes into the page's own box, where it
         # can be changed without starting Viddl again (F16).
-        if args.plain:
+        if plain_mode:
             return _fail(
                 "--web is a page of its own; --plain is a line at a time.",
                 "Run one or the other.",
@@ -803,11 +835,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 )
             url = target
 
-    if args.plain:
+    if plain_mode:
+        flag = "--accessible" if args.accessible else "--plain"
         if not url:
             return _fail(
-                "--plain needs a link.",
-                "Example: viddl --plain --yes https://www.youtube.com/watch?v=…",
+                f"{flag} needs a link.",
+                f"Example: viddl {flag} --yes https://www.youtube.com/watch?v=…",
             )
         from .plain import run_plain
 
@@ -827,6 +860,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 live_from_start=bool(args.live_from_start),
                 # Only the path, for a script (F10). Failures still speak.
                 quiet=bool(args.quiet),
+                # No line written over, and a bell at the end (U6).
+                accessible=bool(args.accessible),
             )
         except KeyboardInterrupt:  # pragma: no cover - interactive
             return 130
@@ -871,9 +906,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except KeyboardInterrupt:  # pragma: no cover - interactive
         return 130
     except OSError as exc:
+        # The end of the road for a launch with nothing to draw on — a
+        # double-click, a shortcut, a redirected stream. It is not a dead end
+        # any more: the mode that needs no cursor is named here, which is what
+        # --plain was written for (U4).
         return _fail(
             "Viddl needs a real terminal window to run.",
-            f"Start it from your terminal app rather than by double-clicking. ({exc})",
+            "Start it from your terminal app rather than by double-clicking, or "
+            f"download a line at a time: viddl --plain --yes <link> ({exc})",
         )
     return 0
 

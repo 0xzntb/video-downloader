@@ -50,7 +50,7 @@ from viddl.tui.app import (
 )
 from viddl.tui import title as title_mod
 from viddl.util import REDACTED
-from viddl.tui.widgets import ChoiceList, ChoiceRow, ExtraToggle
+from viddl.tui.widgets import CURSOR_MARK, ChoiceList, ChoiceRow, ExtraToggle
 
 URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
@@ -3679,3 +3679,52 @@ async def test_a_saved_download_is_not_tried_again(tmp_path):
         await settle(pilot)
         assert isinstance(app.screen, ResultScreen)
         assert app.state.saved_path == saved
+
+
+# ---------------------------------------------------------------------------
+# the same screen with the colour turned off (U6)
+# ---------------------------------------------------------------------------
+
+
+def marked_rows(screen) -> list:
+    """The rows whose own text says "the cursor is here"."""
+    return [row for row in screen.query(ChoiceRow) if str(row.render()).startswith(CURSOR_MARK)]
+
+
+@pytest.mark.asyncio
+async def test_the_row_under_the_cursor_is_marked_with_a_character(tmp_path, monkeypatch):
+    """Colour off must not be information off (U6).
+
+    NO_COLOR takes the background away from the chosen row, and the bold that
+    is left is easy to miss on a dim screen — so the row carries a character.
+    """
+    monkeypatch.setenv("NO_COLOR", "1")
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        rows = list(app.screen.query(ChoiceRow))
+        assert marked_rows(app.screen) == [rows[0]]
+
+        await pilot.press("down")
+        await settle(pilot)
+        assert marked_rows(app.screen) == [rows[1]]
+
+        await pilot.press("end")
+        await settle(pilot)
+        assert marked_rows(app.screen) == [rows[-1]]
+
+
+@pytest.mark.asyncio
+async def test_only_one_row_is_marked_and_it_fits_the_terminal(tmp_path):
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        rows = list(app.screen.query(ChoiceRow))
+        marked = marked_rows(app.screen)
+        assert len(marked) == 1
+        # The mark costs two columns, and the row still ends inside an
+        # eighty-column terminal: long notes are clipped rather than pushed
+        # off the edge.
+        for row in rows:
+            assert row.region.x + row.region.width <= 80
+        assert marked[0].region.x + marked[0].region.width <= 80
