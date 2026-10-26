@@ -30,6 +30,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from . import __version__
 from . import appdata
 from .errors import explain
+from .i18n import t
 from .util import human_size
 
 StatusCallback = Callable[[str], None]
@@ -194,10 +195,9 @@ def staleness_advice(version: str, today: Optional[date] = None) -> str:
     days = engine_age_days(version, today)
     if days is None or days < STALE_DAYS:
         return ""
-    return (
-        f"The video engine is {days} days old, which is the usual reason a link "
-        "stops working. Run `viddl --update` to replace it."
-    )
+    # Translated with the failure it is appended to (U7): the advice is part of
+    # the answer, so half of a Spanish answer cannot be English.
+    return t("engine.stale_advice", days=str(days))
 
 
 def version_key(version: str) -> tuple:

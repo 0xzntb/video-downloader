@@ -21,6 +21,7 @@ piece is also reachable from the command line:
 * ``viddl --install-browser-extension``  copy the extension out for loading
 * ``viddl --extension-zip firefox``      write the add-on store upload (F15)
 * ``viddl --theme light <link>``  draw the app in a light or high-contrast scheme (U1)
+* ``viddl --lang es <link>``  write the explanations in another language (U7)
 * ``viddl --web``             serve the same downloads as a page on 127.0.0.1 (F16)
 """
 
@@ -34,7 +35,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from . import APP_TITLE, __version__
-from . import appdata, config, cookies as cookies_mod, logfile, search, theme
+from . import appdata, config, cookies as cookies_mod, i18n, logfile, search, theme
 from .engine import Engine, Tool, ToolError, staleness_advice
 from .extras import Extras
 from .formats import format_rows
@@ -212,6 +213,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "the colours the full-screen app draws in: dark, light, "
             "high-contrast, or auto to follow the terminal's background"
+        ),
+    )
+    parser.add_argument(
+        "--lang",
+        metavar="LANG",
+        help=(
+            "the language the explanations are written in: en or es "
+            "(default: whichever language this computer is set to)"
         ),
     )
     parser.add_argument(
@@ -462,6 +471,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _prepare_console()
     _enable_log_file()
 
+    # Which language the sentences are in (U7), settled before anything can go
+    # wrong: the first thing a failure needs is to be understandable. A value
+    # typed on the command line is refused when there is no catalogue for it —
+    # the same rule --theme follows — while a machine whose LANG names a
+    # language Viddl does not have is simply answered in English.
+    try:
+        language = i18n.choose(args.lang or "")
+    except ValueError as exc:
+        return _fail(str(exc))
+    i18n.set_locale(language.code)
+
     # Changing a preference is a question about Viddl, not about a link, so it
     # is answered before anything is asked of a site (F13). The file is only
     # written here: a machine that never runs this command has none.
@@ -612,7 +632,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             from . import machine
 
             print(
-                machine.dumps(machine.doctor_report(theme_flag=args.theme or "")),
+                machine.dumps(
+                    machine.doctor_report(
+                        theme_flag=args.theme or "", lang_flag=args.lang or ""
+                    )
+                ),
                 end="",
             )
             return 0
@@ -625,6 +649,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # The scheme in force, where it came from, and the smallest contrast
             # it reaches — the number the tests hold it to (U1).
             theme.doctor_line(args.theme or "", config.theme_name()),
+            # Which language the sentences are in, and what asked for it (U7).
+            i18n.doctor_line(args.lang or ""),
             *Engine().report(),
             appdata.archive_note(),
             appdata.recent_note(),

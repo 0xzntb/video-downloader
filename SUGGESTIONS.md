@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **39 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U6 in section 4, D2–D3 in
+Progress so far: **40 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U7 in section 4, D2–D3 in
 section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -2486,7 +2486,7 @@ test that the UI is usable without colour.
 > changes (`app.bell()`/notifications already exist in places), and add an
 > `--accessible` mode that implies `--plain`-style output.
 
-### U7 — Localisation · **P3** · L
+### U7 — Localisation · **P3** · L · ✅ **Done**
 
 All user-facing text is inline English, including ~20 hand-written error
 explanation rules in `errors.py` — the most valuable strings in the app, and the
@@ -2495,6 +2495,61 @@ least translatable because they are regex-triggered prose.
 **Do:** extract strings to a catalogue (gettext or a simple dict per locale),
 keeping the TUI screens and `errors.py` in the same system. Start with the error
 messages; that is where non-English users hit walls.
+
+> **Done as far as the explanations, which is what the item asked for first.**
+> `viddl/i18n/` is a plain dict per language — no `.mo` file to compile and no
+> toolchain to install, which matters for a package whose whole install is one
+> runtime dependency. Each rule in `errors.py` now names catalogue keys instead
+> of holding the sentence, so **21 rules (46 keys: 26 sentences, 20
+> hints/advice)** are translatable without a second table of regexes. The English
+> wording is byte-identical: the existing error tests did not need changing,
+> which is the evidence that this was a move and not a rewrite.
+>
+> **Spanish, complete.** `viddl/i18n/es.py` has every key. Measured against the
+> English catalogue it is 3010 characters to 2739 — **10% longer**, the number
+> that decides whether a translated sentence still fits. The same failure in
+> both languages reads *"That video is private."* / *"Ese vídeo es privado."*,
+> with the advice about an old engine translated too: it is appended **inside**
+> the answer (F3), so an English recommendation under a Spanish sentence would
+> have been worse than either. `--plain` folds the accents, as it folds
+> everything else — the captured Spanish failure read `Ese video es privado` on
+> an ASCII console and still put nothing but the path on stdout.
+>
+> **Which language, without a second way to say it.** `--lang` first, then the
+> machine's own setting in POSIX order (`LC_ALL`, `LC_MESSAGES`, `LANG`), read
+> down to its primary subtag so `es_MX` and `es_ES.UTF-8` are both Spanish. A
+> language typed on the command line is **refused** when there is no catalogue
+> (*"'fr' is not a language Viddl speaks yet — try en, es"*), the way `--theme`
+> refuses a scheme it cannot draw. A machine set to French is answered in
+> English and keeps working, and the doctor names what went unanswered:
+> `Language: English (en, from LANG=fr_FR.UTF-8) — no translation for
+> fr_FR.UTF-8 yet, so English`. `--doctor --json` carries the same facts under
+> `language`, with `available` and `unmatched`, so a script can tell "no
+> language asked for" from "that language is missing".
+>
+> **The fallback is the point.** A translation that has not caught up shows the
+> English sentence, key by key, never the key name; a key no catalogue has is a
+> `KeyError`, because that is a bug in the app rather than a gap in a language.
+> The suite holds every shipped catalogue to being complete, to filling in the
+> same `{...}` placeholders as English, and to actually differing from it — a key
+> copied over from English is a translation nobody finished.
+>
+> **40 new tests** (1218 → 1258, all in `tests/test_i18n.py`), `pyflakes` clean,
+> the whole suite green, and the new tests also pass on **Textual 3.0.1** (209 of
+> them ran there: i18n, errors, machine and the CLI). `tests/conftest.py` now
+> pins English for the suite and unsets `LC_ALL`/`LC_MESSAGES`/`LANG`, so a
+> developer on a Spanish laptop runs the same assertions as CI does.
+>
+> **Not done, on purpose.** The screens' own words, `--plain`'s progress lines,
+> `viddl --doctor`'s sentences and the few explanations built outside
+> `errors.py` ("the site sent back something Viddl could not read") are still
+> English, so a translated failure sits inside an English screen — named in the
+> README rather than implied to be finished. There is no `--set lang`, because
+> the machine's locale already answers it and a setting would be a second place
+> for the same decision. Hints quote **Set up ffmpeg** and *"Sign in with my
+> browser"* in English, because those are the words on screen; the sign-in mark
+> is filled in through the `{sign_in}` placeholder, so the advice and the screen
+> keep the same text.
 
 ### U8 — Motion, emptiness and feedback polish · **P3** · S
 
@@ -2691,9 +2746,10 @@ project's "nothing leaves your machine" promise.
 6. ✅ **S2** (verify downloads) — **done**; **R3** (expose the config escape hatch) still open. `--ignore-config` itself landed with **S1**.
 7. **F1** (cookies) — turns a documented dead end into a feature.
 8. **E7** (one real end-to-end test) + **E10** (coverage floor).
-9. ✅ **U1**, **U2**, **U3**, **U5** and **U6** (theme, title, richer done
-   screen, key page and retry, accessible output) — **all done**; that whole
-   visible-quality group is closed, and section 4 with it.
+9. ✅ **U1**, **U2**, **U3**, **U5**, **U6** and **U7** (theme, title, richer
+   done screen, key page and retry, accessible output, and error explanations
+   in Spanish) — **all done**; that whole visible-quality group is closed, and
+   section 4 with it.
 10. ✅ **F6** (archive + recents) — **done**; **F9** (notifications) is the other
     half of the same "make it a daily tool" idea, and now has a natural home
     to hang off.

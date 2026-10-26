@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from viddl import download as download_mod
+from viddl import i18n
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -21,6 +22,21 @@ def fresh_probe_cache():
     download_mod.clear_probe_cache()
     yield
     download_mod.clear_probe_cache()
+
+
+@pytest.fixture(autouse=True)
+def english_whatever_the_machine_is_set_to(monkeypatch):
+    """The suite reads English, on an English laptop and on a Spanish one (U7).
+
+    ``LANG`` is what the app itself reads, so leaving the machine's own value
+    in place would make every assertion about a message depend on where the
+    tests run. The tests that are *about* other languages set their own.
+    """
+    for name in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        monkeypatch.delenv(name, raising=False)
+    i18n.set_locale(i18n.DEFAULT)
+    yield
+    i18n.set_locale(i18n.DEFAULT)
 
 
 @pytest.fixture(autouse=True)

@@ -129,6 +129,7 @@ Nothing is installed system-wide and no configuration files are created.
 | Record a live stream from its beginning | Press **Record from the start** on the qualities screen (`l`), or `viddl --live-from-start <link>` (see [Live streams](#live-streams)) |
 | Remember a folder, quality, archive or theme between runs | `viddl --set quality 720` (see [Settings](#settings-optional)) |
 | Make it easier to read on a bright or dim screen | `viddl --theme light <link>` (see [Colours and contrast](#colours-and-contrast)) |
+| Read the explanations in Spanish | `viddl --lang es <link>` (see [Other languages](#other-languages)) |
 | See how far a download has got from another window | Nothing to do: the title bar says it (see [The window title](#the-window-title)) |
 | See what you have downloaded lately | Press `r` (or **Recent**) on the home screen |
 | Find out which key does what | Press `F1` in the app (or `?` where you are not typing a link) |
@@ -732,7 +733,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 | `viddl/theme.py` | The three colour schemes: the palettes, the WCAG contrast maths that proves they are readable, and the order that decides whether the flag, the variable, the file or the terminal picks one. |
 | `viddl/web.py` | The local page behind `--web`: a loopback server with a token in the URL, the same look-up and download behind it, and no way in from another machine or another site. |
 | `viddl/search.py` | What text typed where a link goes actually is: a link, a name to search for, or neither — and the link a search turned out to mean, so the download names a video rather than a query. |
-| `viddl/errors.py` | Maps raw tool output onto plain-language explanations, and says whether the failure is one another attempt may fix. |
+| `viddl/errors.py` | Maps raw tool output onto plain-language explanations, and says whether the failure is one another attempt may fix. The patterns are here; the sentences are catalogue keys (U7). |
+| `viddl/i18n/` | The sentences themselves, one plain dict per language, and the order that decides whether `--lang` or the machine's own locale picks one. No build step and no compiled catalogue: a missing translation falls back to English, key by key. |
 | `viddl/protocol.py` | The `viddl://` hand-off and its per-OS registration. |
 | `viddl/browser_extension/` | The browser extension: one set of files, a manifest for Chromium (service worker) and one for Firefox (event page). |
 
@@ -910,6 +912,47 @@ with `--plain`.
 app redraws itself, and a screen reader reads the drawing. That is why the
 accessible mode prints instead of drawing, and why the only thing it can add at
 the end is the bell.
+
+## Other languages
+
+The explanations are written in English and Spanish. On a Spanish computer
+nothing needs configuring: Viddl reads `LC_ALL`, then `LC_MESSAGES`, then
+`LANG`, and speaks the language it finds.
+
+```sh
+viddl --lang es "https://www.youtube.com/watch?v=..."   # this run
+LANG=es_ES.UTF-8 viddl --plain --yes <link>             # already the machine's setting
+```
+
+A language typed on the command line is checked: `viddl --lang fr` refuses with
+*"'fr' is not a language Viddl speaks yet — try en, es"* instead of quietly
+answering in English. A computer set to French is answered in English and keeps
+working, and `viddl --doctor` says which language went unanswered:
+
+```
+Language:     English (en, from LANG=fr_FR.UTF-8) — no translation for fr_FR.UTF-8 yet, so English
+```
+
+**What speaks Spanish so far.** The explanations — the twenty-one rules that
+turn an engine's own words into a sentence a person can act on — and the advice
+about an old engine that gets appended to them, because that is part of the
+same answer. A private video reads *"Ese vídeo es privado. Solo puede
+descargarlo su dueño…"* with its advice in Spanish too, and `viddl --plain`
+folds the accents to ASCII the way it folds every other text, so a legacy
+console shows `Ese video es privado` and still composes as a script expects.
+
+**What does not, yet.** The screens' own words, the `--plain` progress lines and
+`viddl --doctor`'s sentences are English, so a Spanish failure appears inside an
+English screen. That is a half-measure, and it is named here rather than implied
+to be finished. Advice that points at a control quotes it as the screen has it
+(*"choose “Set up ffmpeg”"*), so the words match what is actually on screen.
+
+**Adding a language.** Copy `viddl/i18n/en.py`, translate the values, keep the
+`{...}` placeholders and their names, and add the module to `_MODULES` in
+`viddl/i18n/__init__.py`. Nothing is compiled: the suite fails if a catalogue is
+missing a key, invents one, or fills in a different set of placeholders — and at
+runtime a key a translation has not got yet falls back to English, one sentence
+at a time.
 
 ## The window title
 

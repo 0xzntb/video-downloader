@@ -27,6 +27,7 @@ from . import appdata
 from . import config
 from . import cookies as cookies_mod
 from . import engine as engine_mod
+from . import i18n
 from . import theme as theme_mod
 from .engine import Engine, Tool
 from .formats import MediaInfo, MediaOption
@@ -47,7 +48,7 @@ def _tool(tool: Optional[Tool]) -> Optional[Dict[str, Any]]:
 
 
 def doctor_report(
-    engine: Optional[Engine] = None, theme_flag: str = ""
+    engine: Optional[Engine] = None, theme_flag: str = "", lang_flag: str = ""
 ) -> Dict[str, Any]:
     """Everything ``viddl --doctor`` says, as one object (F10).
 
@@ -83,6 +84,32 @@ def doctor_report(
             "worst_text_contrast": round(
                 theme_mod.worst_text_ratio(chosen_theme.name), 2
             ),
+        }
+
+    # Which language the explanations are in (U7), the same facts as the
+    # doctor's Language line. A value with no catalogue is named rather than
+    # dropped, exactly as a theme that cannot be used is.
+    language: Dict[str, Any]
+    try:
+        chosen_language = i18n.choose(lang_flag)
+    except ValueError as exc:
+        language = {
+            "code": None,
+            "name": None,
+            "source": "",
+            "available": i18n.available(),
+            "problem": str(exc),
+        }
+    else:
+        language = {
+            "code": chosen_language.code,
+            "name": chosen_language.name,
+            "source": chosen_language.source,
+            # What the machine asked for and Viddl does not have, if anything:
+            # ``None`` rather than ``""`` so a script can test it directly.
+            "unmatched": chosen_language.unmatched or None,
+            "available": i18n.available(),
+            "problem": None,
         }
 
     try:
@@ -130,6 +157,7 @@ def doctor_report(
         },
         "recent": {"path": str(appdata.history_path())},
         "theme": theme,
+        "language": language,
         "cookies": {
             "browsers": [
                 {"key": browser.key, "label": browser.label}

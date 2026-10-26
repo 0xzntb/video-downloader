@@ -5,6 +5,11 @@ second attempt may genuinely fix — because that is a decision the downloader
 acts on by itself (see :meth:`viddl.download.DownloadJob.run`). Keeping the two
 answers in one table is the point: a message that says "try again" and a retry
 policy that does not try again are two ways of lying to the same person.
+
+The sentences themselves are not here (U7): each rule names catalogue keys, and
+:mod:`viddl.i18n` holds the words in every language Viddl speaks. What stays in
+this file is the pattern that recognises a failure, which is English because the
+engine's output is.
 """
 
 from __future__ import annotations
@@ -12,6 +17,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import NamedTuple, Optional
+
+from .i18n import t
 
 
 @dataclass
@@ -38,11 +45,20 @@ class FriendlyError:
 #: The words the qualities screen uses for the cookie row (F1). The rule below
 #: names it, and the app looks for it: on a computer with no browser there is no
 #: row to choose, so the advice has to change rather than point at nothing.
+#:
+#: It is quoted into the advice through the ``{sign_in}`` placeholder, in every
+#: language (U7), so that the sentence and the screen keep the same words. The
+#: screens are still English, which is why the translated hint quotes this
+#: English name rather than inventing a Spanish one for a row that does not say
+#: it.
 SIGN_IN_MARK = "Sign in with my browser"
 
 
 class _Rule(NamedTuple):
-    """One explanation, and whether the failure behind it is worth retrying."""
+    """One explanation, and whether the failure behind it is worth retrying.
+
+    ``message`` and ``hint`` are catalogue keys, not sentences.
+    """
 
     pattern: str
     message: str
@@ -63,44 +79,39 @@ _RULES: list[_Rule] = [
         r"failed to (decrypt|extract).{0,40}(cookie|dpapi|keyring|keychain)|"
         r"(dpapi|keyring|keychain).{0,40}(fail|error|denied)|"
         r"no such file or directory.{0,40}cookie",
-        "Viddl could not read your browser's cookies.",
-        "Sign in to the site in that browser first, then close the browser and try again — "
-        "an open browser can hold the store locked. A different browser works too: "
-        "choose “Sign in with my browser” on the qualities screen.",
+        "error.cookies_read",
+        "error.cookies_read.hint",
     ),
     _Rule(
         r"sign in to confirm|not a bot|confirm your age|age-restricted|"
         r"cookies|login required|requested content is not available",
-        "The site wants you to be signed in to watch this one.",
-        "Age-restricted, bot-checked and members-only videos answer to a signed-in "
-        f"session. Choose “{SIGN_IN_MARK}” and Viddl will read the cookies that "
-        "browser already has.",
+        "error.sign_in",
+        "error.sign_in.hint",
     ),
     _Rule(
         r"private video|this video is private",
-        "That video is private.",
-        "Only the owner can download it. Is there a public version you meant to open?",
+        "error.private",
+        "error.private.hint",
     ),
     _Rule(
         r"video unavailable|video is unavailable|this video is not available|"
         r"no longer available|removed by the uploader|has been removed|"
         r"content isn't available|unavailable video|not made this video available in your country|"
         r"available in your country|geo.?restricted|geo.?blocked",
-        "That video is not available any more.",
-        "It may have been deleted, made private, or blocked in your region.",
+        "error.unavailable",
+        "error.unavailable.hint",
     ),
     _Rule(
         r"members-only|join this channel|subscriber",
-        "That video is for channel members only.",
-        None,
+        "error.members",
     ),
     _Rule(
         # Checked before the generic HTTP rules: "ffmpeg not found" would
         # otherwise be reported as a missing web page, which helps nobody.
         r"ffmpeg (is )?not (found|installed)|ffmpeg-location|"
         r"you have requested merging|postprocessing: ffmpeg",
-        "Viddl needs ffmpeg for this download, and it is not installed yet.",
-        "Viddl can fetch it for you — choose “Set up ffmpeg” on the previous screen.",
+        "error.ffmpeg",
+        "error.ffmpeg.hint",
     ),
     _Rule(
         # A search that found nothing (F14): the answer is about the words, not
@@ -108,26 +119,25 @@ _RULES: list[_Rule] = [
         # the unsupported-URL rule so a search is not reported as a bad link.
         r"no video results|no search results|no results found|"
         r"did not return any results|no results were found",
-        "Nothing was found for that search.",
-        "Try fewer words, another spelling, or paste the link instead.",
+        "error.no_results",
+        "error.no_results.hint",
     ),
     _Rule(
         r"unsupported url|no video formats found|unable to extract|"
         r"no suitable formats|no video could be found|no video found",
-        "No video could be found at that link.",
-        "Check that the link opens a video (not a channel, a search page, a photo, "
-        "or a post without video).",
+        "error.not_a_video",
+        "error.not_a_video.hint",
     ),
     _Rule(
         r"unexpected response from webpage|unable to parse|failed to parse|"
         r"unable to extract webpage|unable to extract player",
-        "The site sent back something Viddl did not expect.",
-        "Sites change their pages often. Waiting a day and trying again usually fixes it.",
+        "error.site_changed",
+        "error.site_changed.hint",
     ),
     _Rule(
         r"http error 404|http 404|\b404\b.{0,12}not found",
-        "That page could not be found (404).",
-        "The link may be mistyped or the page may have been removed.",
+        "error.not_found",
+        "error.not_found.hint",
     ),
     _Rule(
         # A refusal is often per request (an expired URL, a throttled client),
@@ -135,9 +145,8 @@ _RULES: list[_Rule] = [
         # go. A genuine region block says so in its own words and is caught by
         # the "not available" rule above.
         r"http error 403|forbidden",
-        "The site refused the request (403).",
-        "This is often a moment's throttling rather than a real block, so it is worth "
-        "another try. If it keeps happening, the video may be restricted.",
+        "error.refused",
+        "error.refused.hint",
         temporary=True,
     ),
     _Rule(
@@ -145,96 +154,99 @@ _RULES: list[_Rule] = [
         # waiting rather than rephrasing the problem to the user.
         r"http error 5\d\d|http 5\d\d|\b50[0-4]\b|internal server error|"
         r"bad gateway|service unavailable|gateway time-?out|server error",
-        "The site had a problem of its own.",
-        "That is usually brief, so it is worth trying again in a moment.",
+        "error.site_error",
+        "error.site_error.hint",
         temporary=True,
     ),
     _Rule(
         r"429|too many requests|rate.?limit",
-        "The site is rate-limiting right now.",
-        "Waiting a moment and trying again usually clears it.",
+        "error.rate_limited",
+        "error.rate_limited.hint",
         temporary=True,
     ),
     _Rule(
         r"temporary failure in name resolution|failed to resolve|"
         r"getaddrinfo|nodename nor servname|name or service not known",
-        "Could not reach the internet.",
-        "Check your Wi-Fi or ethernet connection, then try again.",
+        "error.offline",
+        "error.offline.hint",
         temporary=True,
     ),
     _Rule(
         r"connection refused|connection reset|timed out|timeout|"
         r"ssl|certificate verify failed|network is unreachable|urlopen error|"
         r"remote end closed connection|incompleteread",
-        "The connection to the site failed.",
-        "This is usually a flaky network or a firewall. Trying again often works.",
+        "error.connection",
+        "error.connection.hint",
         temporary=True,
     ),
     _Rule(
         r"no space left on device",
-        "The disk is full.",
-        "Free up some space in your Downloads folder and try again.",
+        "error.disk_full",
+        "error.disk_full.hint",
     ),
     _Rule(
         r"permission denied|errno 13",
-        "Viddl is not allowed to write that file.",
-        "Check the permissions on your Downloads folder.",
+        "error.not_allowed",
+        "error.not_allowed.hint",
     ),
     _Rule(
         r"unable to write data|disk i/o error|input/output error",
-        "There was a problem writing the file to disk.",
-        None,
+        "error.write_failed",
     ),
     _Rule(
         r"requested format is not available|format .* not available",
-        "That quality is no longer offered for this video.",
-        "Go back and pick another quality from the list — the options change per video.",
+        "error.quality_gone",
+        "error.quality_gone.hint",
     ),
     _Rule(
         r"is not a valid url|invalid url",
-        "That does not look like a web link.",
-        "Copy the address from your browser's address bar and paste it again.",
+        "error.bad_link",
+        "error.bad_link.hint",
     ),
     _Rule(
         r"interrupted|terminated|keyboardinterrupt",
-        "The download was stopped.",
-        None,
+        "error.stopped",
     ),
 ]
 
 
 def explain(raw: str, exit_code: Optional[int] = None) -> FriendlyError:
-    """Map messy tool output to a plain-language explanation."""
+    """Map messy tool output to a plain-language explanation.
+
+    The language is whichever one is in force (U7), so the same rule speaks
+    Spanish to a Spanish machine without a second table of patterns.
+    """
     text = (raw or "").strip()
     haystack = text.lower()
 
     for rule in _RULES:
         if re.search(rule.pattern, haystack, re.IGNORECASE):
-            return FriendlyError(rule.message, rule.hint, rule.temporary)
+            return FriendlyError(
+                t(rule.message, sign_in=SIGN_IN_MARK),
+                t(rule.hint, sign_in=SIGN_IN_MARK) if rule.hint else None,
+                rule.temporary,
+            )
 
     if not text:
         if exit_code:
             return FriendlyError(
-                "The download stopped unexpectedly.",
-                "Running it again usually helps. If it keeps failing, try a different quality.",
+                t("error.stopped_early"),
+                t("error.stopped_early.hint"),
                 temporary=True,
             )
-        return FriendlyError("Something went wrong.")
+        return FriendlyError(t("error.generic"))
 
     if re.search(r"\berror\b", haystack):
         # Keep the original text but make it the last resort, trimmed of noise.
         detail = _clean_raw(text)
-        advice = (
-            "This is usually a temporary change at the site's end. Trying again in a "
-            "little while, or using another link, often works."
-        )
+        advice = t("error.reported.advice")
         return FriendlyError(
-            "The downloader reported an error.",
+            t("error.reported"),
             f"{detail}\n{advice}" if detail else advice,
             temporary=True,
         )
 
-    return FriendlyError("The download did not finish.", _clean_raw(text))
+    return FriendlyError(t("error.unfinished"), _clean_raw(text))
 
 
 def _clean_raw(text: str, limit: int = 400) -> str:
