@@ -177,6 +177,9 @@ class Progress:
     eta: str = ""
     downloaded: int = 0
     total: Optional[int] = None
+    #: True when ``total`` is the site's estimate rather than a size it stated,
+    #: so the screen can mark a figure that may still change (U8).
+    total_is_estimate: bool = False
     phase: str = "download"
 
 
@@ -1571,7 +1574,11 @@ class DownloadJob:
         speed = _to_float(parts[1])
         eta = _to_float(parts[2])
         downloaded = _to_int(parts[3]) or 0
-        total = _to_int(parts[4]) or _to_int(parts[5])
+        # The size the site stated when there is one, its estimate otherwise —
+        # and which of the two it was is kept, because an estimate is the figure
+        # that can be replaced halfway through (U8).
+        known_total = _to_int(parts[4])
+        total = known_total if known_total else _to_int(parts[5])
         filename = parts[6].strip()
         if filename and filename != "NA":
             self._remember_path(filename)
@@ -1583,6 +1590,7 @@ class DownloadJob:
             eta=_fmt_eta(eta),
             downloaded=downloaded,
             total=total,
+            total_is_estimate=not known_total and bool(total),
             phase="download",
         )
 

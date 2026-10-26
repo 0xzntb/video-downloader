@@ -78,6 +78,27 @@ _PROBE_HINT_SECONDS = 5.0
 #: How often the elapsed seconds on screen are refreshed.
 _PROBE_TICK_SECONDS = 0.5
 
+#: The mark that moves while a look-up runs (U8). ASCII on purpose: the drawn
+#: app follows the same rule as ``--plain`` about a console that cannot print a
+#: character, and a braille spinner would be a row of empty boxes on one.
+_SPINNER = ("|", "/", "-", "\\")
+
+#: The furthest the bar may go while a download is still running (U8). A size
+#: the site only estimated can be too small, and a bar that says 100% and then
+#: falls back to 41% is the worst way to learn that. 100 is reached when the
+#: download is actually finished, and not before.
+_BAR_WHILE_DOWNLOADING = 99.0
+
+#: What the link box's label says while the box is empty (U8): an example in
+#: full, so the shape of an answer is on screen before anything is typed. It is
+#: the same row as the instruction rather than a line of its own, because at 80
+#: by 24 the home screen has no spare row and one was needed for this — the
+#: instruction is still in the tagline above, which is why the row can be spent.
+_EMPTY_LABEL = "No link yet — try https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+_LINK_LABEL = (
+    "Paste a link (or several, separated by spaces) — or type a name to search for"
+)
+
 
 def _update_engine(engine: Engine, **kwargs: Any) -> Tuple[Optional[Tool], Tool]:
     """Fetch the newest yt-dlp; the seam a test uses instead of the network (F3)."""
@@ -1145,11 +1166,9 @@ class HomeScreen(Screen):
                 "Download a video or a song by pasting a link or typing its name.",
                 classes="tagline",
             )
-            yield Static(
-                "Paste a link (or several, separated by spaces) — or type a name to "
-                "search for",
-                classes="field-label",
-            )
+            # The empty state lives in this row (U8): what a link looks like,
+            # replaced by the instruction at the first character.
+            yield Static(_LINK_LABEL, id="field-label", classes="field-label")
             yield Input(
                 placeholder="https://www.youtube.com/watch?v=…",
                 id="url-input",
@@ -1174,6 +1193,9 @@ class HomeScreen(Screen):
         self.query_one("#update-engine", Button).add_class("hidden")
         self.refresh_engine_status()
         self.refresh_theme_row()
+        # A link on the command line is not an empty box, so the example is not
+        # something to say there (U8).
+        self.show_empty_state(not self.app.state.url)
         if self.app.state.url:
             # A search opens with the name in the box, not its plumbing, so it
             # can be edited and tried again (F14).
@@ -1232,6 +1254,17 @@ class HomeScreen(Screen):
         self.query_one("#clipboard-offer", Static).update("")
         self.query_one("#paste", Button).add_class("hidden")
 
+    # -- the empty state (U8) ------------------------------------------------
+    def show_empty_state(self, on: bool) -> None:
+        """Say what a link looks like while the box is empty, and only then."""
+        self.query_one("#field-label", Static).update(_EMPTY_LABEL if on else _LINK_LABEL)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """The example is for an empty box, and leaves with the first key."""
+        if event.input.id != "url-input":
+            return
+        self.show_empty_state(not event.value.strip())
+
     def action_paste_clipboard(self) -> None:
         """Put the offered link in the box — and stop exactly there (F8).
 
@@ -1253,6 +1286,9 @@ class HomeScreen(Screen):
         """Empty the link box and put the cursor back in it."""
         field = self.query_one("#url-input", Input)
         field.value = ""
+        # Setting the value it already had raises no change event, so the
+        # example is put back here rather than relied on to return by itself (U8).
+        self.show_empty_state(True)
         field.focus()
 
     def refresh_theme_row(self) -> None:
@@ -1753,13 +1789,16 @@ class OptionsScreen(Screen):
         self._hinted = False
         self._cancel = threading.Event()
         self._started_at = time.monotonic()
+        self._spin = 0
         self.query_one("#download", Button).disabled = True
         self.query_one("#stop-probe", Button).add_class("hidden")
         # A fresh look-up is a fresh link: the last answer's live note and its
         # start button do not describe it until this one answers (F12).
         self.query_one("#live-note", Static).add_class("hidden")
         self.query_one("#live-start", Button).add_class("hidden")
-        self.query_one("#options-status", Static).update("Looking up the link…")
+        self.query_one("#options-status", Static).update(
+            f"{_SPINNER[self._spin]} Looking up the link…"
+        )
         ticker = getattr(self, "_ticker", None)
         if ticker is not None:
             ticker.stop()
@@ -1775,17 +1814,21 @@ class OptionsScreen(Screen):
         """Say how long the link has been taking, and offer a way out.
 
         A look-up can legitimately take a minute on a slow site, so the screen
-        must not look frozen while it does. After a few seconds it stops just
-        counting and says plainly that this is normal, with a button — because
-        the alternative is a 150-second wait with no way to call it off.
+        must not look frozen while it does — and a clock alone only moves once a
+        second, which on a waiting screen looks almost as still as nothing. So
+        the line also carries a mark that turns with every tick (U8): motion is
+        what says "working" before any number can. After a few seconds it stops
+        just counting and says plainly that this is normal, with a button —
+        because the alternative is a 150-second wait with no way to call it off.
         """
         if self._stopped or not self.is_mounted:
             return
         elapsed = time.monotonic() - self._started_at
+        self._spin = (self._spin + 1) % len(_SPINNER)
         # Whole seconds: this is a clock the user is waiting on, and "2.0s" for
         # something 2.04 s old reads like a stopwatch that has jammed.
         self.query_one("#options-status", Static).update(
-            f"Looking up the link… {int(elapsed)}s"
+            f"{_SPINNER[self._spin]} Looking up the link… {int(elapsed)}s"
         )
         if elapsed < _PROBE_HINT_SECONDS or self._hinted:
             return
@@ -2588,6 +2631,12 @@ class DownloadScreen(Screen):
 
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=True)]
 
+    #: True once this screen has been drawn at least once (U8). Until then an
+    #: ending replaces it instead of covering it, so a download that finishes
+    #: before the first frame — a file that is already there, a tiny clip on a
+    #: fast link — never paints a progress screen that is gone by the next one.
+    _painted = False
+
     def compose(self) -> ComposeResult:
         with Vertical(id="download-panel"):
             yield Static("", id="download-heading")
@@ -2624,6 +2673,20 @@ class DownloadScreen(Screen):
             # (F12) — the button says which of the two it is.
             self.query_one("#cancel", Button).label = "Stop recording"
         self.run_download()
+        # The first refresh is when this screen has really been seen. Anything
+        # before it is a screen on its way in, and an ending must not stack a
+        # result over one of those (U8).
+        self.call_after_refresh(self._mark_painted)
+
+    def _mark_painted(self) -> None:
+        self._painted = True
+
+    def _end_with(self, screen: Screen) -> None:
+        """Show an ending, without a progress screen that was never seen (U8)."""
+        if self._painted:
+            self.app.push_screen(screen)
+        else:
+            self.app.switch_screen(screen)
 
     @work(thread=True, exclusive=True, group="download")
     def run_download(self) -> None:
@@ -2759,7 +2822,9 @@ class DownloadScreen(Screen):
         self.set_status(f"Video {item.position} of {item.total}  {_ARP}  {progress.status}")
         overall = None
         if progress.percent is not None and progress.phase == "download":
-            overall = self._overall(item, progress.percent)
+            # The list is not finished while any video is still arriving, so the
+            # bar stops short of 100 for the same reason a single one does (U8).
+            overall = min(_BAR_WHILE_DOWNLOADING, self._overall(item, progress.percent))
             self.query_one("#download-bar", ProgressBar).update(progress=overall)
         # One number for the whole list, because the title bar cannot show nine
         # bars: the percentage is the queue's, and "3 of 9" says which video.
@@ -2781,7 +2846,7 @@ class DownloadScreen(Screen):
         if not self._has_a_screen():
             return
         self.query_one("#download-bar", ProgressBar).update(progress=100.0)
-        self.app.push_screen(
+        self._end_with(
             QueueResultScreen(
                 summary=summary,
                 option=self.app.state.option,
@@ -2798,7 +2863,7 @@ class DownloadScreen(Screen):
     def set_ffmpeg_progress(self, done: int, total: Optional[int]) -> None:
         bar = self.query_one("#download-bar", ProgressBar)
         if total:
-            bar.update(progress=done * 100 / total)
+            bar.update(progress=min(_BAR_WHILE_DOWNLOADING, done * 100 / total))
             self.query_one("#download-detail", Static).update(
                 f"{human_size(done)} of {human_size(total)}"
             )
@@ -2808,12 +2873,17 @@ class DownloadScreen(Screen):
     def on_progress(self, progress: Progress) -> None:
         bar = self.query_one("#download-bar", ProgressBar)
         self.set_status(progress.status)
-        if progress.percent is not None and progress.phase == "download":
-            bar.update(progress=min(100.0, progress.percent))
+        # While bytes are still arriving the bar stops at 99%: an estimated size
+        # can be too small, and a bar that reaches 100 and then falls back is the
+        # worst way to find out (U8). 100 is for a download that is finished.
+        percent = progress.percent
+        if percent is not None and progress.phase == "download":
+            percent = min(_BAR_WHILE_DOWNLOADING, percent)
+            bar.update(progress=percent)
         if progress.phase == "done":
             bar.update(progress=100.0)
         info = self.app.state.info
-        self._show_title(progress.percent, info.title if info is not None else "")
+        self._show_title(percent, info.title if info is not None else "")
         self._show_detail(progress)
 
     def _show_title(
@@ -2840,10 +2910,21 @@ class DownloadScreen(Screen):
         self.app.window_title.reset()
 
     def _show_detail(self, progress: Progress) -> None:
+        """The numbers under the bar: how much, how fast, how long left.
+
+        A total the site only estimated is written with a ``~``, the way the
+        qualities screen marks its own estimates (U8). The figure then changes
+        when the site states the real size, and a change that was announced
+        reads as the site learning something rather than as the screen
+        glitching.
+        """
         detail_bits = []
         if progress.downloaded:
             if progress.total:
-                detail_bits.append(f"{human_size(progress.downloaded)} of {human_size(progress.total)}")
+                mark = "~" if progress.total_is_estimate else ""
+                detail_bits.append(
+                    f"{human_size(progress.downloaded)} of {mark}{human_size(progress.total)}"
+                )
             else:
                 detail_bits.append(human_size(progress.downloaded))
         if progress.speed:
@@ -2872,7 +2953,7 @@ class DownloadScreen(Screen):
         self.app.state.job = None
         if not self._has_a_screen():
             return
-        self.app.push_screen(
+        self._end_with(
             ResultScreen(saved_path=path, attachments=attachments, already_had=already_had)
         )
 
@@ -2900,7 +2981,7 @@ class DownloadScreen(Screen):
             # been recorded as a real file (F12): that is an ending to show,
             # not a question about a half-file.
             self.app.state.saved_path = recorded
-            self.app.push_screen(ResultScreen(saved_path=recorded, recorded=True))
+            self._end_with(ResultScreen(saved_path=recorded, recorded=True))
             return
         self.app.switch_screen(
             StoppedScreen(

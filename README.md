@@ -156,6 +156,11 @@ In the app:
   box, for the keys that work where you are standing: the whole list, including
   the ones the footer has no room for, gathered from the app itself so it cannot
   go stale. `Esc` closes it.
+* **An empty box says what to do** — until the first character, the line above
+  the box is a full example link (`No link yet — try
+  https://www.youtube.com/watch?v=dQw4w9WgXcQ`); typing turns it back into the
+  instruction. Nothing has to be guessed at, and nothing is added to the screen
+  that would push the buttons off a small terminal.
 * Paste with `Ctrl+V` / `Cmd+V`, or just type the link. If the clipboard already
   holds a link when Viddl opens, the home screen says so and offers **Paste
   link**; it never fills the box or starts anything by itself.
@@ -659,6 +664,18 @@ failure that will not change on its own — private, removed, region-blocked, a
 full disk — is reported at once, because waiting for the same answer is just a
 longer way of saying no. If all three attempts fail, the message says how many
 times Viddl tried.
+
+**While it works.** The look-up line carries a mark that turns — `|`, `/`, `-`,
+`\` — so a screen that is waiting looks like it is working before there is any
+number to show, and then the seconds it has taken. On the progress screen the
+bar stops at 99% until the download really has finished: a size the site only
+estimated can be too small, and a bar that says 100% and then falls back to 41%
+is the worst way to learn that. A total that is only an estimate is written with
+a `~` (*"12.4 MB of ~48.0 MB"*), the way the quality menu already marks its own
+estimates, so the moment the real size arrives is a change you were expecting
+rather than a glitch. And a download that finishes before the progress screen has
+been drawn once — a file that was already there, a tiny clip on a fast link —
+lands on the done screen instead of flashing past a screen nobody could read.
 
 **Trying again.** A failure is often a moment's bad luck rather than a dead
 link, so the screen's first button is **Try again** (`r`): the same link at the

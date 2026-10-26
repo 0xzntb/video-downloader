@@ -31,6 +31,7 @@ from viddl.protocol import build_scheme_url
 from viddl.tui.app import (
     DownloadScreen,
     _failure_details,
+    _SPINNER,
     _key_label,
     HelpScreen,
     _play_file,
@@ -1483,7 +1484,9 @@ async def test_the_look_up_counts_the_seconds_while_it_runs(tmp_path):
         await pilot.pause()
 
         status = shown(app.screen, "#options-status")
-        assert status.startswith("Looking up the link…")
+        # A mark that turns, then the clock (U8): the line never sits still.
+        assert status[0] in _SPINNER, status
+        assert "Looking up the link…" in status
         assert status.endswith("s"), f"no elapsed time on screen: {status!r}"
         # Under the five seconds where it stops just counting.
         assert app.screen.query_one("#stop-probe").has_class("hidden")
@@ -3728,3 +3731,172 @@ async def test_only_one_row_is_marked_and_it_fits_the_terminal(tmp_path):
         for row in rows:
             assert row.region.x + row.region.width <= 80
         assert marked[0].region.x + marked[0].region.width <= 80
+
+
+# ---------------------------------------------------------------------------
+# motion, emptiness and feedback (U8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_look_up_line_moves_before_it_can_count(tmp_path):
+    """A clock that changes once a second is not motion; the mark is (U8)."""
+    probe = SlowProbe(parse_info(INFO_JSON))
+    services = make_services(tmp_path)
+    services.probe = probe
+    app = ViddlApp(initial_url=URL, services=services)
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        assert await wait_for(pilot, probe.started)
+        screen = app.screen
+        # Only the calls below turn the mark, whatever the timer is doing.
+        screen._ticker.stop()
+
+        frames = []
+        for _ in range(len(_SPINNER)):
+            screen.show_elapsed()
+            frames.append(shown(screen, "#options-status")[0])
+
+        assert sorted(frames) == sorted(_SPINNER), frames
+        status = shown(screen, "#options-status")
+        assert "Looking up the link…" in status
+        assert status.endswith("s")
+        # One line, inside the panel at 80 columns.
+        assert len(status) <= 74, status
+
+        probe.release.set()
+        await settle(pilot, rounds=40)
+
+
+@pytest.mark.asyncio
+async def test_a_size_the_site_only_estimated_is_marked_as_one(tmp_path):
+    """The figure that changes halfway through is announced before it does."""
+    app = ViddlApp(services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        app.state.option = None  # as if the screen were reopened on its own
+        app.push_screen(DownloadScreen())
+        await settle(pilot)
+        screen = app.screen
+        assert isinstance(screen, DownloadScreen)
+
+        screen.on_progress(
+            Progress(
+                percent=25.0,
+                downloaded=1024,
+                total=4096,
+                total_is_estimate=True,
+                phase="download",
+            )
+        )
+        await pilot.pause()
+        estimated = shown(screen, "#download-detail")
+        assert " of ~" in estimated, estimated
+
+        # The site states the real size: the mark goes, and the number with it.
+        screen.on_progress(
+            Progress(
+                percent=25.0,
+                downloaded=1024,
+                total=8192,
+                total_is_estimate=False,
+                phase="download",
+            )
+        )
+        await pilot.pause()
+        stated = shown(screen, "#download-detail")
+        assert " of ~" not in stated, stated
+        assert "8" in stated
+
+
+@pytest.mark.asyncio
+async def test_the_bar_stops_short_of_100_until_the_download_is_finished(tmp_path):
+    """An estimate that was too small must not read as "finished" (U8)."""
+    app = ViddlApp(services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        app.state.option = None
+        app.push_screen(DownloadScreen())
+        await settle(pilot)
+        screen = app.screen
+        bar = screen.query_one("#download-bar")
+
+        screen.on_progress(Progress(percent=100.0, phase="download"))
+        await pilot.pause()
+        assert bar.progress == 99.0
+
+        screen.on_progress(Progress(percent=100.0, phase="done"))
+        await pilot.pause()
+        assert bar.progress == 100.0
+
+
+@pytest.mark.asyncio
+async def test_an_ending_that_beats_the_first_frame_does_not_flash(tmp_path):
+    """A download that finishes before the screen paints never shows it (U8).
+
+    "Painted" is the screen's own answer, so the two halves of this are the
+    same call with the flag it would have set: replaced before the first frame,
+    stacked on top of it afterwards.
+    """
+    path = tmp_path / "A Very Real Video [dQw4w9WgXcQ].mp4"
+    path.write_bytes(b"x")
+
+    for painted, stacked in ((False, False), (True, True)):
+        app = ViddlApp(services=make_services(tmp_path))
+        async with app.run_test(size=(100, 32)) as pilot:
+            await settle(pilot)
+            app.state.option = None
+            app.push_screen(DownloadScreen())
+            await settle(pilot)
+            screen = app.screen
+            assert isinstance(screen, DownloadScreen)
+
+            screen._painted = painted
+            screen.finish_ok(path)
+            await settle(pilot)
+
+            assert isinstance(app.screen, ResultScreen)
+            under = [s for s in app.screen_stack if isinstance(s, DownloadScreen)]
+            assert bool(under) is stacked
+
+
+@pytest.mark.asyncio
+async def test_the_home_screen_gives_an_example_while_the_box_is_empty(tmp_path):
+    """An empty box is a state, and it says what a link looks like (U8)."""
+    app = ViddlApp(services=make_services(tmp_path))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        assert URL in shown(app.screen, "#field-label")
+        assert shown(app.screen, "#field-label").startswith("No link yet")
+
+        # Still the smallest terminal the app claims, with the example in it.
+        panel = app.screen.query_one("#home-panel")
+        assert panel.region.width <= 80
+        assert panel.region.height <= 24
+
+        await pilot.press("h")
+        await settle(pilot)
+        typed = shown(app.screen, "#field-label")
+        assert "No link yet" not in typed, "the example stayed behind the typing"
+        assert typed.startswith("Paste a link")
+
+        await pilot.press("backspace")
+        await settle(pilot)
+        assert shown(app.screen, "#field-label").startswith("No link yet")
+
+        # Going home empties the box, and the example comes back with it.
+        await pilot.press("h")
+        await settle(pilot)
+        app.screen.reset()
+        await settle(pilot)
+        assert shown(app.screen, "#field-label").startswith("No link yet")
+
+
+@pytest.mark.asyncio
+async def test_a_link_in_the_box_at_the_start_is_not_an_empty_state(tmp_path):
+    """The app opened on a link already has an answer to "what do I type"."""
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(80, 24)) as pilot:
+        home = next(screen for screen in app.screen_stack if isinstance(screen, HomeScreen))
+        assert "No link yet" not in shown(home, "#field-label")
+        await settle(pilot)

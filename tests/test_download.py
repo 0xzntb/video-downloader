@@ -556,6 +556,18 @@ def test_progress_line_parsing():
     assert job.progress.phase == "download"
 
 
+def test_progress_says_when_the_size_is_only_an_estimate():
+    """The figure that can be replaced halfway through is marked as one (U8)."""
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), Path("/tmp"))
+    job._handle_progress_line("VIDDLPROGRESS|10.0|NA|NA|500|NA|1000|/tmp/v.mp4")
+    assert job.progress.total == 1000
+    assert job.progress.total_is_estimate is True
+
+    job._handle_progress_line("VIDDLPROGRESS|10.0|NA|NA|500|1200|NA|/tmp/v.mp4")
+    assert job.progress.total == 1200
+    assert job.progress.total_is_estimate is False
+
+
 def test_progress_line_tolerates_missing_values():
     job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), Path("/tmp"))
     job._handle_progress_line("VIDDLPROGRESS|NA|NA|NA|NA|NA|NA|NA")

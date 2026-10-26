@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **40 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U7 in section 4, D2–D3 in
+Progress so far: **41 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U8 in section 4, D2–D3 in
 section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -2551,12 +2551,67 @@ messages; that is where non-English users hit walls.
 > is filled in through the `{sign_in}` placeholder, so the advice and the screen
 > keep the same text.
 
-### U8 — Motion, emptiness and feedback polish · **P3** · S
+### U8 — Motion, emptiness and feedback polish · **P3** · S · ✅ **Done**
 
 An animated "finding qualities" indicator instead of a static label; a progress
 bar that does not jump when `total_bytes_estimate` replaces `total_bytes`; an
 explicit empty state on the home screen with an example link; and no flicker on
 downloads fast enough to finish before the progress screen paints.
+
+> **Done, with one of the four answered differently than it was asked.**
+>
+> **Motion.** The look-up line now carries a mark that turns — `|`, `/`, `-`,
+> `\` — before the seconds it has counted, one step per tick of the clock that
+> was already there. Measured in a real terminal (a pty, five seconds of a
+> look-up that never answers): the capture holds all four marks and the seconds
+> 0, 1, 2, 3 and 4. ASCII on purpose — the drawn app keeps the same promise as
+> `--plain` about a console that cannot print a character, and a braille spinner
+> would be a row of empty boxes there.
+>
+> **The empty box.** The line above the link box is the empty state: until the
+> first character it reads *"No link yet — try
+> https://www.youtube.com/watch?v=dQw4w9WgXcQ"*, and typing turns it back into
+> the instruction. It is that row rather than a row of its own because a line of
+> its own made the home panel **25 rows at 80×24** — measured — and the panel is
+> the app's whole visible surface. With it in the label row the panel is
+> **78×23 at 80×24** (one row spare) and 86×23 at 100×32.
+>
+> **No flicker.** A download that finishes before the progress screen has been
+> drawn once — a file already there, a tiny clip — now *replaces* that screen
+> instead of stacking the result on top of it, so the frame in between never
+> happens. "Drawn once" is the screen's own answer, set by `call_after_refresh`,
+> not a timer: an ending that beats the first repaint swaps, one that arrives
+> after it stacks (both halves are tested).
+>
+> **The bar, honestly.** It stops at 99% while bytes are still arriving — a size
+> the site only estimated can be too small, and the ugliest version of this is a
+> bar that reads 100% and then falls back to 41%. Measured: a report of 100%
+> during the download draws **99.0**, and the done phase draws **100.0**. A total
+> that is only an estimate is now marked, the way the quality menu already marks
+> its own: *"1.0 KB of ~4.0 KB"*, so the moment the site states the real size is
+> a change that was announced. **A revised total still moves the bar**, and this
+> is the part that answers the item differently: a bar built on a wrong
+> denominator cannot stay put honestly, and freezing it would either claim
+> progress that has not happened or hold the download at 99% for minutes. What
+> is fixed is that the bar cannot claim to be finished, and that the figure it is
+> built on is labelled as a guess until it is not.
+>
+> **7 new tests** (1258 → 1265: six in `tests/test_tui.py`, one in
+> `tests/test_download.py`), `pyflakes` clean, the whole suite green in two runs
+> (166 in `test_tui.py`, 1099 in the rest), and all 166 TUI tests also pass on
+> **Textual 3.0.1**, the declared floor. The new ones hold: every mark turns, the
+> line stays inside 74 columns, an estimate is marked and a stated size is not,
+> the bar stops at 99 and reaches 100 on the done phase, an ending before the
+> first frame leaves no progress screen behind and one after it does stack, the
+> example leaves at the first key and returns with the reset, and a start on a
+> link is not an empty box.
+>
+> **Not done, on purpose.** The playlist screen's *"Looking up the videos in this
+> playlist…"* is still a static line — it has no ticker of its own, and giving it
+> one is a second clock for a screen that usually answers in a moment. There is
+> no reduced-motion switch: the mark is one ASCII character turning twice a
+> second, and a setting for it would be a knob nobody would find before seeing
+> the thing it turns off.
 
 ### U9 — Sell it visually · **P3** · S
 
@@ -2746,10 +2801,10 @@ project's "nothing leaves your machine" promise.
 6. ✅ **S2** (verify downloads) — **done**; **R3** (expose the config escape hatch) still open. `--ignore-config` itself landed with **S1**.
 7. **F1** (cookies) — turns a documented dead end into a feature.
 8. **E7** (one real end-to-end test) + **E10** (coverage floor).
-9. ✅ **U1**, **U2**, **U3**, **U5**, **U6** and **U7** (theme, title, richer
-   done screen, key page and retry, accessible output, and error explanations
-   in Spanish) — **all done**; that whole visible-quality group is closed, and
-   section 4 with it.
+9. ✅ **U1**, **U2**, **U3**, **U5**, **U6**, **U7** and **U8** (theme, title,
+   richer done screen, key page and retry, accessible output, error
+   explanations in Spanish, and the motion and empty-state polish) — **all
+   done**; that whole visible-quality group is closed, and section 4 with it.
 10. ✅ **F6** (archive + recents) — **done**; **F9** (notifications) is the other
     half of the same "make it a daily tool" idea, and now has a natural home
     to hang off.
