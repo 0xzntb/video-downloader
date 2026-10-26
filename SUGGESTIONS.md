@@ -10,9 +10,9 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **42 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, D2–D3 in
-section 6.
+Progress so far: **43 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1 in section 5,
+D2–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
 That is the security pass on section 1: nothing the app downloads is run
@@ -2682,7 +2682,7 @@ doc change for adoption.
 
 ## 5. Engineering hygiene and testing
 
-### E1 — There is no CI · **P1** · S · ◐ **partly done**
+### E1 — There is no CI · **P1** · S · ✅ **Done**
 
 The matrix and the lint landed with **R10**: `.github/workflows/tests.yml` runs
 Linux/macOS/Windows × Python 3.9–3.13, `pytest -q` and `pyflakes`, plus a
@@ -2703,6 +2703,60 @@ tests (`tests/extension.test.js` already exists but is not wired into anything).
 Add a weekly job that runs the extractor-dependent integration test (**E7**)
 against the latest yt-dlp, because that is the failure mode that actually breaks
 users.
+
+> **Done: a floor that fails the run, and a weekly job with something to run.**
+>
+> *The floor.* Coverage measured over the whole suite is **94.0%** — 403 of 6698
+> statements missed — and `.github/workflows/tests.yml` now runs
+> `pytest --cov=viddl --cov-report=term-missing --cov-fail-under=93` on exactly
+> one cell of the matrix (Linux, Python 3.12). Nine coverage runs would cost
+> nine times as much and say the same thing; the platform-dependent paths are
+> simulated by the suite either way, which is why the number does not move with
+> the operating system. `pytest-cov` moved into the `dev` extra, so the command
+> in CI is the command a contributor types. Both directions were checked: the
+> full suite totals 94.0% and exits 0, and a single-file run of the same command
+> prints *"FAIL Required test coverage of 93% not reached"* and exits **1**. The
+> floor is 93 rather than 94 on purpose: new code must not fail the build for
+> being new, or the first thing anyone learns about the floor is how to lower it.
+>
+> *The weekly job.* An empty scheduled job is theatre, so this one got the test
+> it was supposed to run. `tests/test_integration.py` — marked `integration`,
+> registered in `pyproject.toml` — serves a **256 KiB** file from `127.0.0.1` on
+> a port the kernel picks and downloads it through the app's own
+> `DownloadJob`, with the real `yt-dlp` and the real progress parser. Two tests:
+> the bytes at the other end are byte-identical to the bytes served and the path
+> is in the downloads folder under the output template's name; and the parsed
+> percentages reach **100.0** with a final total of **262144**, which is the
+> check that notices if yt-dlp renames a progress field — the failure that
+> leaves a working download with a bar nailed to zero. Measured here against
+> yt-dlp **2026.10.21**: the file arrives as `downloads/clip [clip].mp4`,
+> 262,144 bytes, identical.
+>
+> `.github/workflows/engine.yml` runs on Mondays (and on demand): installs the
+> newest yt-dlp, prints its version into the log, runs those tests, and **fails
+> if any of them skipped** — because the engine had just been installed, so a
+> skip there would be a green run that tested nothing. The ordinary matrix runs
+> the same file and skips it, which is what an honest skip looks like when no
+> engine is installed.
+>
+> **A fragility this found, and why the fix is in `conftest.py`.** Installing
+> yt-dlp to try the weekly job locally turned **eight** tests in
+> `test_engine.py` red: they describe a computer with no engine, and
+> `Engine.find_ytdlp` also accepts a yt-dlp installed as a Python package, so it
+> was suddenly found. Any contributor who had ever run `pip install yt-dlp` to
+> look into a download problem would have seen the same eight failures on an
+> untouched checkout. An autouse fixture now hides the installed-as-a-package
+> copy from every test except the `integration` ones; a copy on `PATH` is left
+> alone, because the tests that build one are about *which* copy wins. After the
+> fix: `test_engine.py` green with yt-dlp installed, and the integration tests
+> green with it.
+>
+> **Left to other items, deliberately.** The coverage **floor** is the first half
+> of **E10**; its other two chores — covering `__main__.py` and saying in the
+> README that the macOS/Windows registration paths are simulated — are untouched.
+> **E7** asks for more than this smoke test: ffmpeg, a merge, the `[Merger]`
+> path. What landed is the smallest test that makes a weekly job worth having,
+> and it is the seam E7 can grow from.
 
 ### E2 — Project hygiene files · **P1** · S
 
@@ -2787,7 +2841,7 @@ regexes against arbitrary tool output; `human_size`/`human_duration`/
 `estimate_size`/`_find_output` all have invariants. Those are the highest-value
 targets for `hypothesis` (plus a small fuzz run over `parse_scheme`).
 
-### E10 — Coverage ratchet and the remaining gaps · **P2** · S
+### E10 — Coverage ratchet and the remaining gaps · **P2** · S · ◐ **partly done**
 
 93% overall; the thin spots are `tui/widgets.py` (89%), `errors.py` (86%),
 `protocol.py` (87%) and `__main__.py` (0%). Meanwhile the two OS-specific
@@ -2796,6 +2850,11 @@ registration paths are *simulated* rather than executed.
 **Do:** set a CI floor (93%) so coverage cannot silently regress, cover
 `__main__.py` trivially, and be explicit in the README that Windows/macOS
 registration behaviour is simulated by the suite (**E1**'s matrix is the real fix).
+
+> ◐ **The floor landed with E1.** CI fails the build below **93%** (measured
+> 94.0%) — see that entry for the numbers and the command. Still open here:
+> `__main__.py` is at 0% and there is one sentence about simulated platform
+> paths that the README does not yet say.
 
 ### E11 — Mutation testing · **P3** · M
 
@@ -2858,7 +2917,11 @@ project's "nothing leaves your machine" promise.
 5. **R4**/**F3** (`viddl --update` + staleness hint) — the fix for the most common complaint.
 6. ✅ **S2** (verify downloads) — **done**; **R3** (expose the config escape hatch) still open. `--ignore-config` itself landed with **S1**.
 7. **F1** (cookies) — turns a documented dead end into a feature.
-8. **E7** (one real end-to-end test) + **E10** (coverage floor).
+8. ◐ **E10** (coverage ratchet) — the coverage floor landed with **E1**; the
+   two remaining chores (`__main__.py`, and saying out loud that the platform
+   registration paths are simulated) are still open. **E7** is now half way:
+   `tests/test_integration.py` downloads a real file with a real yt-dlp every
+   week, and what it does not do is ffmpeg or a merge.
 9. ✅ **U1**, **U2**, **U3**, **U5**, **U6**, **U7**, **U8** and **U9** (theme,
    title, richer done screen, key page and retry, accessible output, error
    explanations in Spanish, the motion and empty-state polish, and the demo

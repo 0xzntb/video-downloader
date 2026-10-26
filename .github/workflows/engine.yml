@@ -1,0 +1,57 @@
+name: engine
+
+# The failure that actually breaks users is not a Python error: it is yt-dlp
+# changing under us — a renamed progress field, a moved ``Destination:`` line,
+# a different exit code — and every screen and every parsed number with it.
+# The suite cannot see that, because the suite stands in for the engine. So
+# once a week this runs the real thing, at its newest, against a real download
+# (E1; the test itself is tests/test_integration.py, and E7 asks for more of
+# the same, with ffmpeg).
+#
+# It is also runnable by hand from the Actions tab, which is what to press when
+# a user reports "the download works but the bar sits at zero".
+
+on:
+  schedule:
+    # Mondays, 04:23 UTC. Odd on purpose: an unremarkable minute is a minute
+    # the whole world scheduled with.
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest-engine:
+    name: Newest yt-dlp, real download
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Viddl and the test tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # Not a Viddl dependency — the app fetches its own on first run — but the
+      # point of this job is to be ahead of the copy in anyone's tool folder.
+      - name: Install the newest yt-dlp
+        run: python -m pip install --upgrade yt-dlp
+
+      - name: Which engine is this
+        run: python -c "import yt_dlp; print('yt-dlp', yt_dlp.version.__version__)"
+
+      - name: Download a real file with it
+        run: |
+          set -o pipefail
+          python -m pytest tests/test_integration.py -q -m integration -rs | tee pytest-output.txt
+          # A skip here is a lie: the engine was just installed, so the test
+          # had everything it needed. Never a green run that tested nothing.
+          if grep -qE "[0-9]+ skipped" pytest-output.txt; then
+            echo "::error::the integration test skipped although yt-dlp is installed"
+            exit 1
+          fi

@@ -29,8 +29,19 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]" pyflakes
 
+      # The suite runs everywhere; it is measured in one place. Nine coverage
+      # runs would cost nine times as much and say the same thing, and the
+      # floor is a property of the code rather than of the operating system
+      # (the platform-specific paths are simulated by the suite either way).
       - name: Run the suite
+        if: matrix.os != 'ubuntu-latest' || matrix.python != '3.12'
         run: python -m pytest -q
+
+      # 94.0% measured on this cell when the floor was set; 93 leaves room for
+      # a patch of new code without room for a hole (E1, E10).
+      - name: Run the suite, with a coverage floor
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: python -m pytest -q --cov=viddl --cov-report=term-missing --cov-fail-under=93
 
       - name: Lint
         run: python -m pyflakes viddl tests

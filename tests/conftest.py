@@ -40,6 +40,38 @@ def english_whatever_the_machine_is_set_to(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_engine_of_this_machine(monkeypatch, request):
+    """The suite is about Viddl, not about what this machine happens to have.
+
+    ``Engine.find_ytdlp`` also accepts a yt-dlp installed as a Python package
+    (``python -m yt_dlp``), and that is exactly what is in the environment of
+    anyone who has run ``pip install yt-dlp`` looking into a download problem —
+    and in the weekly job that installs the newest engine to try it (E1).
+    Without this fixture eight tests in ``tests/test_engine.py`` fail on that
+    machine and pass on another: they describe a computer with no engine, and
+    the computer they run on is not supposed to be part of the answer.
+
+    The ``integration`` tests are the exception, because having a real engine
+    is the whole point of them.
+    """
+    if request.node.get_closest_marker("integration") is not None:
+        return
+    import importlib.util
+
+    real_find_spec = importlib.util.find_spec
+
+    def find_spec(name, *args, **kwargs):
+        if name == "yt_dlp":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    # Only the installed-as-a-package copy is hidden. A copy on ``PATH`` is
+    # left alone: ``test_engine.py`` builds its own on purpose, and those tests
+    # are about which copy wins rather than about whether one exists.
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+
+
+@pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
     """Never let a test read or write the real user's folders."""
     home = tmp_path / "home"

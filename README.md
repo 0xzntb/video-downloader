@@ -1089,6 +1089,26 @@ On Windows the same three lines live in `.venv\Scripts\`. CI runs the suite on
 Linux, macOS and Windows for Python 3.9, 3.12 and 3.13, lints with `pyflakes`,
 and runs `install.ps1` and the launcher it writes in a Windows job of its own.
 
+Coverage is measured in one cell of that matrix — Linux on Python 3.12 — and
+held to a floor of **93%** (94% when the floor was set). The command is the one
+CI runs, and it fails the run rather than printing a number nobody reads:
+
+```sh
+.venv/bin/python -m pytest --cov=viddl --cov-fail-under=93
+```
+
+`tests/test_integration.py` is the one part of the suite that uses the real
+thing rather than a stand-in engine: it serves a file from `127.0.0.1` and
+downloads it through the app's own `DownloadJob` with whatever `yt-dlp` it can
+find, because the contract with that tool — the progress template, the output
+template, the “already downloaded” lines — is the part that breaks when yt-dlp
+changes and cannot be checked by a fake. It is marked `integration` and
+**skips**, never passes, on a machine with no engine; a yt-dlp installed as a
+Python package is hidden from every *other* test, so the suite does not depend
+on what the machine happens to have. The weekly `engine` workflow installs the
+newest release, runs those tests, and fails if one of them skipped; it can also
+be started by hand from the Actions tab.
+
 The suite covers the quality menu and its size estimates, engine discovery and
 installation (including a mirror returning an HTML error page, and a resuming
 download driven against a real server on localhost — a `Range` request is a
