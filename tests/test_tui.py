@@ -1731,6 +1731,34 @@ async def test_the_progress_screen_reports_size_speed_and_time_left(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_the_progress_bar_has_a_row_to_be_drawn_in(tmp_path):
+    """The bar was laid out at zero height, so it was never drawn (U9).
+
+    A row of padding above and below on a widget one row tall left nothing for
+    the widget itself, and nothing is what every download showed: a percentage,
+    a speed, a Cancel button, and an empty row where the bar should be. The
+    height is the thing to hold — it can only be zero when the bar is
+    invisible, whatever its colours are doing.
+    """
+    services = make_services(tmp_path, job_class=ChattyJob)
+    app = ViddlApp(initial_url=URL, services=services)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        await pilot.press("enter")
+        await wait_for_job(app, pilot)
+        await pilot.pause()
+
+        bar = app.screen.query_one("#download-bar")
+        assert bar.size.height == 1
+        # And it takes the panel, rather than sitting in Textual's 32 cells.
+        assert bar.region.width >= 80
+
+        await pilot.click("#cancel")
+        await settle(pilot)
+        assert isinstance(app.screen, StoppedScreen)
+
+
+@pytest.mark.asyncio
 async def test_the_screen_says_when_it_is_waiting_to_try_again(tmp_path):
     services = make_services(tmp_path, job_class=RetryingJob)
     app = ViddlApp(initial_url=URL, services=services)

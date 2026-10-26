@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **41 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U8 in section 4, D2–D3 in
+Progress so far: **42 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, D2–D3 in
 section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -2613,12 +2613,70 @@ downloads fast enough to finish before the progress screen paints.
 > second, and a setting for it would be a knob nobody would find before seeing
 > the thing it turns off.
 
-### U9 — Sell it visually · **P3** · S
+### U9 — Sell it visually · **P3** · S · ✅ **Done**
 
 The README has two hand-drawn ASCII screens, which is charming but does not
 survive a skim. A 15-second `asciinema`/GIF of "paste link → pick 720p → done
 screen", plus the existing icons reused as a banner, is the single highest-value
 doc change for adoption.
+
+> **Done, and it is the real app in the picture.** The README now opens with a
+> banner and carries an 11-second recording of *Viddl itself*: a link pasted,
+> the qualities screen answered, 720p chosen, the bar filling, the saved file
+> named with its full path. `docs/demo/record.py` starts `python -m viddl` in a
+> pseudo-terminal sized 88×26 against a stand-in engine (`docs/demo/fake_ytdlp.py`)
+> in a throwaway `$HOME`, and sends keys when the screen that invites them has
+> appeared — not after fixed sleeps — so a slow machine records the same demo,
+> only slower, and a screen that never arrives fails the recording instead of
+> quietly shipping a stuck one. It writes an asciinema v2 `docs/demo/viddl.cast`,
+> which plays with `asciinema play`.
+>
+> **The GIF is rendered, not screen-scraped.** `docs/demo/render.py` replays the
+> cast through `pyte`, so what is drawn is what a terminal would have shown, and
+> paints it with the app's own `viddl.theme` palette and the monospace font
+> matplotlib ships. Result: **18 frames, 165 KB, 11.3 s, 88×26** — small enough
+> for a README and quick enough to read. Frames are only kept for screens that
+> stayed put for **80 ms**: Textual paints a screen in several chunks, and a
+> snapshot taken after any single chunk is a list with no border or a link box
+> with no text. A second floor drops any frame shorter than 120 ms, so the
+> recording never shows a screen nobody could have seen.
+>
+> **The banner** is the existing `icon128.png`, the name, an accent rule and one
+> sentence, in the dark palette, at **1280×300 (21 KB)**. The tagline is sized by
+> measuring: the first two attempts (30 px, then 26 px) ran off the right edge of
+> the picture, so `make_banner` now picks the largest size that fits the room
+> that is left.
+>
+> **Two real bugs the recording found, both fixed.**
+>
+> * *The progress bar had never been drawn.* `#download-panel ProgressBar` had
+>   `padding: 1 0` on a widget one row tall, which laid the bar out with a height
+>   of **zero**: every download since the screen was written showed the numbers
+>   and an empty row. Padding became `margin: 1 0` with an explicit `height: 1`,
+>   and the bar now measures 72 cells at 80 columns. Its track was `$surface` —
+>   one shade off the panel, which is no track — so both halves get a faint
+>   `$foreground 12%` rail, and Textual's default 32-cell bar now takes the panel
+>   (`width: 1fr`) instead of stopping a third of the way across.
+> * *The replay drew the typing twice.* Feeding asciinema's `i` events to the
+>   terminal emulator printed the pasted link on whatever row the cursor sat on —
+>   the first frame had the URL stamped across the top border. Input events are
+>   skipped now; only output reaches the screen.
+>
+> **Verified.** `tests/test_tui.py` — **166 passed** after the stylesheet change,
+> including the two that hold the progress bar's percentage (U8). The rendered
+> frames were inspected one by one: the home screen with its example line, the
+> pasted link, the qualities list, 0% and 30% and 90% of the bar, and the saved
+> screen with the path. The banner was inspected too, which is how the clipped
+> tagline was caught.
+>
+> **Not done, on purpose.** No embedded `asciinema` player: an `<img>` of a GIF
+> works on GitHub, in a terminal browser and in an offline checkout, and a
+> script tag that needs a CDN is a doc that breaks. The two ASCII screens stay
+> under the recording — a reader without images still gets the screens, and the
+> text is also the thing that stays true when the GIF is a release behind. The
+> demo shows one download and not the playlist, the extension or `--plain`:
+> eleven seconds is already long for a README, and each of those has its own
+> section with its own words.
 
 ---
 
@@ -2801,10 +2859,11 @@ project's "nothing leaves your machine" promise.
 6. ✅ **S2** (verify downloads) — **done**; **R3** (expose the config escape hatch) still open. `--ignore-config` itself landed with **S1**.
 7. **F1** (cookies) — turns a documented dead end into a feature.
 8. **E7** (one real end-to-end test) + **E10** (coverage floor).
-9. ✅ **U1**, **U2**, **U3**, **U5**, **U6**, **U7** and **U8** (theme, title,
-   richer done screen, key page and retry, accessible output, error
-   explanations in Spanish, and the motion and empty-state polish) — **all
-   done**; that whole visible-quality group is closed, and section 4 with it.
+9. ✅ **U1**, **U2**, **U3**, **U5**, **U6**, **U7**, **U8** and **U9** (theme,
+   title, richer done screen, key page and retry, accessible output, error
+   explanations in Spanish, the motion and empty-state polish, and the demo
+   recording with its banner) — **all done**; that whole visible-quality group
+   is closed, and section 4 with it.
 10. ✅ **F6** (archive + recents) — **done**; **F9** (notifications) is the other
     half of the same "make it a daily tool" idea, and now has a natural home
     to hang off.

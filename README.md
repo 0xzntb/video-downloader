@@ -1,5 +1,7 @@
 # Viddl
 
+![Viddl: a video or an MP3, from a link you paste into a terminal](docs/banner.png)
+
 Download a video (or just the audio) by pasting a link — or typing its name —
 into a terminal app that behaves like a real little program: a clean screen, a
 list of qualities with estimated sizes, a progress bar, and the full path of the
@@ -11,6 +13,13 @@ keyboard both work, everywhere.
 
 There is no server, no account, nothing to configure, and no data leaves your
 machine except the download itself.
+
+![A recording of the app: a link is pasted, 720p is picked, and the file lands in Downloads](docs/demo/viddl.gif)
+
+*Eleven seconds of the real app — a link pasted, a quality picked, the file
+saved — recorded in a pseudo-terminal and replayed through a terminal emulator,
+so the colours are the ones a terminal would have shown. The text version is
+below, for anywhere a GIF cannot follow.*
 
 ```
 ╭────────────────────────────────────────────────────────────────────────────────────╮
@@ -1096,6 +1105,21 @@ that comes out the other end. The Windows installer files are checked from any
 platform, and the suite runs on Windows in CI.
 
 Regenerate the extension icons with `python3 tools/make_icons.py`.
+
+The GIF and the banner at the top of this README are generated, not drawn by
+hand. `docs/demo/record.py` starts the real `viddl` in a pseudo-terminal against
+a stand-in engine (`docs/demo/fake_ytdlp.py`) in a throwaway home, types a link,
+waits for the screen that invites the next key, and writes an asciinema v2
+recording; `docs/demo/render.py` replays that recording through a terminal
+emulator and draws the frames, using the app's own palette and the monospace
+font matplotlib ships. The engine is the only stand-in: every screen in the GIF
+is the app's. Regenerate both with `pip install pillow pyte matplotlib` and
+
+```sh
+python3 docs/demo/record.py
+python3 docs/demo/render.py gif
+python3 docs/demo/render.py banner
+```
 
 ## Notes
 

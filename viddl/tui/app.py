@@ -685,9 +685,34 @@ class ViddlApp(App):
         text-style: bold reverse;
     }
 
+    /* The bar wants a row of its own, with room above and below. Padding was
+       doing that before, and on a widget one row tall it ate the row itself:
+       the bar was laid out with a height of zero and never drawn (U9 caught
+       this while recording the demo). Margin keeps the air and the row. */
     #download-panel ProgressBar {
         width: 100%;
-        padding: 1 0;
+        height: 1;
+        margin: 1 0;
+    }
+
+    /* Textual's own bar is thirty-two cells wide, whatever the panel is: on an
+       eighty-column terminal it stops a third of the way across, under two
+       lines of centred text. The bar takes the room instead, and the
+       percentage keeps its five cells on the right. */
+    #download-panel ProgressBar Bar {
+        width: 1fr;
+    }
+
+    /* An empty bar is the first thing a download shows, and Textual's track is
+       $surface — one shade off the panel in this theme, which is no track at
+       all. The rail is drawn faintly for both halves so 0% reads as an empty
+       bar rather than as a missing one. */
+    #download-panel ProgressBar Bar > .bar--bar {
+        background: $foreground 12%;
+    }
+
+    #download-panel ProgressBar Bar > .bar--complete {
+        background: $foreground 12%;
     }
 
     #download-status {
