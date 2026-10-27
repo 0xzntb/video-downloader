@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **46 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E3 in section 5,
+Progress so far: **47 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E4 in section 5,
 D1–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -2912,7 +2912,7 @@ genuinely useful for support.
 > the mode there is an ACL, and a log written on Windows has not been inspected
 > from here.
 
-### E4 — Reproducible installs · **P2** · S
+### E4 — Reproducible installs · **P2** · S · ✅ **Done**
 
 No lockfile anywhere; `textual>=0.80` has no upper bound, so a future Textual
 major can break the app on a fresh install with no warning, and CI cannot be
@@ -2922,6 +2922,57 @@ because there is no lockfile.
 **Do:** pin dev dependencies, add a lock (`uv.lock` or `pip-tools`) for CI, and
 give `textual` an upper bound (`textual>=0.80,<1.0` or a tested range). Keep the
 runtime dependency list at one package — that minimalism is a feature.
+
+> **Done: a range with a ceiling, and one exact set written down.**
+>
+> * **`textual>=3.0,<9`.** The lower end was already measured — 3.0.1 is the
+>   oldest release the whole suite passes on — and the upper end is the part that
+>   was missing: without it, a 9.0 arrives in a fresh install with no warning.
+>   8.2.8 is what the suite is run against. The pyproject comment now says the
+>   range is a measurement, so widening it means running the suite on the new
+>   major rather than editing a number.
+> * **Dev bounds too:** `pytest>=7,<10`, `pytest-asyncio>=0.23,<2`,
+>   `pytest-cov>=5,<8`, and `pyflakes>=3,<5` — the last moved *into* the `dev`
+>   extra, so `pip install -e ".[dev]"` is now the whole toolchain and CI's
+>   matrix no longer installs `pyflakes` on its own line.
+> * **`uv.lock`, 35 packages, committed.** Resolved for `requires-python >=3.9`,
+>   so it is one lock for every Python the project claims: textual 8.2.8 and
+>   rich 15.0.0 throughout, and two forks where a library has moved past 3.9 —
+>   pytest 9.1.1 on 3.10+ and 8.4.2 below it, pyflakes 4.0.3 and 3.4.0 likewise.
+>   That fork is why the dev bound is `pytest>=7,<10` rather than `pytest>=9`.
+> * **A `locked` job in CI.** `uv sync --locked --extra dev`, then the suite and
+>   `pyflakes`. `--locked` refuses to re-resolve, so a `pyproject.toml` change
+>   that was not followed by `uv lock` fails on the pull request in front of the
+>   person who made it. uv is installed with `pip` there rather than through
+>   `astral-sh/setup-uv`, so the workflow holds no action version nobody can
+>   check from the repository. What that costs is the action's cache, which is
+>   worth less than a dependency whose version nobody can verify from the
+>   repository.
+> * **What did not change:** `install.sh` still installs the *range*, not the
+>   lock, and now says why — a user who installs a downloader should be able to
+>   pick up a Textual fix that matters to them instead of being pinned to one
+>   Tuesday. Exactness in the lock is for the suite, not for the world.
+>
+> **Verified, including the failure the job exists to catch.** `uv sync
+> --locked --extra dev` in this checkout: textual 8.2.8, pytest 9.1.1, pyflakes
+> 4.0.3, and the whole suite green on exactly those — **1108 passed, 2 skipped**
+> and **168 passed**, `pyflakes` clean. `uv lock --check` passes on the committed
+> lock; with one bound edited from `<9` to `<10` it exits **1** with *"The
+> lockfile at `uv.lock` needs to be updated, but `--check` was provided"* — which
+> is the drift the CI job reports. Restored, `--check` passes again. Both
+> workflows still parse (YAML), and `tests.yml` now carries three jobs:
+> `test`, `locked`, `install-windows`.
+>
+> **Not done, on purpose.** No exact pins in `pyproject.toml`: a hard pin turns
+> every release into a research project and fights the resolver of whoever
+> depends on this, so exactness lives in the lock where it costs nobody anything.
+> No `pip-tools` (one lock, not two). uv is not required to contribute — the pip
+> path in `CONTRIBUTING.md` and the CI matrix still install the ranges, which is
+> what proves they are usable. **Dependabot** is still not configured, and the
+> **E2** note predicted it would arrive with these pins: it needs a
+> `dependabot.yml`, and auto-updating `uv.lock` is a decision about who merges
+> those pull requests. The lock is what makes it possible; taking it is not part
+> of this item.
 
 ### E5 — Static analysis beyond pyflakes · **P2** · M
 
@@ -3214,8 +3265,8 @@ own `DownloadJob`:
 
 **Verified by running code or reading it here:** every code reference and every
 claim in Appendix A; the precedence orders; the flag lists; the coverage numbers;
-the absence of a lockfile, and of the CI and licence text that have since been
-added (**E1**, **E2**).
+the absence of a lockfile, CI and licence text — all three since added
+(**E1**, **E2**, **E4**).
 
 **Not verified, and marked as such in the text:** Windows and macOS *runtime*
 behaviour (the registration paths are simulated in tests); real-site extractor

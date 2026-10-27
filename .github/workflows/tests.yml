@@ -24,10 +24,13 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
+      # pyflakes comes with the dev extra now, so one install is the whole
+      # toolchain (E4). What lands here is whatever the ranges in pyproject
+      # allow today — which is the point of this matrix: it tests the range.
       - name: Install Viddl and the test tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]" pyflakes
+          python -m pip install -e ".[dev]"
 
       # The suite runs everywhere; it is measured in one place. Nine coverage
       # runs would cost nine times as much and say the same thing, and the
@@ -45,6 +48,36 @@ jobs:
 
       - name: Lint
         run: python -m pyflakes viddl tests
+
+  # The matrix above proves the *declared* range installs and works, wherever
+  # pip happens to resolve it today. This job proves the other half (E4): that
+  # this tree can be built twice, months apart, with the same versions in it.
+  # `--locked` refuses to re-resolve, so a dependency changed without a
+  # `uv lock` fails here — in CI, on the pull request — rather than in somebody's
+  # install six weeks later.
+  locked:
+    name: Exactly what uv.lock says
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Installed with pip rather than through an action, so there is no action
+      # version in this file that nobody can check from the repository.
+      - name: Install uv
+        run: python -m pip install uv
+
+      - name: Install exactly the locked versions
+        run: uv sync --locked --extra dev
+
+      - name: Run the suite
+        run: uv run python -m pytest
+
+      - name: Lint
+        run: uv run python -m pyflakes viddl tests
 
   install-windows:
     name: install.ps1 on Windows

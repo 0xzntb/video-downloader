@@ -47,7 +47,10 @@ fi
 
 say "Installing Viddl…"
 "$VENV/bin/python" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
-# The lockfile-free equivalent: install this project, which pulls in Textual.
+# Install this project, which pulls in Textual. The version policy is the range
+# in pyproject.toml, deliberately not the lockfile: `uv.lock` is what the tests
+# are run against, and installing it here would pin a user to the versions of
+# one Tuesday, with no way to pick up a Textual fix that matters to them.
 if ! "$VENV/bin/python" -m pip install --quiet "$SOURCE_DIR"; then
     fail "pip could not install Viddl. Check your internet connection and try again."
 fi

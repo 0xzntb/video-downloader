@@ -1097,6 +1097,21 @@ On Windows the same three lines live in `.venv\Scripts\`. CI runs the suite on
 Linux, macOS and Windows for Python 3.9, 3.12 and 3.13, lints with `pyflakes`,
 and runs `install.ps1` and the launcher it writes in a Windows job of its own.
 
+`uv.lock` is committed and pins every version the suite is known to pass with.
+To get exactly those, rather than whatever is newest today:
+
+```sh
+uv sync --locked --extra dev
+uv run python -m pytest
+```
+
+The `locked` job in CI does the same and refuses to re-resolve, so a dependency
+change that is not followed by `uv lock` fails there — on the pull request —
+rather than in somebody else's install weeks later. Textual is held to a range
+rather than to one version, `>=3.0,<9`: 3.0.1 is the oldest release the whole
+suite passes on and 8.2.8 is the one it is developed against, so a 9.0 has to be
+tried before it is allowed. Moving that number is a measurement, not an edit.
+
 Coverage is measured in one cell of that matrix — Linux on Python 3.12 — and
 held to a floor of **93%** (94% when the floor was set). The command is the one
 CI runs, and it fails the run rather than printing a number nobody reads:

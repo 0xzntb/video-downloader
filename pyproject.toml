@@ -14,13 +14,26 @@ license = { text = "MIT" }
 # test pilot is still loose enough to fail four of our tests. 3.0 is the oldest
 # release the whole suite passes on (1148 tests, measured); 8.2.8 is the one it
 # is developed against.
-dependencies = ["textual>=3.0"]
+#
+# The upper bound is the point of it (E4): 9.0 may change the screen, the pilot
+# or the stylesheet, and a fresh install must not be the first place anyone finds
+# out. Widening it means running the suite on the new major and saying so here —
+# the range is measured, not wished for. `uv.lock` holds the exact version the
+# suite is run against.
+dependencies = ["textual>=3.0,<9"]
 
 [project.optional-dependencies]
 # pytest-cov is here rather than in CI's own install line so that the coverage
 # floor can be reproduced exactly: `pip install -e ".[dev]"` and
 # `pytest --cov=viddl --cov-fail-under=93` is what the workflow runs (E1).
-dev = ["pytest>=7", "pytest-asyncio>=0.23", "pytest-cov>=5"]
+# Upper bounds for the same reason as textual's (E4), and pyflakes is here so
+# that one install is the whole toolchain.
+dev = [
+    "pytest>=7,<10",
+    "pytest-asyncio>=0.23,<2",
+    "pytest-cov>=5,<8",
+    "pyflakes>=3,<5",
+]
 
 [project.scripts]
 viddl = "viddl.cli:main"

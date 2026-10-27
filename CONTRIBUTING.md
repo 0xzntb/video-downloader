@@ -15,7 +15,7 @@ You need Python 3.9 or newer. Nothing else: no Node, no ffmpeg, no yt-dlp.
 
 ```sh
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]" pyflakes
+.venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m pytest
 ```
 
@@ -45,6 +45,18 @@ serve a file from `127.0.0.1` and download it through the app's own
 `DownloadJob`. A skip is honest there; a pass is not, so never make one mark a
 test that did not run as passing.
 
+Those four run against whatever the ranges in `pyproject.toml` allow today. To
+run them against the versions they are known to pass with, use the lock:
+
+```sh
+uv sync --locked --extra dev
+uv run python -m pytest
+```
+
+If you change a dependency — add one, move a bound — run `uv lock` and commit
+`uv.lock` with the change. CI's `locked` job refuses to re-resolve, so the two
+falling out of step fails the pull request instead of somebody's install.
+
 ## Where things are
 
 | File | What lives there |
@@ -72,7 +84,8 @@ test that did not run as passing.
 - **One runtime dependency.** It is `textual`, and it stays one: if something can
   be done with the standard library, it is done there. Test tools belong in the
   `dev` extra. A pull request that adds a second dependency needs to say why in
-  its first paragraph.
+  its first paragraph — and every dependency here carries an upper bound, because
+  a new major is a version to try, not a version to discover on install.
 - **The README is the manual, and it must be true.** A user-visible change gets
   its paragraph, in the section a person would look in. A number in the README is
   measured, not estimated — and when a measurement changes, the README changes
