@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **49 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E6 in section 5,
+Progress so far: **50 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E7 in section 5,
 D1–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -3118,7 +3118,7 @@ Low effort, keeps CI green.
 > but macOS's `/bin/sh` is bash in POSIX mode rather than dash, and that
 > difference is the runner's to show.
 
-### E7 — One real end-to-end test · **P2** · M
+### E7 — One real end-to-end test · **P2** · M · ✅ **Done**
 
 Every test stubs the engine, `probe_video` and `DownloadJob`. Nothing proves that
 Viddl + real yt-dlp + real ffmpeg produce a file. That is the seam where the last
@@ -3130,6 +3130,53 @@ real yt-dlp against it (yt-dlp handles plain HTTP URLs and local files), and
 assert the file lands where `_find_output` says. Deterministic, offline, no
 third-party site involved. Mark it `-m integration`, run it in CI only when
 yt-dlp is present, and let missing yt-dlp be a skip (never a false pass).
+
+> **Done: a real ffmpeg merge, with nothing downloaded to make it.**
+>
+> The plain `.mp4` download E7 asked for already existed (it landed with **E1**,
+> together with the progress-template test). What was missing is the part the
+> item is actually about — **two streams and a merge** — so that is what this
+> added, as a third test in the same file.
+>
+> * **The two streams are generated on the spot.** `ffmpeg` writes a one-second
+>   DASH manifest from lavfi — `testsrc2` at 128×72 as the video, a 440 Hz sine
+>   as the audio, `-map 0:v -map 1:a` — with one segment each. The folder is
+>   served on `127.0.0.1` on a port the kernel picked, and the URL is the
+>   manifest. Nothing is checked in, nothing is fetched, and the same bytes are
+>   produced on every machine.
+> * **`mpeg4`, not x264.** The built-in encoder is in every ffmpeg ever built;
+>   a distribution may leave H.264 out. A missing ffmpeg is an honest skip, but
+>   a test that fails because of somebody's codec list is not.
+> * **The download is the app's own.** `DownloadJob` with a
+>   `MediaOption(format_selector="bestvideo+bestaudio", merge_container="mp4")`,
+>   which is the shape a merged quality row has, so `-f` and
+>   `--merge-output-format` are exactly what the app sends.
+> * **Four things are asserted, and the fourth is the point.** The returned path
+>   is a file in the downloads folder, not inside the job's `.viddl-…` working
+>   folder; it is the *only* file delivered there, so neither fragment is handed
+>   out as a result; a `merge` progress event was emitted, which is only possible
+>   if the `[Merger] Merging formats into "…"` line was recognised and its path
+>   remembered; and `ffmpeg -i` on the result reports both a `Video:` and an
+>   `Audio:` stream — a video-only fragment with a finished name would pass a
+>   bare "the file exists" check and fail that one.
+> * **Skips stay honest and stay separate.** No yt-dlp: the existing skip. No
+>   ffmpeg: `no ffmpeg here: a merge needs one (viddl --update-ffmpeg)`.
+> * **The weekly job now names ffmpeg.** A `ffmpeg -version` step before the run,
+>   so a runner image that stops shipping one fails in one line instead of
+>   turning the new test into a skip — and the existing "a skip is a lie" check
+>   would catch that anyway.
+>
+> **Verified here**, with a real yt-dlp 2026.10.26 and a static ffmpeg 7.0.2
+> (`VIDDL_FFMPEG` cannot be used — the suite deletes it per test — so ffmpeg was
+> put on `PATH`, which is how a user with ffmpeg installed has it): **3 passed in
+> 5.79 s**, the merge included, and the intermediate `[Merger]`/`Destination:`
+> lines confirmed by eye against a hand-run of yt-dlp first. Without ffmpeg on
+> `PATH`: **2 passed, 1 skipped**, with the message above. `ruff` clean.
+>
+> **Not verified:** the `engine` workflow has not run this, and it has not been
+> run on Windows or macOS — the merge test is exercised here on Linux only. macOS
+> ships its own ffmpeg-free image, so the weekly job (Linux) is the one place
+> this is proven.
 
 ### E8 — Browser-level extension tests · **P2** · M
 

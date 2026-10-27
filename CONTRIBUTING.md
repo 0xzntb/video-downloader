@@ -52,7 +52,7 @@ the runners; if it does not, that is worth an issue, not a retry.
 .venv/bin/python -m ruff check viddl tests                     # lint
 .venv/bin/python -m mypy                                       # types (viddl/)
 .venv/bin/python -m pytest --cov=viddl --cov-fail-under=93     # the coverage floor
-.venv/bin/python -m pytest -m integration -rs                  # only with a real engine
+.venv/bin/python -m pytest -m integration -rs                  # real yt-dlp; the merge needs ffmpeg
 ```
 
 Coverage is 94.0% when the floor was set and the floor is 93, so new code can
@@ -63,8 +63,9 @@ same one CI runs.
 The last line needs a real `yt-dlp`, and is allowed to **skip** without one:
 those tests are in `tests/test_integration.py`, marked `integration`, and they
 serve a file from `127.0.0.1` and download it through the app's own
-`DownloadJob`. A skip is honest there; a pass is not, so never make one mark a
-test that did not run as passing.
+`DownloadJob`. The merge test in the same file also needs a real `ffmpeg`, since
+it is the one that actually runs one. A skip is honest there; a pass is not, so
+never make one mark a test that did not run as passing.
 
 `ruff` and `mypy` are configured in `pyproject.toml`, and both are quiet
 before a change rather than after one: a rule is switched on because it caught

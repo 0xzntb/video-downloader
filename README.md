@@ -1165,9 +1165,14 @@ template, the “already downloaded” lines — is the part that breaks when yt
 changes and cannot be checked by a fake. It is marked `integration` and
 **skips**, never passes, on a machine with no engine; a yt-dlp installed as a
 Python package is hidden from every *other* test, so the suite does not depend
-on what the machine happens to have. The weekly `engine` workflow installs the
-newest release, runs those tests, and fails if one of them skipped; it can also
-be started by hand from the Actions tab.
+on what the machine happens to have. One of them goes further and covers the
+merge: `ffmpeg` writes a one-second DASH manifest offering a video stream and an
+audio stream, `yt-dlp` downloads both and joins them, and the app has to report
+the joined file rather than one of the halves it came from — the seam where the
+last two bugs that reached users lived. That one needs a real `ffmpeg`, so it
+skips without one. The weekly `engine` workflow installs the newest release,
+runs those tests, and fails if one of them skipped; it can also be started by
+hand from the Actions tab.
 
 The suite covers the quality menu and its size estimates, engine discovery and
 installation (including a mirror returning an HTML error page, and a resuming

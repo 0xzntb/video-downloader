@@ -5,8 +5,9 @@ name: engine
 # a different exit code — and every screen and every parsed number with it.
 # The suite cannot see that, because the suite stands in for the engine. So
 # once a week this runs the real thing, at its newest, against a real download
-# (E1; the test itself is tests/test_integration.py, and E7 asks for more of
-# the same, with ffmpeg).
+# and a real merge (tests/test_integration.py, E1 and E7). ffmpeg is the copy
+# the runner image already has; it is named below so that a missing one is a
+# failure here rather than a skip that the check at the end has to explain.
 #
 # It is also runnable by hand from the Actions tab, which is what to press when
 # a user reports "the download works but the bar sits at zero".
@@ -45,12 +46,19 @@ jobs:
       - name: Which engine is this
         run: python -c "import yt_dlp; print('yt-dlp', yt_dlp.version.__version__)"
 
-      - name: Download a real file with it
+      # The merge test needs one and skips without it. A skip is not what this
+      # job is for, so the tool is named here: if the runner image ever stops
+      # shipping ffmpeg, this step says so in one line.
+      - name: Which ffmpeg is this
+        run: ffmpeg -version | head -1
+
+      - name: Download a real file with it, and merge two streams into one
         run: |
           set -o pipefail
           python -m pytest tests/test_integration.py -q -m integration -rs | tee pytest-output.txt
-          # A skip here is a lie: the engine was just installed, so the test
-          # had everything it needed. Never a green run that tested nothing.
+          # A skip here is a lie: the engine was just installed and ffmpeg is
+          # on the image, so every test had what it needed. Never a green run
+          # that tested nothing.
           if grep -qE "[0-9]+ skipped" pytest-output.txt; then
             echo "::error::the integration test skipped although yt-dlp is installed"
             exit 1
