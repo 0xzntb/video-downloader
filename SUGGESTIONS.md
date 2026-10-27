@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **43 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1 in section 5,
+Progress so far: **44 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E2 in section 5,
 D2–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -41,7 +41,7 @@ in `SECURITY.md`, which is what **D3** asked for.
 | --- | --- | --- |
 | 1 | ✅ **S1** — stop option-shaped "links" reaching yt-dlp | Proven argument injection; a web page could trigger it — **done** |
 | 2 | ◐ **E1** — add CI | The matrix (Linux/macOS/**Windows**) and `pyflakes` landed with **R10**; the coverage floor and the weekly extractor job are still missing |
-| 3 | **E2** — add a `LICENSE` file | README and `pyproject.toml` both claim MIT; no licence text ships |
+| 3 | ✅ **E2** — add a `LICENSE` file | README and `pyproject.toml` both claimed MIT with no text to ship — **done**, with the changelog, contributor guide and issue forms |
 | 4 | ✅ **R1** + **R2** — resume interrupted downloads, and really stop them | A cancelled or dropped download started from zero, and a stop left ffmpeg writing — **both done** |
 | 5 | ✅ **R4** — `viddl --update` | Stale yt-dlp is *the* top cause of "this link stopped working" — **done** |
 | 6 | **F1** — cookies from the browser | Unlocks Instagram, Threads, TikTok, sometimes Vimeo (README says unsupported) |
@@ -2758,7 +2758,7 @@ users.
 > path. What landed is the smallest test that makes a weekly job worth having,
 > and it is the seam E7 can grow from.
 
-### E2 — Project hygiene files · **P1** · S
+### E2 — Project hygiene files · **P1** · S · ✅ **Done**
 
 Missing: `LICENSE` (README and `pyproject.toml` both declare MIT — no licence
 text ships), `CHANGELOG.md`, `CONTRIBUTING.md`, issue/PR templates,
@@ -2768,6 +2768,71 @@ text ships), `CHANGELOG.md`, `CONTRIBUTING.md`, issue/PR templates,
 `SECURITY.md` is no longer on this list — **S5** wrote it.
 
 **Do:** add the licence first — it is a one-minute fix for an actual legal gap.
+
+> **Done, and the licence is the part that can be checked rather than trusted.**
+> `LICENSE` (MIT) sits at the root, and a wheel built from this tree carries
+> `viddl-1.0.0.dist-info/licenses/LICENSE` with `License: MIT` and
+> `License-File: LICENSE` in its `METADATA`: setuptools' default `license_files`
+> picks it up, so `pyproject.toml` needed no change, and the claim it already
+> made is now a claim it ships. The one line that wants a human's eye is
+> `Copyright (c) 2026 Viddl contributors` — put a name there if the copyright is
+> to be held by a person rather than by whoever sends the next patch.
+>
+> **`CHANGELOG.md`** follows Keep a Changelog and starts at **Unreleased**, not at
+> `1.0.0 — some date`: nothing in this repository has ever been tagged, and a
+> changelog whose first entry carries a release date that never happened teaches
+> the reader to distrust the rest of it. So the section says what the current
+> version *does* — the app, the engine and its checksums, resume and cancel,
+> playlists, the hand-off, `--web`, `--plain`, the explanations and their Spanish,
+> themes, and what is remembered — and the first tag simply moves it down under
+> its number. The header states that rule, so the next person does not have to
+> guess it.
+>
+> **`CONTRIBUTING.md`** is the setup in three commands, the **four** commands CI
+> runs (`pytest`, `pyflakes`, the coverage floor, and the `-m integration` run
+> that is allowed to skip), a table of which file does what, and the house rules
+> the code already follows rather than new ones: one runtime dependency, the
+> README's numbers are measured, every fix gets a test that fails without it, the
+> suite may not depend on what the machine happens to have installed (the fixture
+> **E1** added), never quieten a check to get green, a changelog line for anything
+> a user would notice, and no version bump from a contributor.
+>
+> **`CODE_OF_CONDUCT.md`** is short and Contributor Covenant in shape, and its
+> enforcement route is the private advisory page `SECURITY.md` already uses — an
+> invented contact address nobody reads is worse than no document at all.
+>
+> **Templates that ask for what actually settles a report.**
+> `.github/ISSUE_TEMPLATE/bug_report.yml` asks for the version, the platform and
+> terminal, the whole of `viddl --doctor`, the log, what was already tried, and
+> two checkboxes — one of which is that the report carries no token, cookie or
+> password. `feature_request.yml` asks what is awkward today and what the idea
+> would cost, because the second question is the one that usually decides it here.
+> `config.yml` routes security reports to the private advisory and "it stopped
+> working, and it used to work" to `viddl --update`, which is the answer often
+> enough to say before the issue is opened. `pull_request_template.md` carries the
+> CI checklist plus the section that matters more: **anything unverified**.
+>
+> **The `.gitignore` half needed nothing.** `.coverage`, `coverage.xml` and
+> `htmlcov/` were already in it — **E1** added them along with the coverage
+> floor, which is also why this item was written against a tree where a coverage
+> run no longer dirties anything.
+>
+> **Verified.** The wheel above is the licence claim, not a reading of the file.
+> Every document is reachable from the README, which grew `Contributing` and
+> `Licence` sections at the end, and every relative link in the new files resolves
+> (checked by walking them). Both issue forms parse and use only real form block
+> types, with unique ids and a label on every input — 10 blocks in the bug form, 6
+> in the idea form — and the two workflows still parse. The README still satisfies
+> what the suite asserts *about* it: all nine environment variables are documented
+> and `install.ps1` is still named, so `test_appdata.py` and `test_windows.py` are
+> unaffected.
+>
+> **Not done, on purpose.** No `CODEOWNERS`, `FUNDING.yml` or `dependabot.yml`:
+> the first two need a name and an account this repository does not have, and the
+> third is worth doing with **E4**'s pins, so it updates something that is actually
+> pinned. No CI job validates the templates either: GitHub checks them when they
+> are used, and a schema validator in the suite would add a dependency and a test
+> to catch a typo once.
 
 ### E3 — Make the log tell the truth (see D1) · **P1** · S
 
@@ -3084,7 +3149,8 @@ own `DownloadJob`:
 
 **Verified by running code or reading it here:** every code reference and every
 claim in Appendix A; the precedence orders; the flag lists; the coverage numbers;
-the absence of CI, lockfile and licence.
+the absence of a lockfile, and of the CI and licence text that have since been
+added (**E1**, **E2**).
 
 **Not verified, and marked as such in the text:** Windows and macOS *runtime*
 behaviour (the registration paths are simulated in tests); real-site extractor

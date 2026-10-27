@@ -1,0 +1,49 @@
+name: An idea
+description: Something Viddl could do, or could do better.
+title: "[idea] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Viddl is deliberately small: one terminal program, one runtime
+        dependency, no server, no account. An idea that fits inside that shape has
+        a much better chance than one that does not — so the last two questions
+        matter as much as the first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is awkward today
+      description: Describe the moment, not the feature. What were you trying to do when this came up?
+      placeholder: "I download the same channel every week and click through the same six steps."
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+      description: If it changes a screen, the words you would expect to see help more than a description of them.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do instead now
+      description: The workaround, another program, or nothing. This is how a small feature is told apart from a missing one.
+  - type: dropdown
+    id: cost
+    attributes:
+      label: What it would cost
+      description: Viddl has one runtime dependency on purpose, and the screens are one stylesheet.
+      options:
+        - Nothing new — it fits what is there
+        - A new flag or screen, no new dependency
+        - I am not sure
+        - It would need another dependency or a background service
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before sending
+      options:
+        - label: I looked at the README, and this is not already described there or in a known limitation.
+          required: true

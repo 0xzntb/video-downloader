@@ -1,0 +1,96 @@
+name: Something went wrong
+description: A link that failed, a screen that misbehaved, an install that did not finish.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The four things below are what usually settles a
+        download bug in one round instead of six — they are all one command each.
+
+        **Please do not paste a link with a token in it.** Cut anything after a
+        `?`; the site name and the kind of link (video, playlist, live stream)
+        are what matter. `SECURITY.md` covers anything that looks like a
+        security problem rather than a bug.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, in your own words. The exact words on screen help most of all.
+      placeholder: "It said the video was private, but it plays fine in my browser."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      placeholder: "I expected the download to start."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to get there again
+      description: The smallest sequence that shows it — which screen, which key, which row.
+      placeholder: |
+        1. Paste https://www.youtube.com/watch?v=… and press Enter
+        2. Pick the 720p row
+        3. At about 40% the bar stops and the screen never changes
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`viddl --version`, or the number in the window's subtitle."
+      placeholder: "Viddl 1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and terminal
+      description: Operating system and version, and the terminal you ran it in.
+      placeholder: "Windows 11 24H2, Windows Terminal 1.22"
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`viddl --doctor`"
+      description: |
+        Paste the whole output. It names the engine, the ffmpeg, the folders, the
+        language, the network waits and which environment variables are in force
+        — which answers most of the follow-up questions before they are asked.
+      render: text
+      placeholder: |
+        Viddl 1.0.0
+        Engine:       yt-dlp 2026.08.19 (in ~/.local/share/viddl/bin)
+        ...
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: The log, if the screen could not explain it
+      description: |
+        `viddl --doctor` prints the path; the last lines are enough. The file is
+        redacted already — credentials and signature parameters in links are
+        replaced — but read it before posting.
+      render: text
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you already tried
+      description: |
+        `viddl --update` is worth trying first when a link that used to work
+        stops working — a stale engine is the usual answer. Say if you tried it,
+        and what it did.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before sending
+      options:
+        - label: I have removed anything from this report that only I should see — tokens, cookies, passwords, private links.
+          required: true
+        - label: This is not a security problem; those go through the private advisory route in SECURITY.md.
+          required: true

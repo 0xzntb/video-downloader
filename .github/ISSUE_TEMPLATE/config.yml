@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: A security problem
+    url: https://github.com/0xzntb/video-downloader/security/advisories/new
+    about: Report it privately here, not in an issue. SECURITY.md says what the threat model already covers.
+  - name: It stopped working, and it used to work
+    url: https://github.com/0xzntb/video-downloader/blob/main/README.md#when-something-goes-wrong
+    about: Run "viddl --update" first — a stale engine is the usual answer — then read this section.

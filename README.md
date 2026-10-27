@@ -1167,3 +1167,19 @@ python3 docs/demo/render.py banner
   (`install.ps1`) is run for real in the Windows job, and every fake shell
   script the tests use is given the shebang Windows does not understand. If a
   console cannot draw the full-screen app, `viddl --plain` is the ASCII path.
+
+## Contributing
+
+Bug reports, translations and patches are all welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md)
+has the setup commands, the four commands CI runs, and a map of which file does
+what. [`CHANGELOG.md`](CHANGELOG.md) says what has changed — nothing is tagged
+yet, so it describes what this version does rather than what it added.
+
+Everyone taking part is expected to follow the [code of conduct](CODE_OF_CONDUCT.md).
+Anything that looks like a security problem belongs in a private advisory, as
+[`SECURITY.md`](SECURITY.md) describes, rather than in a public issue.
+
+## Licence
+
+MIT — the text is in [`LICENSE`](LICENSE). Use it, change it, ship it; keep the
+copyright notice and this permission notice with any copy or substantial part.
