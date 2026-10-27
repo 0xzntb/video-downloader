@@ -11,7 +11,9 @@ README).
 
 ## Setting it up
 
-You need Python 3.9 or newer. Nothing else: no Node, no ffmpeg, no yt-dlp.
+You need Python 3.9 or newer. Nothing else: no Node, no ffmpeg, no yt-dlp. The
+optional tests that do need one of those say so where they are described below,
+and **skip** without it — the suite is green on a machine that has none of them.
 
 ```sh
 python3 -m venv .venv
@@ -66,6 +68,18 @@ serve a file from `127.0.0.1` and download it through the app's own
 `DownloadJob`. The merge test in the same file also needs a real `ffmpeg`, since
 it is the one that actually runs one. A skip is honest there; a pass is not, so
 never make one mark a test that did not run as passing.
+
+The extension has a browser test file of its own, and it is the one thing here
+that needs Node packages: `npm install` and `npx playwright install chromium`
+fetch Playwright and a Chromium (about 120 MB) into `node_modules/` and the
+browser cache. With them in place `pytest` runs it like anything else; without
+them it skips. It loads the real extension and clicks the popup and the button on
+a watch page — every `youtube.com` request in it is answered from a page written
+in the test, so nothing leaves the machine:
+
+```sh
+npm install && npx playwright install chromium
+```
 
 `ruff` and `mypy` are configured in `pyproject.toml`, and both are quiet
 before a change rather than after one: a rule is switched on because it caught

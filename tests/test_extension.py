@@ -7,6 +7,7 @@ JavaScript syntax and behaviour are verified with Node when it is available, so
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -17,6 +18,16 @@ from viddl.protocol import extension_source_dir
 
 NODE = shutil.which("node")
 EXTENSION = extension_source_dir()
+REPO_ROOT = Path(__file__).resolve().parent.parent
+#: Playwright is a dev tool for the browser tests only: it is not a dependency of
+#: the app, and `npm install` is what puts it here.
+PLAYWRIGHT = REPO_ROOT / "node_modules" / "playwright"
+#: The home directory of the account running the tests, read before the autouse
+#: fixture hides ``HOME`` from each test. Playwright looks for its Chromium in
+#: ``~/.cache/ms-playwright``, and a browser is not part of what the app under
+#: test is allowed to see — the browser tests are, and they need the real one.
+REAL_HOME = Path.home()
+BROWSER_TEST = Path(__file__).resolve().parent / "extension.browser.test.js"
 
 
 def load_manifest(name: str) -> dict:
@@ -149,6 +160,36 @@ def test_javascript_behaviour():
         capture_output=True,
         text=True,
         cwd=str(test_file.parent.parent),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(NODE is None, reason="Node is needed to run the extension in a browser")
+def test_the_extension_in_a_real_browser():
+    """The popup, the YouTube button and the ``viddl://`` link, in Chromium (E8).
+
+    Skipped, never passed, without Playwright and its browser: 120 MB of Chromium
+    is not something every checkout has, and a green run that tested nothing is
+    worse than an honest skip. The ``extension`` job in CI installs both and runs
+    the file directly, where a skip is a failure.
+    """
+    if not PLAYWRIGHT.exists():
+        pytest.skip(
+            "Playwright is not installed: `npm install` and "
+            "`npx playwright install chromium`"
+        )
+    environment = dict(os.environ)
+    environment["HOME"] = str(REAL_HOME)
+    environment.setdefault(
+        "PLAYWRIGHT_BROWSERS_PATH", str(REAL_HOME / ".cache" / "ms-playwright")
+    )
+    result = subprocess.run(
+        [NODE, "--test", str(BROWSER_TEST)],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=environment,
+        timeout=600,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

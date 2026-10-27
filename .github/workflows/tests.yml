@@ -189,3 +189,32 @@ jobs:
             echo "::error::the hook committed a failing smoke test"
             exit 1
           fi
+
+  # E8: the extension in a real browser. Node and Playwright only — the app is not
+  # involved, and neither is Python. The other jobs read the extension's files and
+  # its logic with the browser stubbed out; this one clicks the popup and the
+  # button on a watch page and reads the viddl:// link that comes out.
+  extension:
+    name: The extension in a real browser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # The lockfile is what keeps this on the same Playwright and the same
+      # Chromium build as last week. `--with-deps` installs the system libraries
+      # the browser needs, which the runner image does not all carry.
+      - name: Install Playwright and Chromium
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run the browser tests
+        run: |
+          set -o pipefail
+          node --test --test-reporter=tap tests/extension.browser.test.js | tee browser-output.txt
+          # A run that exercised nothing is not a green run.
+          grep -qE "^# pass [1-9]" browser-output.txt

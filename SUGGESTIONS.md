@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **50 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E7 in section 5,
+Progress so far: **51 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E8 in section 5,
 D1–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -3178,7 +3178,7 @@ yt-dlp is present, and let missing yt-dlp be a skip (never a false pass).
 > ships its own ffmpeg-free image, so the weekly job (Linux) is the one place
 > this is proven.
 
-### E8 — Browser-level extension tests · **P2** · M
+### E8 — Browser-level extension tests · **P2** · M · ✅ **Done**
 
 `tests/extension.test.js` covers the pure JS logic via Node, and `test_extension.py`
 checks the manifest and referenced files. Nothing loads the popup, clicks the
@@ -3188,6 +3188,66 @@ button, or verifies the `viddl://` link the page ends up with.
 extension: assert the popup renders, that the YouTube button appears, and that
 the created link decodes to the expected `viddl://download?url=…&audio=1`. This
 is also where **S1**'s fix gets a second, independent lock.
+
+> **Done: five tests in a real Chromium, none of them touching YouTube.**
+>
+> * **`tests/extension.browser.test.js`**, run by `node --test` and by `pytest`
+>   through a wrapper that skips without Playwright. It loads the unpacked
+>   extension into a persistent Chromium context (`channel: 'chromium'` — the
+>   default headless shell refuses to load an extension) and takes the extension
+>   id from the background service worker's URL.
+> * **What is asserted.** The popup renders — heading, both buttons, the
+>   `viddl://` setup hint — and refuses a page that is not a web page (with the
+>   popup opened as a tab, the active page *is* the extension, which is the same
+>   branch a user hits on `chrome://`). The button appears on a watch page with
+>   its label and `aria-label`, and opens a panel with both choices. Clicking
+>   “Audio only” produces exactly
+>   `viddl://download?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dabc123&audio=1`,
+>   which decodes back to the page and `audio=1`, and shows the toast. The video
+>   choice carries no `audio` at all. A page whose *address* contains
+>   `&audio=1&--exec=calc.exe` arrives as one encoded `url` value — no second
+>   parameter, no bare payload: **S1**'s second lock, this time from a real click.
+> * **Offline, and honest about the permission.** Every `youtube.com` request is
+>   answered by the test (`page.route`), so nothing leaves the machine. The
+>   shipped extension asks for `activeTab` and no host permission, so injection
+>   needs the permission a toolbar click grants — which a test cannot perform. The
+>   link-reading tests therefore load a *copy* with
+>   `host_permissions: ["*://*.youtube.com/*"]` added and nothing else changed.
+>   The untouched extension is still tested: without the permission the hand-off
+>   falls back to opening a tab, and the test proves it by counting tabs through
+>   the service worker, because Chromium hands back no page object for a tab
+>   holding a custom scheme.
+> * **One hand-off per browser**, and that is a finding rather than a shortcut:
+>   clicking a `viddl://` link raises the browser's “Open Viddl?” confirmation,
+>   and while it is up the page stops receiving real mouse input (an in-page
+>   `.click()` still works, which is how this was diagnosed). Each test gets its
+>   own context, so a second click can never look like a broken button.
+> * **`package.json` and `package-lock.json`**, `private: true`, with Playwright as
+>   the only devDependency and `node_modules/` ignored. Not a dependency of the
+>   app: `pip install -e ".[dev]"` is still the whole toolchain for the suite, and
+>   the browser test skips without these — README and CONTRIBUTING say so.
+> * **A CI job of its own** (`extension`): `npm ci`, then
+>   `npx playwright install --with-deps chromium`, then the file with
+>   `--test-reporter=tap`, and a check that `# pass` is non-zero so an empty run
+>   cannot look green.
+> * **The pytest wrapper hands Playwright the real `HOME`.** The suite's autouse
+>   fixture redirects `HOME` per test and Playwright looks for its browser in
+>   `~/.cache/ms-playwright`; the first run failed with *“Executable doesn't exist
+>   at /tmp/pytest-…/home/.cache/ms-playwright/…”*, which is how this was found.
+>   The real home is read at import, before any fixture runs.
+>
+> **Verified here**, Chromium 1248 with Playwright 1.64.1: `node --test` →
+> **5 passed in 4.7 s**; `pytest tests/test_extension.py` → **11 passed**; with
+> `node_modules` moved aside → **10 passed, 1 skipped** with the install hint. The
+> browser itself needed system libraries this container does not carry
+> (`libnspr4`, `libnss3`, `libatk*` and friends), fetched as `.deb` files and
+> unpacked into a private sysroot for the run — CI's `--with-deps` does that on the
+> runner, and none of it is in the repository.
+>
+> **Not verified:** the `extension` job has not run on a runner; the browser tests
+> have only been run on Linux, headless; and the popup's *success* path is out of
+> reach without a real toolbar click, so the popup test covers rendering and the
+> refusal branch, with the success path covered by the YouTube-button tests.
 
 ### E9 — Fuzz and property tests for the parsers · **P2** · M
 

@@ -1157,6 +1157,28 @@ copy, so a partial stage can still fail on the runner, and it has only been
 exercised where `sh` is the shell executing it — on Windows, Git Bash can run
 `sh .githooks/pre-commit` by hand.
 
+The browser extension has two layers of tests. `tests/extension.test.js` is its
+logic with the browser stubbed out and runs with the suite. `tests/extension.browser.test.js`
+loads the unpacked extension into a real Chromium and clicks it: the popup
+renders, the button appears on a watch page, and the `viddl://` link that comes
+out is the page address, encoded, with the audio flag only when audio was asked
+for. That one needs Playwright and a browser of its own, which is why it is not
+part of the `dev` extra:
+
+```sh
+npm install
+npx playwright install chromium
+node --test tests/extension.browser.test.js
+```
+
+Without them the Python run **skips** it rather than pretending; the `extension`
+job in CI installs both and runs the file directly, where a skip is a failure.
+Nothing in it touches YouTube — every `youtube.com` request is answered from a
+page written in the test — and the extension the app ships asks for `activeTab`
+and no host permission, so the one test that reads the link out of the page
+loads a copy with that permission added, which is what a click on the toolbar
+would grant.
+
 `tests/test_integration.py` is the one part of the suite that uses the real
 thing rather than a stand-in engine: it serves a file from `127.0.0.1` and
 downloads it through the app's own `DownloadJob` with whatever `yt-dlp` it can

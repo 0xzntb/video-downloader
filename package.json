@@ -1,0 +1,12 @@
+{
+  "name": "viddl-extension-tests",
+  "private": true,
+  "description": "The browser tests for Viddl's extension. Nothing here is published, and the app does not depend on any of it.",
+  "scripts": {
+    "test": "node --test tests/extension.test.js",
+    "test:browser": "node --test tests/extension.browser.test.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.1"
+  }
+}
