@@ -10,9 +10,9 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **44 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E2 in section 5,
-D2–D3 in section 6.
+Progress so far: **46 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E3 in section 5,
+D1–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
 That is the security pass on section 1: nothing the app downloads is run
@@ -46,7 +46,7 @@ in `SECURITY.md`, which is what **D3** asked for.
 | 5 | ✅ **R4** — `viddl --update` | Stale yt-dlp is *the* top cause of "this link stopped working" — **done** |
 | 6 | **F1** — cookies from the browser | Unlocks Instagram, Threads, TikTok, sometimes Vimeo (README says unsupported) |
 | 7 | ✅ **S2** + **S3** — verify and lock down downloaded helpers | Executables were fetched and `chmod +x`'d with no hash check, into a folder anyone could read — **both done** |
-| 8 | **D1** — make the log tell the truth | README promises last-run details; the log is almost always empty |
+| 8 | ✅ **D1** — make the log tell the truth | README promised last-run details; the log was almost always empty — **done** with **E3** |
 | 9 | **E7** — one real end-to-end test | Unit tests stub the engine; nothing proves the pipeline works together |
 | 10 | ✅ **U1** — theme and `NO_COLOR` support | Three schemes, `NO_COLOR` and `TERM=dumb` handled, contrast measured rather than eyeballed — **done** |
 
@@ -2834,7 +2834,7 @@ text ships), `CHANGELOG.md`, `CONTRIBUTING.md`, issue/PR templates,
 > are used, and a schema validator in the suite would add a dependency and a test
 > to catch a typo once.
 
-### E3 — Make the log tell the truth (see D1) · **P1** · S
+### E3 — Make the log tell the truth (see D1) · **P1** · S · ✅ **Done**
 
 The README promises: "The log holds the last run's details if something failed in
 a way the screen could not explain." In practice the file is created and left at
@@ -2846,6 +2846,71 @@ failed download, the yt-dlp command line, the exit code or the raised error.
 redaction **S4** asked for is now in place, so this can simply log and get the
 filtering for free. Then the README becomes true, and `--doctor` becomes
 genuinely useful for support.
+
+> **Done: the log now holds the failure it promises.** Each of these writes one
+> record, and only when it fails: a download that exits non-zero, a download
+> whose merge did not happen, a download that finished with no file, a look-up
+> that failed or timed out, a look-up whose answer was not JSON, a process that
+> could not be started, a downloaded engine that would not run, every ffmpeg
+> mirror failing, and a download that did not match its published checksum —
+> the one failure worth writing down even when the screen explained it, because
+> a mirror serving other bytes is a fact about the mirror.
+>
+> `logfile.failure()` builds the record, and that is where the rules live:
+>
+> ```
+> 2026-10-27 06:36:21,918 ERROR viddl: the link could not be read (Viddl 1.0.0 on linux)
+>   ran: /tmp/…/yt-dlp --ignore-config --dump-single-json … -- 'https://www.youtube.com/watch?v=dQw4w9WgXcQ&token=<redacted>'
+>   exit code: 1
+>   said:
+>     ERROR: Video unavailable
+> ```
+>
+> That is a real run of the real CLI against a failing engine, not a mocked line.
+> Three things in it are deliberate:
+>
+> * **The version and the platform are in the first line**, because they are the
+>   first question asked of a pasted log.
+> * **The command line is quoted, then redacted by the existing formatter**, so
+>   `S4`'s filter covers it without a second code path: the token in that link
+>   went in and is not in the file.
+> * **The last forty lines of what the tool said**, cut to 500 characters each
+>   and stripped of control characters — a tool can print a page on one line, and
+>   can quote a video's name containing an ESC. The same count the failure screen
+>   uses, for the same reason: a tool explains itself when it gives up.
+>
+> **Two lies this exposed, both fixed.**
+>
+> * `viddl --doctor` named the log as `Engine.home / "viddl.log"`, which is the
+>   right file only when the engine was built with the default home; it now asks
+>   `appdata.log_path()`, which is the one place that knows. It also says what is
+>   *in* the file — `(364 B, last written 2026-10-27 06:36)` or `(nothing written
+>   yet)`. A path alone answered the question nobody had.
+> * The failure screen said *"The log file has the rest: …"* **whenever the file
+>   existed**, and `logfile.enable()` creates it at start-up — so every failure
+>   promised a rest that was not there. `_log_file()` now returns the path only
+>   when the file has something in it.
+>
+> **Verified.** 10 tests added (1268 → 1278): the record's four parts, redaction
+> reaching the command line, the forty-line tail containing an ESC, a
+> 5000-character line cut to 500, a handler that raises not becoming the failure,
+> and the real paths — a failed `DownloadJob.run()` writes the command,
+> `exit code: 1` and `ERROR: Video unavailable`; a failed `probe_video` writes its
+> own; and a download that worked writes **nothing**. `test_logfile.py` and
+> `test_download.py` green (132 together), `test_engine.py`, `test_machine.py` and
+> `test_cli.py` green, the log-related TUI tests green, `pyflakes` clean. The run
+> above left a **0600** `viddl.log` of **364 bytes**, and `grep` for the token
+> over it finds **0**.
+>
+> **Not done, on purpose.** Not every `ToolError` is logged: the ones with no
+> command line and no tool output, which the screen already explains completely —
+> "no downloadable qualities", "that link did not point to a single video" —
+> would add noise to a file read only after a failure. The rule is *write down
+> what the screen cannot show*. There is no log-level switch and no `--verbose`
+> either: the file holds failures, not a trace, and a flag to make it chattier is
+> a debugging feature nobody has asked for. Windows remains the **S4** caveat —
+> the mode there is an ACL, and a log written on Windows has not been inspected
+> from here.
 
 ### E4 — Reproducible installs · **P2** · S
 
@@ -2960,7 +3025,7 @@ project's "nothing leaves your machine" promise.
 
 | # | Item | Detail |
 | --- | --- | --- |
-| **D1** | **The log promise is not met** | README: "The log holds the last run's details if something failed." Reality: the file is created empty, and one `LOGGER.exception` call exists in total. Either log failures (**E3**) or soften the claim. |
+| **D1** | ✅ **The log promise is met** | Done with **E3**: a failed download, look-up or helper install now writes its command line, its exit code and the tool's last forty lines, redacted on the way in — and a run that worked writes nothing. |
 | **D2** | ✅ **Undocumented environment variables** | Done with **S6**: the README has a table of all four — what each overrides, why you would use it, and how a value is checked — and `--doctor` prints which are in effect. |
 | **D3** | ✅ **Document the `viddl://` security model** | Done with **S5**: `SECURITY.md` states the guarantee (any page may open the app; nothing downloads without a click) and what it does *not* cover, and the README links to it. |
 | **D4** | **Troubleshooting / FAQ** | Stale extractor ("run `viddl --update`"), login-required sites (**F1**), corporate proxies, Windows console rendering (**R10**), where the log lives. Each is a support question waiting to happen. |
@@ -3042,8 +3107,8 @@ bundled copy ahead of the system one, which the README does not say.
 the definition (`tui/app.py:40`) and one `LOGGER.exception` (`tui/app.py:279`).
 Running the real CLI into a clean home (`VIDDL_HOME=/tmp/vhome viddl --doctor`,
 exit 0) produces exactly two things: an empty `bin/` and a **0-byte**
-`viddl.log`. (Both still hold; only their modes have moved on — `0700` and
-`0600` as of **S3** and **S4**.)
+`viddl.log`. (The modes have moved on — `0700` and `0600` as of **S3** and **S4** — and the
+second no longer holds: **E3** writes failures into the file.)
 
 **The test suite is hermetic** — `tests/conftest.py` has an autouse fixture that
 redirects `VIDDL_HOME`, `VIDDL_DOWNLOAD_DIR`, `HOME`, `XDG_DATA_HOME`,

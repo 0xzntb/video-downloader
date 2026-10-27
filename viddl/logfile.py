@@ -21,9 +21,12 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import os
+import shlex
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
+from . import __version__
 from . import appdata
 from .util import REDACTED, redact
 
@@ -31,17 +34,28 @@ from .util import REDACTED, redact
 LOG_MAX_BYTES = 256 * 1024
 BACKUP_COUNT = 1
 
+#: How much of a tool's own words one failure record keeps, and how long one
+#: line of them may be. The count matches the failure screen's forty lines: the
+#: log is read for the same question, by someone with a pager instead of a
+#: panel. A line may run longer here, because it is read in a pager — but not
+#: without end, or one JSON blob would be the whole record.
+DETAIL_LINES = 40
+DETAIL_WIDTH = 500
+
 #: The logger the rest of Viddl writes to (``tui.app`` uses the same name).
 LOGGER_NAME = "viddl"
 
 __all__ = [
     "BACKUP_COUNT",
+    "DETAIL_LINES",
+    "DETAIL_WIDTH",
     "LOG_MAX_BYTES",
     "LOGGER_NAME",
     "OwnerOnlyRotatingFileHandler",
     "REDACTED",
     "RedactingFormatter",
     "enable",
+    "failure",
 ]
 
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -79,6 +93,68 @@ class RedactingFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         return redact(super().format(record))
+
+
+def _command_line(command: Sequence[str]) -> str:
+    """One line that could be pasted into a terminal to try the same thing.
+
+    Quoted the way a shell would want it, which is also how it becomes readable:
+    a link with a ``?`` in it is one argument rather than the start of something
+    the reader has to reassemble.
+    """
+    return shlex.join([str(part) for part in command])
+
+
+def _readable(line: str) -> str:
+    """One line of a tool's output, safe to write down and to read back.
+
+    Control characters go, exactly as they do on the failure screen: a tool can
+    quote a video's name, and the log is read in a terminal — where an ESC in the
+    file is a sequence the terminal obeys rather than four characters it draws.
+    """
+    cleaned = "".join(
+        character if character.isprintable() or character == "\t" else " "
+        for character in str(line)
+    )
+    return cleaned[:DETAIL_WIDTH]
+
+
+def failure(
+    summary: str,
+    *,
+    command: Sequence[str] = (),
+    exit_code: Optional[int] = None,
+    detail: str = "",
+    logger: Optional[logging.Logger] = None,
+) -> None:
+    """Write one failure down: what was attempted, how it ended, what it said.
+
+    Called from the places that know the command line and the exit code — the
+    download runner, the two look-ups, the engine's own installs — because that
+    is the part the screen does not show and a bug report cannot supply. A run
+    that worked writes nothing: the log is read after something has gone wrong,
+    and a line per download would bury the one that mattered.
+
+    Everything goes through the formatter, so the redaction S4 installed covers
+    the command line as well as the output. Nothing here can change what the
+    user sees, so a failure while logging is swallowed: the log is a nicety, and
+    the run has already failed.
+    """
+    try:
+        lines = [f"{summary} (Viddl {__version__} on {sys.platform})"]
+        if command:
+            lines.append("  ran: " + _command_line(command))
+        if exit_code is not None:
+            lines.append(f"  exit code: {exit_code}")
+        said = [line for line in str(detail or "").splitlines() if line.strip()]
+        if said:
+            # The last lines, for the same reason the screen shows the last
+            # ones: a tool explains itself when it gives up.
+            lines.append("  said:")
+            lines.extend("    " + _readable(line) for line in said[-DETAIL_LINES:])
+        (logger or logging.getLogger(LOGGER_NAME)).error("\n".join(lines))
+    except Exception:  # pragma: no cover - a log must never be the failure
+        pass
 
 
 def enable(

@@ -3430,6 +3430,18 @@ def test_the_details_point_at_the_log_when_there_is_one(tmp_path):
     assert str(log) in details
 
 
+def test_a_log_that_holds_nothing_is_not_offered_as_having_the_rest(tmp_path):
+    """The file exists from start-up, so existence alone promised nothing (E3)."""
+    from viddl import appdata
+
+    error = ToolError("It did not work.", "Try again.", raw="ERROR: no")
+    log = appdata.log_path()
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("", encoding="utf-8")
+
+    assert "The log file has the rest" not in _failure_details(error)
+
+
 def test_play_on_windows_explains_when_the_shell_will_not_open_it(monkeypatch, tmp_path):
     def refuse(path):
         raise OSError("no associated program")

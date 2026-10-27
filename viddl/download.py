@@ -17,6 +17,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from . import appdata
 from . import history
+from . import logfile
 from .cookies import cookies_args
 from .engine import Engine, ToolError, is_windows
 from .errors import explain
@@ -369,6 +370,11 @@ def _run_lookup(
             **options,
         )
     except OSError as exc:
+        logfile.failure(
+            "the video engine could not be started",
+            command=args,
+            detail=str(exc),
+        )
         raise ToolError(
             "The video engine could not be started.",
             f"Try running Viddl again. Details: {exc}",
@@ -386,6 +392,11 @@ def _run_lookup(
             if time.monotonic() >= deadline:
                 stop_process_tree(process, force=True)
                 process.communicate()
+                logfile.failure(
+                    "the site took too long to answer",
+                    command=args,
+                    detail=f"nothing heard from the site in {timeout:g} seconds",
+                )
                 raise ToolError(
                     "The site took too long to answer.",
                     "Check your connection, or try the link again in a moment.",
@@ -459,6 +470,12 @@ def probe_video(
     if returncode != 0 or not (stdout or "").strip():
         raw = (stderr or "") + "\n" + (stdout or "")
         friendly = explain(raw, returncode)
+        logfile.failure(
+            "the link could not be read",
+            command=args,
+            exit_code=returncode,
+            detail=raw,
+        )
         raise ToolError(
             friendly.message,
             friendly.hint,
@@ -469,6 +486,11 @@ def probe_video(
     try:
         info = json.loads(stdout)
     except json.JSONDecodeError as exc:
+        logfile.failure(
+            "the answer from the site could not be read",
+            command=args,
+            detail=str(exc),
+        )
         raise ToolError(
             "The site sent back something Viddl could not read.",
             "This usually means the site changed. Trying again later often fixes it.",
@@ -537,6 +559,12 @@ def probe_playlist(
     if returncode != 0 or not (stdout or "").strip():
         raw = (stderr or "") + "\n" + (stdout or "")
         friendly = explain(raw, returncode)
+        logfile.failure(
+            "the playlist could not be read",
+            command=args,
+            exit_code=returncode,
+            detail=raw,
+        )
         raise ToolError(
             friendly.message,
             friendly.hint,
@@ -547,6 +575,11 @@ def probe_playlist(
     try:
         info = json.loads(stdout)
     except json.JSONDecodeError as exc:
+        logfile.failure(
+            "the answer from the site could not be read",
+            command=args,
+            detail=str(exc),
+        )
         raise ToolError(
             "The site sent back something Viddl could not read.",
             "This usually means the site changed. Trying again later often fixes it.",
@@ -1016,6 +1049,12 @@ class DownloadJob:
             if code != 0:
                 raw = "\n".join(self._lines[-60:])
                 friendly = explain(raw, code)
+                logfile.failure(
+                    "the download failed",
+                    command=args,
+                    exit_code=code,
+                    detail=raw,
+                )
                 # ``temporary`` is what ``run`` decides from: it is the single
                 # place that says whether trying again is worth the wait.
                 raise ToolError(
@@ -1055,6 +1094,11 @@ class DownloadJob:
             # A run the archive skipped is exempt: nothing was fetched, so
             # ffmpeg never had the chance to fail, and naming it here would
             # send the user to set up a tool that was not the problem.
+            logfile.failure(
+                "the video and audio could not be joined",
+                command=args,
+                detail="\n".join(self._lines[-60:]),
+            )
             raise ToolError(
                 "The video and audio could not be joined into one file.",
                 "That needs ffmpeg, which is not available. Run "
@@ -1062,6 +1106,11 @@ class DownloadJob:
                 "that does not need it.",
                 raw="\n".join(self._lines[-60:]),
             )
+        logfile.failure(
+            "the download finished but no file was found",
+            command=args,
+            detail="\n".join(self._lines[-60:]),
+        )
         raise ToolError(
             "The download finished but the file could not be found.",
             f"Look in your Downloads folder: {self.out_dir}",
@@ -1096,6 +1145,11 @@ class DownloadJob:
                 **options,
             )
         except OSError as exc:
+            logfile.failure(
+                "the video engine could not be started",
+                command=args,
+                detail=str(exc),
+            )
             raise ToolError(
                 "The video engine could not be started.",
                 "Try running Viddl again.",

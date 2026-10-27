@@ -314,12 +314,19 @@ _DETAIL_WIDTH = 200
 
 
 def _log_file() -> Optional[Path]:
-    """The log this run has written, if there is one to point at."""
+    """The log, if there is anything in it for the reader to go to (E3).
+
+    The file exists from the moment the app starts, so its existence proved
+    nothing: every failure screen used to promise "the rest" in a file of zero
+    bytes. It is named now only when a failure has actually been written down.
+    """
     try:
         path = appdata.log_path()
+        if path.is_file() and path.stat().st_size > 0:
+            return path
     except Exception:  # pragma: no cover - a nicety, never a failure
         return None
-    return path if path.is_file() else None
+    return None
 
 
 def _failure_details(error: ToolError) -> str:

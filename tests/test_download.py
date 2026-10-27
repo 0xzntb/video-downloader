@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
@@ -16,6 +17,7 @@ import pytest
 
 from viddl import appdata
 from viddl import download as download_mod
+from viddl import logfile
 from viddl import history
 from viddl.download import DownloadCancelled, DownloadJob, ProbeCancelled, probe_video
 from viddl.engine import Tool, ToolError
@@ -2300,3 +2302,74 @@ def test_a_live_recording_waits_for_the_writer_to_stop(tmp_path, monkeypatch):
 
     assert job.keep_recording() is not None
     assert waited["timeout"] == 2.0
+
+
+# ---------------------------------------------------------------------------
+# what a failure leaves in the log (E3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def written_log(tmp_path, monkeypatch):
+    """A log of this test's own, plus the text that landed in it."""
+
+    def written() -> str:
+        target = tmp_path / "viddl.log"
+        return target.read_text(encoding="utf-8") if target.is_file() else ""
+
+    logger = logging.getLogger(f"viddl-download-{tmp_path.name}")
+    logger.handlers.clear()
+    logger.propagate = False
+    target = tmp_path / "viddl.log"
+    assert logfile.enable(logger, target) == target
+    # ``logfile.failure`` asks for the logger by name, at the moment it writes.
+    monkeypatch.setattr(logfile, "LOGGER_NAME", logger.name)
+    return written
+
+
+def test_a_failed_download_is_written_down_for_the_next_bug_report(tmp_path, written_log):
+    job = DownloadJob(
+        engine_for(tmp_path, "fake_bad.py", FAILURE_SCRIPT),
+        "https://x.invalid/v?token=SECRET123",
+        video_option(),
+        tmp_path / "Downloads",
+    )
+
+    with pytest.raises(ToolError):
+        job.run()
+
+    written = written_log()
+    assert "the download failed" in written
+    assert "  ran: " in written
+    assert "fake_bad.py" in written
+    assert "  exit code: 1" in written
+    assert "ERROR: Video unavailable" in written
+    # The link a support reader needs, without the part that was not theirs.
+    assert "x.invalid/v" in written
+    assert "SECRET123" not in written
+
+
+def test_a_failed_look_up_is_written_down_too(tmp_path, written_log):
+    engine = engine_for(tmp_path, "fake_fail.py", INFO_FAILURE_SCRIPT)
+
+    with pytest.raises(ToolError):
+        probe_video(engine, "https://x.invalid/v")
+
+    written = written_log()
+    assert "the link could not be read" in written
+    assert "  exit code: 1" in written
+    assert "Private video" in written
+
+
+def test_a_download_that_worked_writes_nothing(tmp_path, written_log):
+    """A line per download would bury the one failure the log exists for."""
+    job = DownloadJob(
+        engine_for(tmp_path, "fake_ok.py", SUCCESS_SCRIPT),
+        "https://x.invalid/v",
+        video_option(),
+        tmp_path / "Downloads",
+    )
+
+    job.run()
+
+    assert written_log() == ""

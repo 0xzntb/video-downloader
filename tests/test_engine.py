@@ -1818,3 +1818,21 @@ def test_the_check_that_a_new_tool_runs_waits_as_long_as_asked(monkeypatch):
     monkeypatch.delenv("VIDDL_TIMEOUT")
     engine_mod._run_probe(["ffmpeg"], "-version")
     assert waits == [40.0, 25]
+
+
+def test_the_doctor_says_whether_the_log_has_anything_in_it(tmp_path):
+    """A path alone answered a question nobody had: the file always exists (E3)."""
+    from viddl import appdata
+
+    engine = Engine(home=tmp_path / "app")
+    assert "nothing written yet" in "\n".join(engine.report())
+
+    log = appdata.log_path()
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("2026-10-27 ERROR viddl: the download failed\n", encoding="utf-8")
+
+    report = "\n".join(engine.report())
+    assert "nothing written yet" not in report
+    assert str(log) in report
+    # The size, so "is what I am looking at the failure or a stale one" is answered.
+    assert "last written" in report

@@ -698,7 +698,7 @@ downloader itself said, line for line — the last forty lines of it, with the
 signed parameters in any link redacted and control characters removed, because
 that output can quote a site's own video name. **Copy details** (or `c`) puts
 the whole thing on the clipboard for a bug report, and the log file is named at
-the bottom when this run wrote one.
+the bottom once there is something in it to read.
 
 If you need more detail:
 
@@ -706,9 +706,17 @@ If you need more detail:
 viddl --doctor          # versions, paths, and whether each tool works
 ```
 
-That prints the app folder, the log file, and where downloads go. The log holds
-the last run's details if something failed in a way the screen could not
-explain.
+That prints the app folder, the log file, and where downloads go — and says how
+much the log holds and when it was last written, so an empty one is obvious
+before anybody has to ask for it.
+
+When a download, a look-up or the install of a helper fails, what happened is
+written there: the command that was run, its exit code, and the last forty lines
+of what the tool itself said. That is most of what a bug report otherwise has to
+ask for. Links are redacted on the way in, so a signed address is not written
+down; a run that worked writes nothing at all, because a line per download would
+bury the failure the file exists for. The file rolls over at 256 KB and keeps
+one older copy, so this is a last run rather than a history.
 
 If Viddl cannot create its own folder — a read-only home, or one owned by
 another account — the app says so on its first screen (*"Cannot save Viddl's

@@ -29,6 +29,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from . import __version__
 from . import appdata
+from . import logfile
 from .errors import explain
 from .i18n import t
 from .util import human_size
@@ -527,12 +528,21 @@ def download_to(
             actual = sha256_of(tmp_path)
             if actual != expected_sha256.lower():
                 tmp_path.unlink(missing_ok=True)
+                detail = (
+                    f"expected {expected_sha256.lower()}\n"
+                    f"     got {actual}\n"
+                    f"     from {url}"
+                )
+                # The one failure that is worth having on disk even when the
+                # screen explained it: a mirror that is not serving the bytes it
+                # published is a fact about the mirror, not about this download.
+                logfile.failure("a download did not match its checksum", detail=detail)
                 raise ChecksumMismatch(
                     "The download did not match the checksum published for it.",
                     "Viddl refused to use it. If this keeps happening, the mirror "
                     "may have been rebuilt while downloading — try again later, or "
                     "install the tool yourself.",
-                    raw=f"expected {expected_sha256.lower()}\n     got {actual}\n     from {url}",
+                    raw=detail,
                 )
         tmp_path.replace(dest)
     except ToolError:
@@ -692,6 +702,26 @@ def _extract_member(archive: Path, pattern: str, dest: Path, mode: Optional[int]
             pass
 
 
+def _log_state() -> str:
+    """Where the log is, and whether there is anything in it (E3).
+
+    ``--doctor`` used to print a path and stop there, which answered a question
+    nobody had: the file exists from the moment the app starts, so its existence
+    says nothing. The size and the time are what say whether the last thing that
+    went wrong was written down — and “nothing written yet” is worth knowing
+    before asking someone to send it.
+    """
+    try:
+        path = appdata.log_path()
+        info = path.stat() if path.is_file() else None
+    except OSError:  # pragma: no cover - an app folder that cannot be read
+        return "(unknown)"
+    if info is None or info.st_size == 0:
+        return f"{path} (nothing written yet)"
+    written = time.strftime("%Y-%m-%d %H:%M", time.localtime(info.st_mtime))
+    return f"{path} ({human_size(info.st_size)}, last written {written})"
+
+
 def _run_probe(prefix: List[str], *args: str, timeout: Optional[float] = None):
     """Run a program just to see whether it works. Returns (ok, output)."""
     if timeout is None:
@@ -810,8 +840,13 @@ class Engine:
             ok, output = _run_probe([sys.executable, str(dest)], "--version")
             prefix = [sys.executable, str(dest)]
         if not ok:
+            logfile.failure(
+                "the downloaded video engine would not start",
+                command=[*prefix, "--version"],
+                detail=output,
+            )
             raise ToolError(
-                "The downloaded video engine would not start.",
+                "the downloaded video engine would not start.",
                 "Delete the folder below and try again:\n"
                 f"    {self.bin_dir}",
                 raw=output,
@@ -1074,6 +1109,7 @@ class Engine:
                 "\nOn Apple silicon the other download is an Intel build: run "
                 "“softwareupdate --install-rosetta” to make it usable."
             )
+        logfile.failure("ffmpeg could not be downloaded", detail="\n".join(errors))
         raise ToolError("ffmpeg could not be downloaded automatically.", hint, raw="\n".join(errors))
 
     def installed_ffmpeg(self) -> Optional[Tool]:
@@ -1142,7 +1178,7 @@ class Engine:
             for index, detail in enumerate(problem.details):
                 label = "Problem:" if index == 0 else ""
                 lines.append(f"{label:<14}{detail}")
-        lines.append(f"Log file:     {self.home / 'viddl.log'}")
+        lines.append(f"Log file:     {_log_state()}")
         try:
             lines.append(f"Downloads:    {appdata.downloads_dir()}")
         except OSError:

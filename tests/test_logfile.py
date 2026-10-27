@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from viddl import appdata, logfile
+from viddl import __version__, appdata, logfile
 
 needs_posix_permissions = pytest.mark.skipif(
     sys.platform.startswith("win"), reason="Windows governs access with ACLs"
@@ -188,3 +188,97 @@ def test_no_log_is_started_when_the_app_folder_cannot_be_used(
 
     assert logfile.enable(logger) is None
     assert logger.handlers == []
+
+
+# ---------------------------------------------------------------------------
+# what a failure is written down as (E3)
+# ---------------------------------------------------------------------------
+
+
+def a_log(name: str, tmp_path: Path):
+    logger = fresh_logger(name)
+    target = tmp_path / "viddl.log"
+    assert logfile.enable(logger, target) == target
+    return logger, target
+
+
+def test_a_failure_keeps_the_command_the_code_and_what_was_said(tmp_path):
+    """The three things a bug report cannot supply and the screen does not show."""
+    logger, target = a_log("failure", tmp_path)
+
+    logfile.failure(
+        "the download failed",
+        command=["/app/bin/yt-dlp", "--ignore-config", "--", "https://x.invalid/v"],
+        exit_code=2,
+        detail="ERROR: Video unavailable",
+        logger=logger,
+    )
+
+    written = text_of(target)
+    assert "the download failed" in written
+    # Which Viddl, on what — the first question asked of a pasted log.
+    assert f"Viddl {__version__} on {sys.platform}" in written
+    assert "  ran: /app/bin/yt-dlp --ignore-config -- https://x.invalid/v" in written
+    assert "  exit code: 2" in written
+    assert "  said:\n    ERROR: Video unavailable" in written
+
+
+def test_the_command_line_is_redacted_like_every_other_line(tmp_path):
+    """A log of failures is exactly where a signed link would end up."""
+    logger, target = a_log("failure-token", tmp_path)
+
+    logfile.failure(
+        "the download failed",
+        command=["/bin/yt-dlp", "--", "https://cdn.example/v?token=SECRET123&v=abc"],
+        exit_code=1,
+        detail="ERROR: https://cdn.example/seg?sig=SIGNED456 failed",
+        logger=logger,
+    )
+
+    written = text_of(target)
+    assert "SECRET123" not in written
+    assert "SIGNED456" not in written
+    assert logfile.REDACTED in written
+    # Still worth reading: what was fetched, from where.
+    assert "cdn.example/v" in written
+
+
+def test_only_the_last_lines_are_kept_and_control_characters_go(tmp_path):
+    """A tool explains itself when it gives up, and a name can carry an ESC."""
+    logger, target = a_log("failure-tail", tmp_path)
+    detail = "\n".join(f"line {number}" for number in range(1, 101))
+    detail += "\n\x1b[31mred\x1b[0m"
+
+    logfile.failure("the download failed", detail=detail, logger=logger)
+
+    written = text_of(target)
+    assert "line 100" in written
+    # Forty entries are kept: lines 62 to 100, and the one with the escape in it.
+    assert f"line {100 - logfile.DETAIL_LINES + 2}" in written
+    assert f"line {100 - logfile.DETAIL_LINES + 1}" not in written
+    assert "\x1b" not in written
+
+
+def test_one_enormous_line_is_cut_short(tmp_path):
+    """A tool can print a page on one line; the file has a limit too."""
+    logger, target = a_log("failure-long", tmp_path)
+
+    logfile.failure("the download failed", detail="x" * 5000, logger=logger)
+
+    written = text_of(target)
+    assert "x" * logfile.DETAIL_WIDTH in written
+    assert "x" * (logfile.DETAIL_WIDTH + 1) not in written
+
+
+def test_a_log_that_cannot_be_written_does_not_become_the_failure(tmp_path):
+    """The download has already failed; the log is a nicety on top."""
+
+    class Broken(logging.Handler):
+        def emit(self, record):
+            raise RuntimeError("the disk is full")
+
+    logger = fresh_logger("failure-broken")
+    logger.addHandler(Broken())
+
+    # Must not raise, and must not stop the caller.
+    logfile.failure("the download failed", command=["x"], detail="y", logger=logger)
