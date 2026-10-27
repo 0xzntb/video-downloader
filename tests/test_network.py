@@ -11,12 +11,12 @@ from __future__ import annotations
 import pytest
 
 from viddl import cli, plain
-from viddl.tui import app as tui_app
 from viddl.network import (
     DEFAULT_FRAGMENTS,
     MAX_FRAGMENTS,
     NetworkOptions,
 )
+from viddl.tui import app as tui_app
 
 URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 

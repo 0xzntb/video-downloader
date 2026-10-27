@@ -141,7 +141,7 @@ class NetworkOptions:
         proxy: object = "",
         concurrent_fragments: object = None,
         throttled_rate: object = "",
-    ) -> "NetworkOptions":
+    ) -> NetworkOptions:
         """Check every value once, at the front door, with one message each."""
         return cls(
             limit_rate=_rate(limit_rate, "--limit-rate") if limit_rate else "",

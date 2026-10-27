@@ -32,10 +32,9 @@ from typing import List
 
 import pytest
 
-from viddl.download import DownloadJob
+from viddl.download import DownloadJob, Progress
 from viddl.engine import Engine
 from viddl.formats import MediaOption
-from viddl.download import Progress
 
 pytestmark = pytest.mark.integration
 

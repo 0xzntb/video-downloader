@@ -29,6 +29,7 @@ complained about.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
@@ -134,10 +135,8 @@ def _write_file(path: Path, text: str) -> bool:
             os.chmod(path, _OWNER_PRIVATE)
         return True
     except OSError:
-        try:
+        with contextlib.suppress(OSError):
             temp.unlink()
-        except OSError:
-            pass
         return False
 
 
@@ -252,10 +251,13 @@ def _read() -> List[Entry]:
 
 
 def _as_int(value: object) -> int:
-    try:
-        return max(0, int(value))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0
+    """A number from whatever the file held, or 0 — never an exception."""
+    if isinstance(value, (int, float, str)):
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+    return 0
 
 
 def _as_float(value: object) -> float:

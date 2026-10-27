@@ -22,12 +22,9 @@ import json
 import os
 from typing import Any, Dict, Optional
 
-from . import APP_TITLE, __version__
-from . import appdata
-from . import config
+from . import APP_TITLE, __version__, appdata, config, i18n
 from . import cookies as cookies_mod
 from . import engine as engine_mod
-from . import i18n
 from . import theme as theme_mod
 from .engine import Engine, Tool
 from .formats import MediaInfo, MediaOption

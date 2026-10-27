@@ -23,7 +23,7 @@ disk, and a download should not unexpectedly contain more than it said.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import FrozenSet, List, Optional, Tuple
+from typing import FrozenSet, List, Optional, Set, Tuple
 
 from .formats import MediaOption
 
@@ -130,7 +130,7 @@ class Extras:
     def has(self, key: str) -> bool:
         return key in self.keys
 
-    def toggled(self, key: str) -> "Extras":
+    def toggled(self, key: str) -> Extras:
         """The same set with ``key`` switched the other way."""
         if key not in _BY_KEY:
             raise ValueError(f"No such extra: {key!r}")
@@ -188,7 +188,7 @@ class Extras:
         return ",".join(sorted(self.keys))
 
     @classmethod
-    def parse(cls, text: str) -> "Extras":
+    def parse(cls, text: str) -> Extras:
         """Read ``--extras subs,cover`` into a set, or explain the mistake.
 
         Raises ``ValueError`` with a sentence naming every word that works,
@@ -198,7 +198,7 @@ class Extras:
         words = [word for word in str(text).replace(",", " ").split() if word]
         if not words:
             return cls()
-        keys = set()
+        keys: Set[str] = set()
         for word in words:
             lowered = word.strip().lower()
             if lowered in ("all", "everything", "*"):

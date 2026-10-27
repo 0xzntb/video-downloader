@@ -28,20 +28,29 @@ piece is also reachable from the command line:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
 import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from . import APP_TITLE, __version__
-from . import appdata, config, cookies as cookies_mod, i18n, logfile, search, theme
+from . import (
+    APP_TITLE,
+    __version__,
+    appdata,
+    config,
+    i18n,
+    logfile,
+    protocol,
+    search,
+    theme,
+)
+from . import cookies as cookies_mod
 from .engine import Engine, Tool, ToolError, staleness_advice
 from .extras import Extras
 from .formats import format_rows
 from .network import NetworkOptions
-from .util import is_interactive
-from . import protocol
 from .protocol import (
     BROWSERS,
     CHROMIUM,
@@ -53,6 +62,7 @@ from .protocol import (
     register,
     unregister,
 )
+from .util import is_interactive
 
 _DESCRIPTION = "Download videos and audio by pasting a link or typing a name."
 
@@ -330,10 +340,8 @@ def _prepare_console() -> None:
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:
             continue
-        try:
+        with contextlib.suppress(OSError, ValueError):  # pragma: no cover - exotic stream
             reconfigure(errors="backslashreplace")
-        except (OSError, ValueError):  # pragma: no cover - a closed or exotic stream
-            pass
 
 
 def _fail(message: str, hint: Optional[str] = None) -> int:

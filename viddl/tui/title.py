@@ -138,7 +138,7 @@ def percent_text(percent: Optional[float]) -> str:
         return ""
     if value != value:  # NaN: a number that is not one
         return ""
-    return f"{max(0, min(100, int(round(value))))}%"
+    return f"{max(0, min(100, round(value)))}%"
 
 
 def compose(

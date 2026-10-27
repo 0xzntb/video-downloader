@@ -16,6 +16,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import urlsplit
 
 import pytest
@@ -106,7 +107,7 @@ class FakeJob:
         self.failure = FakeJob.failure
         FakeJob.instances.append(self)
 
-    instances: list = []
+    instances: ClassVar[list] = []
     wait = False
     failure = None
 
@@ -264,7 +265,7 @@ def test_the_page_only_ever_listens_on_loopback():
 
 def test_two_pages_do_not_share_a_token():
     first, first_url = web.build_server()
-    second, second_url = web.build_server()
+    second, _second_url = web.build_server()
     try:
         assert first.app.token != second.app.token
         assert len(first.app.token) >= 24

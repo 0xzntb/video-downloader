@@ -21,7 +21,6 @@ from viddl.engine import Tool
 from viddl.tui.app import Services, ViddlApp
 from viddl.tui.widgets import ChoiceList, ChoiceRow
 
-
 # ---------------------------------------------------------------------------
 # the arithmetic
 # ---------------------------------------------------------------------------

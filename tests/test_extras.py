@@ -9,6 +9,7 @@ video the user asked for.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -402,7 +403,7 @@ def test_the_progress_line_says_what_the_extras_are_doing(tmp_path):
 
 
 class RecordingJob:
-    started: list = []
+    started: ClassVar[list] = []
 
     def __init__(self, engine, url, option, out_dir, extras=None, **kwargs):
         self.url = url

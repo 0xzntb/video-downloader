@@ -13,6 +13,7 @@ import io
 import shutil
 import tempfile
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -94,7 +95,7 @@ class BrokenFfmpegEngine(FakeEngine):
 class FakeJob:
     """Writes a real file, reporting progress like a real download would."""
 
-    made: list = []
+    made: ClassVar[list] = []
 
     def __init__(
         self,
@@ -876,7 +877,7 @@ def test_plain_says_what_reading_cookies_means(tmp_path):
 
 
 def test_without_a_cookie_choice_nothing_is_claimed():
-    code, out, err = run(assume_yes=True)
+    code, _out, err = run(assume_yes=True)
     assert code == 0
     assert "cookies" not in err.lower()
     assert FakeJob.made[0].cookies == ""
@@ -907,7 +908,7 @@ class HadItJob(FakeJob):
 def test_the_archive_and_the_title_reach_the_plain_job(tmp_path):
     archive = tmp_path / "download-archive.txt"
 
-    code, out, err = run(archive=archive, assume_yes=True)
+    code, _out, _err = run(archive=archive, assume_yes=True)
 
     assert code == 0
     job = FakeJob.made[-1]
@@ -961,7 +962,7 @@ def test_the_log_records_the_network_terms_before_anything_is_fetched():
     """A proxy or a ceiling is part of what was asked for."""
     network = NetworkOptions.parse(limit_rate="2M", concurrent_fragments=8)
 
-    code, out, err = run(network=network, assume_yes=True)
+    code, _out, err = run(network=network, assume_yes=True)
 
     assert code == 0
     assert "Network: no faster than 2M/s, 8 pieces at a time." in err
@@ -972,7 +973,7 @@ def test_the_log_records_the_network_terms_before_anything_is_fetched():
 
 
 def test_a_run_with_no_network_choices_says_nothing_about_the_network():
-    code, out, err = run(assume_yes=True)
+    code, _out, err = run(assume_yes=True)
 
     assert code == 0
     assert "Network:" not in err
@@ -982,7 +983,7 @@ def test_a_run_with_no_network_choices_says_nothing_about_the_network():
 def test_the_proxy_password_never_reaches_the_log():
     network = NetworkOptions.parse(proxy="http://me:hunter2@proxy.example:3128")
 
-    code, out, err = run(network=network, assume_yes=True)
+    code, _out, err = run(network=network, assume_yes=True)
 
     assert code == 0
     assert "proxy.example:3128" in err
@@ -991,7 +992,7 @@ def test_the_proxy_password_never_reaches_the_log():
 
 def test_quiet_leaves_the_network_note_out_too():
     """``--quiet`` is the path and nothing else, notes included (F10)."""
-    code, out, err = run(
+    code, _out, err = run(
         network=NetworkOptions.parse(limit_rate="1M"), assume_yes=True, quiet=True
     )
 
@@ -1013,7 +1014,7 @@ def live() -> MediaInfo:
 
 def test_a_live_link_says_recording_starts_now_and_how_to_stop_it():
     """The unexpected part is that the file does not end by itself (F12)."""
-    code, out, err = run(info=live(), assume_yes=True)
+    code, _out, err = run(info=live(), assume_yes=True)
 
     assert code == 0
     assert "Live: recording starts now, not at the beginning" in err
@@ -1025,7 +1026,7 @@ def test_a_live_link_says_recording_starts_now_and_how_to_stop_it():
 
 
 def test_the_flag_says_the_recording_starts_at_the_beginning():
-    code, out, err = run(info=live(), live_from_start=True, assume_yes=True)
+    code, _out, err = run(info=live(), live_from_start=True, assume_yes=True)
 
     assert code == 0
     assert "Live: recording from the beginning of the stream" in err
@@ -1034,7 +1035,7 @@ def test_the_flag_says_the_recording_starts_at_the_beginning():
 
 
 def test_a_live_link_without_the_flag_records_from_now():
-    code, out, err = run(info=live(), assume_yes=True)
+    code, _out, _err = run(info=live(), assume_yes=True)
 
     assert code == 0
     assert FakeJob.made[0].is_live is True
@@ -1043,7 +1044,7 @@ def test_a_live_link_without_the_flag_records_from_now():
 
 def test_the_flag_on_a_link_that_is_not_live_says_it_has_no_effect():
     """A script that always passes it keeps working, and is told (F12)."""
-    code, out, err = run(live_from_start=True, assume_yes=True)
+    code, _out, err = run(live_from_start=True, assume_yes=True)
 
     assert code == 0
     assert "This is not a live stream, so --live-from-start has no effect." in err
@@ -1120,7 +1121,7 @@ def test_a_name_says_it_is_a_search_and_which_answer_is_used():
 
 def test_a_search_downloads_the_video_it_found():
     """The job, the archive and the recent list all get a video (F14)."""
-    code, out, err = run("ytsearch1:some song", assume_yes=True)
+    code, _out, _err = run("ytsearch1:some song", assume_yes=True)
 
     assert code == 0
     assert FakeJob.made[-1].url == URL
@@ -1128,7 +1129,7 @@ def test_a_search_downloads_the_video_it_found():
 
 
 def test_a_link_is_still_looked_up_by_its_link():
-    code, out, err = run(assume_yes=True)
+    code, _out, err = run(assume_yes=True)
 
     assert code == 0
     assert f"Looking up {URL}" in err

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -13,11 +14,9 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import appdata
-from . import history
-from . import logfile
+from . import appdata, history, logfile
 from .cookies import cookies_args
 from .engine import Engine, ToolError, is_windows
 from .errors import explain
@@ -59,6 +58,11 @@ _BAD_SUFFIXES = (".part", ".ytdl", ".temp", ".tmp")
 #: "the file you asked for" would hand the user a 23 KB JPEG.
 _ATTACHMENT_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
 _CAPTION_SUFFIXES = (".vtt", ".srt", ".ass", ".ssa", ".ttml", ".json3", ".lrc")
+#: Windows-only: gives the child its own process group, so stop and cancel
+#: can end it and everything it started. Reached through ``getattr`` because on
+#: any other platform the constant does not exist and nothing needs it.
+_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
 # yt-dlp names the separate streams it merges "Title [id].f137.mp4".
 _FRAGMENT_RE = re.compile(r"\.f\d+$|\.temp$", re.IGNORECASE)
 
@@ -219,7 +223,7 @@ def _fmt_eta(seconds: Optional[float]) -> str:
 def seconds_text(seconds: float) -> str:
     """"4s", not "4.0s" — this is read in passing, not studied."""
     if abs(seconds - round(seconds)) < 1e-9:
-        return f"{int(round(seconds))}s"
+        return f"{round(seconds)}s"
     return f"{seconds:.1f}s"
 
 
@@ -235,20 +239,16 @@ def stop_process_tree(process: subprocess.Popen, force: bool = False) -> None:
         command = ["taskkill", "/PID", str(process.pid), "/T"]
         if force:
             command.insert(1, "/F")
-        try:
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
             subprocess.run(command, capture_output=True, timeout=15)
-        except (OSError, subprocess.SubprocessError):
-            pass
         return
     try:
         os.killpg(os.getpgid(process.pid), signal.SIGKILL if force else signal.SIGTERM)
     except OSError:
         # No group of its own (started by someone else, or already gone):
         # fall back to the process itself.
-        try:
+        with contextlib.suppress(OSError):
             process.kill() if force else process.terminate()
-        except OSError:
-            pass
 
 
 @dataclass
@@ -354,9 +354,12 @@ def _run_lookup(
         # work for nobody, and the site would be asked for a link the user has
         # already decided not to wait for.
         raise ProbeCancelled()
-    options: Dict[str, object] = {}
+    # ``Dict[str, Any]`` for one reason: the creation flags are Windows-only,
+    # and a checker on Linux hides the keyword's type. What is passed is still
+    # exactly what it was.
+    options: Dict[str, Any] = {}
     if is_windows():
-        options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        options["creationflags"] = _NEW_PROCESS_GROUP
     else:
         options["start_new_session"] = True
     try:
@@ -384,11 +387,11 @@ def _run_lookup(
     while True:
         try:
             stdout, stderr = process.communicate(timeout=_CANCEL_POLL_SECONDS)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             if cancel is not None and cancel.is_set():
                 stop_process_tree(process, force=True)
                 process.communicate()
-                raise ProbeCancelled()
+                raise ProbeCancelled() from None
             if time.monotonic() >= deadline:
                 stop_process_tree(process, force=True)
                 process.communicate()
@@ -402,7 +405,7 @@ def _run_lookup(
                     "Check your connection, or try the link again in a moment.",
                     raw=f"nothing heard from the site in {timeout:g} seconds",
                     temporary=True,
-                )
+                ) from exc
             continue
         return process.returncode, stdout or "", stderr or ""
 
@@ -793,10 +796,8 @@ class DownloadJob:
         if claim is None:
             return
         self._claim = None
-        try:
+        with contextlib.suppress(OSError):
             claim.unlink()
-        except OSError:
-            pass
         try:
             empty = not any(self.work_dir().iterdir())
         except OSError:
@@ -1075,7 +1076,11 @@ class DownloadJob:
             existing = self._existing_download(video_id)
             if existing is not None:
                 return existing, True
-            if round_number == 0 and history.forget_video(self.archive, video_id):
+            if (
+                self.archive is not None
+                and round_number == 0
+                and history.forget_video(self.archive, video_id)
+            ):
                 # The archive said this video was downloaded, but the file is
                 # not there any more. Forget the line and ask once more: a
                 # memory that blocks a download the user asked for is worse
@@ -1123,10 +1128,10 @@ class DownloadJob:
         that method may run this twice: once against the archive's answer, and
         once after the archive has been corrected (F6).
         """
-        options: Dict[str, object] = {}
+        options: Dict[str, Any] = {}
         if is_windows():
             # A group of its own, so taskkill can find the whole tree.
-            options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            options["creationflags"] = _NEW_PROCESS_GROUP
         else:
             # Its own session: cancel can signal yt-dlp and the ffmpeg it
             # started together. One side effect is that a Ctrl+C in the
@@ -1288,10 +1293,8 @@ class DownloadJob:
         except OSError:
             # Nothing else can be done with a name we could not fill; leaving an
             # empty file behind under a real name would be the worse outcome.
-            try:
+            with contextlib.suppress(OSError):
                 target.unlink()
-            except OSError:
-                pass
             # The finished file is still in the working folder, so let the next
             # run have it back rather than keeping the folder claimed for ever.
             self._release_claim()
@@ -1330,10 +1333,8 @@ class DownloadJob:
             try:
                 os.replace(sibling, claimed)
             except OSError as exc:
-                try:
+                with contextlib.suppress(OSError):
                     claimed.unlink()
-                except OSError:
-                    pass
                 if self.on_log:
                     self.on_log(f"Could not save the cover image: {exc}")
                 continue
@@ -1573,9 +1574,10 @@ class DownloadJob:
             self._handle_progress_line(line)
             return
 
-        if line.startswith(("[download]", "[Merger]", "[ExtractAudio]", "[FixupM3u8]")):
-            if self.on_log:
-                self.on_log(line)
+        if self.on_log and line.startswith(
+            ("[download]", "[Merger]", "[ExtractAudio]", "[FixupM3u8]")
+        ):
+            self.on_log(line)
         if line.startswith("[download] Destination:"):
             match = _DESTINATION_RE.search(line)
             if match:

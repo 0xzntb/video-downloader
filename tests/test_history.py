@@ -15,8 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from viddl import appdata
-from viddl import history
+from viddl import appdata, history
 
 
 def make_file(folder: Path, name: str = "A Video [abc].mp4", size: int = 4096) -> Path:

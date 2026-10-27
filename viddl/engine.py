@@ -7,6 +7,7 @@ copy into its own folder, so nothing else on the machine is touched.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import http.client
 import os
@@ -27,9 +28,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from . import __version__
-from . import appdata
-from . import logfile
+from . import __version__, appdata, logfile
 from .errors import explain
 from .i18n import t
 from .util import human_size
@@ -324,10 +323,8 @@ def recorded_checksum(path: Path) -> Optional[str]:
 
 def record_checksum(path: Path, digest: str) -> None:
     """Remember what was installed, so a later replacement is visible."""
-    try:
+    with contextlib.suppress(OSError):
         checksum_file(path).write_text(digest.strip().lower() + "\n", encoding="utf-8")
-    except OSError:
-        pass
 
 
 class _StalePartial(Exception):
@@ -394,7 +391,7 @@ def _rosetta_available() -> bool:
     return completed.returncode == 0
 
 
-def _fetch(url: str, tmp_path: Path, on_progress, timeout: int) -> None:
+def _fetch(url: str, tmp_path: Path, on_progress, timeout: Optional[float]) -> None:
     """Stream ``url`` into ``tmp_path``, continuing a partial file if there is one.
 
     The ``Range`` request is what makes a 150 MB download survivable on a bad
@@ -608,18 +605,20 @@ def _verified_download(
     # new build and we hold the old one. Re-read the list once and try again.
     attempts = 0
     while True:
-        expected = expected_sha256(source)
-        if expected is None:
+        # A digest of its own: ``expected`` above is the pinned one, and this
+        # loop re-reads the published list rather than reusing that answer.
+        digest = expected_sha256(source)
+        if digest is None:
             raise ToolError(
                 "That download publishes no checksum, so Viddl did not install it.",
                 "Viddl will not run a downloaded program it cannot check. "
                 "Installing it with your system's package manager works just as well.",
                 raw=url,
             )
-        if reuse_existing and _already_there(dest, expected):
+        if reuse_existing and _already_there(dest, digest):
             return dest
         try:
-            return download_to(url, dest, on_progress, expected_sha256=expected, part_path=part_path)
+            return download_to(url, dest, on_progress, expected_sha256=digest, part_path=part_path)
         except ChecksumMismatch:
             attempts += 1
             if attempts >= 2:
@@ -640,10 +639,8 @@ def _mirror_tag(url: str) -> str:
 def _forget_download_leftovers(folder: Path) -> None:
     """Remove archives and part-files an earlier, failed attempt left behind."""
     for leftover in list(folder.glob("ffmpeg-download-*")) + list(folder.glob("ffmpeg*.part")):
-        try:
+        with contextlib.suppress(OSError):
             leftover.unlink()
-        except OSError:
-            pass
 
 
 def _make_runnable(path: Path) -> None:
@@ -659,10 +656,8 @@ def _make_runnable(path: Path) -> None:
     """
     if is_windows():
         return
-    try:
+    with contextlib.suppress(OSError):
         os.chmod(path, 0o700)
-    except OSError:
-        pass
 
 
 def _extract_member(archive: Path, pattern: str, dest: Path, mode: Optional[int] = 0o700) -> None:
@@ -686,20 +681,18 @@ def _extract_member(archive: Path, pattern: str, dest: Path, mode: Optional[int]
             for member in tf.getmembers():
                 if not member.isfile() or not matcher.search(member.name):
                     continue
-                src = tf.extractfile(member)
-                if src is None:
+                stream = tf.extractfile(member)
+                if stream is None:
                     continue
-                with src, open(dest, "wb") as out:
-                    shutil.copyfileobj(src, out)
+                with stream, open(dest, "wb") as out:
+                    shutil.copyfileobj(stream, out)
                 break
             else:
                 raise ToolError("The downloaded bundle did not contain the program.")
 
     if mode is not None:
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(dest, mode)
-        except OSError:
-            pass
 
 
 def _log_state() -> str:
@@ -974,7 +967,7 @@ class Engine:
         if is_macos():
             arm = machine in ("arm64", "aarch64")
             native = "arm64" if arm else "x64"
-            sources = [
+            sources: List[Dict[str, object]] = [
                 {
                     "url": f"{_EUGENEWARE_BASE}/ffmpeg-darwin-{native}",
                     "archive": None,

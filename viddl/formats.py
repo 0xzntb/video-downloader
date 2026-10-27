@@ -478,9 +478,11 @@ def parse_info(info: Dict[str, Any]) -> MediaInfo:
         if height in by_height:
             vid = by_height[height]
             vid_size, vid_estimate = estimate_size(vid, duration)
-            total: Optional[int] = None
+            # ``total`` already means the playlist's length here; this one is
+            # what the merged file will weigh.
+            combined: Optional[int] = None
             if vid_size is not None:
-                total = vid_size + (audio_size or 0)
+                combined = vid_size + (audio_size or 0)
             est = vid_estimate or audio_is_estimate
             fps = _num(vid.get("fps"))
             selector = f"{vid['format_id']}+{best_audio['format_id']}" if best_audio else str(vid["format_id"])
@@ -488,7 +490,7 @@ def parse_info(info: Dict[str, Any]) -> MediaInfo:
             row = MediaOption(
                 key=f"v{height}",
                 label=_label_for_height(height, "60fps" if (fps or 0) >= 50 else ""),
-                size_bytes=total,
+                size_bytes=combined,
                 size_is_estimate=est,
                 kind="video",
                 needs_ffmpeg=best_audio is not None,
@@ -632,14 +634,14 @@ def audio_options(
             # takes the smaller of the two; a fixed-rate one writes 320 whatever
             # it was handed (measured: AAC at 256 from a 130 kbps source wrote
             # 255 kbps), so its row has to say the target.
-            effective = preset.bitrate
+            effective: float = float(preset.bitrate)
             note = f"{audio_format.name} file"
             if source_bitrate and source_bitrate < preset.bitrate:
                 if not preset.fixed_rate:
                     effective = source_bitrate
                 note = (
                     f"{audio_format.name} · source is "
-                    f"{int(round(source_bitrate))} kbps"
+                    f"{round(source_bitrate)} kbps"
                 )
             size = int(effective * 1000 / 8 * duration) if duration else None
             rows.append(

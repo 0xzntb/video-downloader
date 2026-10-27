@@ -36,8 +36,8 @@ from . import en, es
 
 __all__ = [
     "CATALOGUES",
-    "Chosen",
     "DEFAULT",
+    "Chosen",
     "available",
     "choose",
     "current_locale",
@@ -67,7 +67,7 @@ _current = DEFAULT
 
 def available() -> List[str]:
     """The codes Viddl can speak: English first, the rest alphabetical."""
-    return [DEFAULT] + sorted(code for code in CATALOGUES if code != DEFAULT)
+    return [DEFAULT, *sorted(code for code in CATALOGUES if code != DEFAULT)]
 
 
 def current_locale() -> str:

@@ -59,7 +59,7 @@ HIGH = "high-contrast"
 AUTO = "auto"
 
 SCHEMES: Tuple[str, ...] = (DARK, LIGHT, HIGH)
-CHOICES: Tuple[str, ...] = SCHEMES + (AUTO,)
+CHOICES: Tuple[str, ...] = (*SCHEMES, AUTO)
 
 #: Textual theme names are prefixed so they cannot collide with a built-in
 #: theme of the same name in a later release.

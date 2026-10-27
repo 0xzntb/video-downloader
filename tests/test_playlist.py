@@ -14,6 +14,7 @@ import io
 import threading
 import time
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from textual.widgets import Button
@@ -311,8 +312,8 @@ def test_a_download_can_be_asked_for_one_place_in_a_playlist(tmp_path):
 class RecordingJob:
     """A download that writes a file named after its place in the queue."""
 
-    started: list = []
-    fail_on: set = set()
+    started: ClassVar[list] = []
+    fail_on: ClassVar[set] = set()
 
     def __init__(
         self,
@@ -427,7 +428,7 @@ def test_one_bad_video_does_not_end_the_list():
     assert summary.done == 2
     assert summary.failed == 1
     assert summary.items[1].error is not None
-    assert "Saved 2 of 3 videos; 1 could not be downloaded." == summary.headline
+    assert summary.headline == "Saved 2 of 3 videos; 1 could not be downloaded."
     assert len(RecordingJob.started) == 3, "the video after the failure was never tried"
 
 
@@ -579,7 +580,7 @@ def test_a_failure_in_the_middle_is_reported_and_the_rest_still_download(monkeyp
 def test_the_flag_on_a_single_video_is_harmless(monkeypatch):
     called = []
     monkeypatch.setattr(plain, "probe_playlist", lambda *a, **k: called.append(1))
-    code, out, err = run_plain(info=parse_info(INFO_JSON), playlist=True)
+    code, _out, err = run_plain(info=parse_info(INFO_JSON), playlist=True)
 
     assert code == 0
     assert len(PlainJob.started) == 1

@@ -26,8 +26,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from . import __version__
-from . import appdata
+from . import __version__, appdata
 from .util import REDACTED, redact
 
 #: How large the log may grow before it rolls over, and how many rolls are kept.
@@ -49,10 +48,10 @@ __all__ = [
     "BACKUP_COUNT",
     "DETAIL_LINES",
     "DETAIL_WIDTH",
-    "LOG_MAX_BYTES",
     "LOGGER_NAME",
-    "OwnerOnlyRotatingFileHandler",
+    "LOG_MAX_BYTES",
     "REDACTED",
+    "OwnerOnlyRotatingFileHandler",
     "RedactingFormatter",
     "enable",
     "failure",

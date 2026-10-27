@@ -17,12 +17,11 @@ from __future__ import annotations
 import sys
 import unicodedata
 from pathlib import Path
-from typing import Callable, Optional, TextIO
+from typing import Callable, Optional, TextIO, cast
 
-from . import appdata
+from . import appdata, search
 from . import cookies as cookies_mod
 from . import engine as engine_mod
-from . import search
 from .download import (
     DownloadCancelled,
     DownloadJob,
@@ -703,7 +702,9 @@ def run_plain(
     out = stdout or sys.stdout
     err = stderr or sys.stderr
     # What the person reads while it works, as opposed to what went wrong.
-    report: TextIO = _Quiet() if quiet else err
+    # ``_Quiet`` is a sink with ``write`` and nothing else, which is all
+    # ``_say`` asks of a stream.
+    report = cast(TextIO, _Quiet()) if quiet else err
     stdin = stdin or sys.stdin
     engine = engine or Engine()
     extras = extras or Extras()

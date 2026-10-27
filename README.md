@@ -1094,8 +1094,9 @@ python3 -m venv .venv
 ```
 
 On Windows the same three lines live in `.venv\Scripts\`. CI runs the suite on
-Linux, macOS and Windows for Python 3.9, 3.12 and 3.13, lints with `pyflakes`,
-and runs `install.ps1` and the launcher it writes in a Windows job of its own.
+Linux, macOS and Windows for Python 3.9, 3.12 and 3.13, checks the source with
+`ruff` and `mypy`, and runs `install.ps1` and the launcher it writes in a
+Windows job of its own.
 
 `uv.lock` is committed and pins every version the suite is known to pass with.
 To get exactly those, rather than whatever is newest today:
@@ -1119,6 +1120,22 @@ CI runs, and it fails the run rather than printing a number nobody reads:
 ```sh
 .venv/bin/python -m pytest --cov=viddl --cov-fail-under=93
 ```
+
+Two static checks come with the `dev` extra and read the same source on every
+runner, so CI answers them in one cell rather than nine:
+
+```sh
+.venv/bin/python -m ruff check viddl tests
+.venv/bin/python -m mypy
+```
+
+`ruff` carries pyflakes' rules and the ones pyflakes never had — unused code,
+shadowed names, mutable defaults, import order, the small simplifications — and
+the set is *selected* rather than everything ruff knows, because a rule set
+nobody reads is a rule set everybody suppresses. `mypy` checks `viddl/` only:
+that is where the annotations are, and the tests are checked by being run.
+Neither runs through `ruff format` yet — 47 files would be rewritten, and that
+is a separate change from having the findings.
 
 `tests/test_integration.py` is the one part of the suite that uses the real
 thing rather than a stand-in engine: it serves a file from `127.0.0.1` and

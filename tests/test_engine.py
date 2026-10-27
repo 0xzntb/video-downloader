@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date
 import hashlib
 import http.server
 import io
@@ -15,7 +14,9 @@ import threading
 import time
 import urllib.error
 import zipfile
+from datetime import date
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -1051,7 +1052,7 @@ def test_download_to_refuses_an_empty_download(tmp_path):
 def test_download_to_copes_with_an_unknown_size(tmp_path, monkeypatch):
     """A server that sends no Content-Length still downloads fine."""
     class Response(io.BytesIO):
-        headers: dict = {}
+        headers: ClassVar[dict] = {}
 
         def __enter__(self):
             return self
@@ -1386,7 +1387,7 @@ def test_install_ytdlp_will_not_install_when_the_checksums_cannot_be_read(tmp_pa
 
 
 def test_checksums_are_read_from_the_body(monkeypatch):
-    serving(monkeypatch, "aa".encode() + b"b" * 62 + b"  tool\n")
+    serving(monkeypatch, b"aa" + b"b" * 62 + b"  tool\n")
     assert "tool" in engine_mod._fetch_text("https://example.invalid/SHA2-256SUMS")
 
 

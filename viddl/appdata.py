@@ -43,8 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import APP_NAME
-from . import config
+from . import APP_NAME, config
 
 # The nine variables Viddl reads, named once so the documentation, the doctor
 # output and the tests cannot drift from the code that reads them.
@@ -503,8 +502,8 @@ def data_dir() -> Path:
         return Path.home() / "Library" / "Application Support" / APP_NAME
 
     xdg = os.environ.get("XDG_DATA_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
-    return base / APP_NAME
+    folder = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return folder / APP_NAME
 
 
 def bin_dir() -> Path:

@@ -7,9 +7,10 @@ plain click, on Enter, and on double click, and keeps arrow keys working.
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, ClassVar, List, Optional, Sequence, Tuple
 
 from rich.text import Text
+from textual.binding import BindingType
 from textual.containers import VerticalScroll
 from textual.events import Click
 from textual.message import Message
@@ -126,9 +127,9 @@ class ExtraToggle(Static, can_focus=True):
     the tick written into the label so colour is not the only thing saying it.
     """
 
-    BINDINGS = [
-        ("enter", "toggle", "Toggle"),
-        ("space", "toggle", "Toggle"),
+    BINDINGS: ClassVar[List[BindingType]] = [
+        ("enter", "flip", "Toggle"),
+        ("space", "flip", "Toggle"),
     ]
 
     class Pressed(Message):
@@ -167,7 +168,7 @@ class ExtraToggle(Static, can_focus=True):
             self._refresh_content()
         self.set_class(on, "on")
 
-    def action_toggle(self) -> None:
+    def action_flip(self) -> None:
         self.post_message(self.Pressed(self.extra_key))
 
     def on_click(self, event: Click) -> None:
@@ -189,7 +190,7 @@ class ThemeRow(Static, can_focus=True):
     widget does not — which is why the row carries no text of its own.
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[List[BindingType]] = [
         ("enter", "turn", "Change theme"),
         ("space", "turn", "Change theme"),
     ]
@@ -211,7 +212,7 @@ class ChoiceList(VerticalScroll):
 
     can_focus = True
 
-    BINDINGS = [
+    BINDINGS: ClassVar[List[BindingType]] = [
         ("up", "cursor_up", "Up"),
         ("down", "cursor_down", "Down"),
         ("k", "cursor_up", "Up"),

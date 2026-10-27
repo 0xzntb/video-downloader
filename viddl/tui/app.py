@@ -28,27 +28,25 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Callable, ClassVar, List, Optional, Tuple, cast
 from urllib.parse import urlsplit
 
 from rich.markup import escape
-from typing import Any, Callable, List, Optional, Tuple
-
 from textual import work
 from textual.app import App, ComposeResult
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.dom import DOMNode
+from textual.getters import app as app_getter
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, ProgressBar, Static
 
-from .. import APP_TITLE, __version__
-from .. import appdata
+from .. import APP_TITLE, __version__, appdata, errors, search
 from .. import clipboard as clipboard_mod
 from .. import cookies as cookies_mod
 from .. import download as download_mod
 from .. import engine as engine_mod
-from .. import errors
 from .. import history as history_mod
-from .. import search
 from .. import theme as theme_mod
 from ..download import (
     DownloadCancelled,
@@ -313,6 +311,19 @@ _DETAIL_LINES = 40
 _DETAIL_WIDTH = 200
 
 
+def _copy_to_clipboard(app: ViddlApp, text: str) -> Any:
+    """Ask for the terminal's clipboard, and hand back whatever came back.
+
+    ``App.copy_to_clipboard`` returns nothing, and a call that returns nothing
+    is not something a type checker lets a caller hold on to — but Textual has
+    had this as a plain call and as a coroutine over the range Viddl supports, so
+    every caller checks for an awaitable answer. The cast is what keeps that one
+    check instead of a ``type: ignore`` at each of the three call sites (E5).
+    """
+    copy = cast(Callable[[str], Any], app.copy_to_clipboard)
+    return copy(text)
+
+
 def _log_file() -> Optional[Path]:
     """The log, if there is anything in it for the reader to go to (E3).
 
@@ -444,7 +455,7 @@ def _key_rows(screen: Screen) -> Tuple[List[Tuple[str, str]], List[Tuple[str, st
     seen: set = set()
     # Nearest first, so the first meaning of a key is the one that wins.
     nodes: List[Any] = []
-    widget = screen.focused
+    widget: Optional[DOMNode] = screen.focused
     while widget is not None and widget is not screen:
         nodes.append(widget)
         widget = widget.parent
@@ -805,7 +816,7 @@ class ViddlApp(App):
     }
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[List[BindingType]] = [
         Binding("ctrl+q", "quit_app", "Quit", show=True),
         Binding("ctrl+c", "quit_app", "Quit", show=False),
         # F1 rather than `?` in the footer: on the home screen the link box has
@@ -934,7 +945,7 @@ class ViddlApp(App):
         position = (order.index(self.theme_name) + 1) % len(order)
         self.set_theme(order[position])
 
-    def _post(self, callback: Callable[..., None], *args: Any) -> None:
+    def _post(self, callback: Callable[..., Any], *args: Any) -> None:
         """Call a UI callback from a worker thread.
 
         A background worker must not die because a screen went away, but a
@@ -1168,10 +1179,25 @@ class ViddlApp(App):
 # ---------------------------------------------------------------------------
 
 
-class HomeScreen(Screen):
+class ViddlScreen(Screen):
+    """A screen that knows it belongs to ``ViddlApp``.
+
+    ``Screen`` is generic over the *result* it returns, not over the app, so
+    ``self.app`` is a plain ``App`` to a type checker and every ``self.app.state``
+    a screen writes is invisible to it — which is most of what a screen does.
+    Textual's ``getters.app`` is the supported way to say otherwise; saying it
+    once, here, is what makes the rest of this file checkable (E5). The
+    descriptor asserts the app really is a ``ViddlApp``, so a screen run under
+    any other one fails loudly in a test rather than quietly misbehaving.
+    """
+
+    app = app_getter(ViddlApp)
+
+
+class HomeScreen(ViddlScreen):
     """Screen 1: paste a link."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[List[BindingType]] = [
         Binding("escape", "quit_app", "Quit", show=True),
         Binding("tab", "focus_next", "Next", show=False),
         # The recent list is one key away, because "where did that file go?"
@@ -1513,7 +1539,7 @@ def _link_parts(link: str) -> Tuple[str, str]:
     return host, shorten(redact(rest), 48)
 
 
-class LinksScreen(Screen):
+class LinksScreen(ViddlScreen):
     """Screen 1b: several links, in the order they will be taken (F7).
 
     A queue of links has no playlist behind it, so this screen is where the
@@ -1528,7 +1554,7 @@ class LinksScreen(Screen):
     keeps this screen out of the reordering business.
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[List[BindingType]] = [
         Binding("escape", "go_back", "Back", show=True),
         # Enter and `d` both mean "take the lot" when the list has the focus;
         # in the box above, Enter adds the link that was just pasted instead,
@@ -1700,14 +1726,14 @@ class LinksScreen(Screen):
             self.action_go_back()
 
 
-class OptionsScreen(Screen):
+class OptionsScreen(ViddlScreen):
     """Screen 2: choose a quality."""
 
     #: The name this look-up searched for, when it was a search rather than a
     #: link (F14). Empty for every link, which is most runs.
     search_query: str = ""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[List[BindingType]] = [
         Binding("escape", "go_back", "Back", show=True),
         Binding("b", "go_back", "Back", show=False),
         Binding("enter", "download", "Download", show=False),
@@ -2462,7 +2488,7 @@ class OptionsScreen(Screen):
         self.app._post(self.refresh_note)
 
 
-class PlaylistScreen(Screen):
+class PlaylistScreen(ViddlScreen):
     """Screen 2b: which videos of a playlist to take, at the chosen quality (F2).
 
     Every video starts ticked, because "I opened a playlist" is a request for
@@ -2471,9 +2497,9 @@ class PlaylistScreen(Screen):
     in seconds and nothing is downloaded until the button is pressed.
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[List[BindingType]] = [
         Binding("escape", "go_back", "Back", show=True),
-        Binding("space", "toggle", "Tick", show=True),
+        Binding("space", "tick", "Tick", show=True),
         Binding("a", "all", "All", show=False),
         Binding("n", "none", "None", show=False),
         Binding("d", "download", "Download", show=False),
@@ -2611,7 +2637,7 @@ class PlaylistScreen(Screen):
         self.query_one("#download", Button).disabled = chosen == 0
 
     # -- actions ------------------------------------------------------------
-    def action_toggle(self) -> None:
+    def action_tick(self) -> None:
         table = self.query_one("#choices", ChoiceList)
         if table.cursor_index is not None:
             self.toggle(table.cursor_index)
@@ -2658,10 +2684,10 @@ class PlaylistScreen(Screen):
             self.action_go_back()
 
 
-class DownloadScreen(Screen):
+class DownloadScreen(ViddlScreen):
     """Screen 3: progress."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=True)]
+    BINDINGS: ClassVar[List[BindingType]] = [Binding("escape", "cancel", "Cancel", show=True)]
 
     #: True once this screen has been drawn at least once (U8). Until then an
     #: ending replaces it instead of covering it, so a download that finishes
@@ -3043,7 +3069,7 @@ class DownloadScreen(Screen):
             self.action_cancel()
 
 
-class StoppedScreen(Screen):
+class StoppedScreen(ViddlScreen):
     """Shown when a download is stopped: carry on, or throw the part away.
 
     Cancelling keeps what has already been downloaded, which is the whole point
@@ -3052,7 +3078,7 @@ class StoppedScreen(Screen):
     deletes that file; leaving with escape keeps it.
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[List[BindingType]] = [
         Binding("escape", "later", "Later", show=True),
         Binding("r", "resume", "Resume", show=False),
         Binding("d", "discard", "Discard", show=False),
@@ -3148,7 +3174,7 @@ class StoppedScreen(Screen):
             self.action_later()
 
 
-class ResultScreen(Screen):
+class ResultScreen(ViddlScreen):
     """Screen 4: where the file landed, or what went wrong.
 
     One ending is not a finished download: a live stream that was stopped has
@@ -3164,7 +3190,7 @@ class ResultScreen(Screen):
     details beside it for a bug report.
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[List[BindingType]] = [
         Binding("escape", "go_home", "Start over", show=True),
         # Hidden from the footer rather than advertised on both endings: Play
         # and Show in folder mean nothing when nothing was saved, and Details
@@ -3335,7 +3361,7 @@ class ResultScreen(Screen):
 
     async def _copy(self, text: str, what: str = "Full path") -> None:
         try:
-            result = self.app.copy_to_clipboard(text)
+            result = _copy_to_clipboard(self.app, text)
             if inspect.isawaitable(result):
                 await result
             self.notify(f"{what} copied to the clipboard.", timeout=3)
@@ -3362,7 +3388,7 @@ class ResultScreen(Screen):
             self.app.action_quit_app()
 
 
-class RecentScreen(Screen):
+class RecentScreen(ViddlScreen):
     """What Viddl has saved lately (F6): open it, copy the path, take it again.
 
     The list comes from a small file in the app's own folder, so it survives
@@ -3376,7 +3402,7 @@ class RecentScreen(Screen):
     makes to any link arriving from outside (S5) is kept here too.
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[List[BindingType]] = [
         Binding("escape", "go_back", "Back", show=True),
         Binding("enter", "redownload", "Download again", show=False),
         Binding("o", "open_folder", "Open folder", show=False),
@@ -3505,7 +3531,7 @@ class RecentScreen(Screen):
 
     async def _copy(self, text: str) -> None:
         try:
-            result = self.app.copy_to_clipboard(text)
+            result = _copy_to_clipboard(self.app, text)
             if inspect.isawaitable(result):
                 await result
             self.notify("Full path copied to the clipboard.", timeout=3)
@@ -3527,7 +3553,7 @@ class RecentScreen(Screen):
             self.action_go_back()
 
 
-class QueueResultScreen(Screen):
+class QueueResultScreen(ViddlScreen):
     """Screen 4b: what a whole playlist did, video by video (F2).
 
     A single "Saved" would hide the two things worth knowing after nine
@@ -3535,7 +3561,7 @@ class QueueResultScreen(Screen):
     than counted, because a title is what a person needs to try again.
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[List[BindingType]] = [
         Binding("escape", "go_home", "Start over", show=True),
         Binding("o", "open_folder", "Open folder", show=False),
     ]
@@ -3557,7 +3583,7 @@ class QueueResultScreen(Screen):
         # True when the queue came from the links screen rather than a playlist
         # (F7): the two are the same run, and the screen should not call a batch
         # of links a playlist.
-        self.batch = batch
+        self.from_links = batch
 
     @property
     def saved(self) -> List[Path]:
@@ -3581,10 +3607,10 @@ class QueueResultScreen(Screen):
     def on_mount(self) -> None:
         summary = self.summary
         if summary.failed:
-            title = "Links finished with problems" if self.batch else "Playlist finished with problems"
+            title = "Links finished with problems" if self.from_links else "Playlist finished with problems"
         elif summary.stopped:
-            title = "Links stopped" if self.batch else "Playlist stopped"
-        elif self.batch:
+            title = "Links stopped" if self.from_links else "Playlist stopped"
+        elif self.from_links:
             title = "All links saved"
         else:
             title = "Playlist saved"
@@ -3607,7 +3633,7 @@ class QueueResultScreen(Screen):
         if summary.stopped and summary.done < summary.total:
             lines.append(
                 "The links that were not started are still on the list."
-                if self.batch
+                if self.from_links
                 else "The videos that were not started are still unticked in the list."
             )
         self.query_one("#result-message", Static).update(_plain("\n".join(lines)))
@@ -3630,7 +3656,7 @@ class QueueResultScreen(Screen):
 
     async def _copy(self, text: str) -> None:
         try:
-            result = self.app.copy_to_clipboard(text)
+            result = _copy_to_clipboard(self.app, text)
             if inspect.isawaitable(result):
                 await result
             self.notify("The saved paths are on the clipboard.", timeout=3)
@@ -3661,7 +3687,7 @@ class QueueResultScreen(Screen):
             self.app.go_home()
 
 
-class HelpScreen(Screen):
+class HelpScreen(ViddlScreen):
     """The keys in force, on one page (U5).
 
     Most of them are hidden from the footer on purpose — ``o`` means nothing on
@@ -3675,7 +3701,7 @@ class HelpScreen(Screen):
     written down again (see :func:`_key_rows`).
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[List[BindingType]] = [
         Binding("escape", "close", "Close", show=True),
         # The page is opened with either key, so it closes with either key: a
         # second question mark that did nothing would be the puzzle the page

@@ -27,6 +27,7 @@ Viddl recognises is ignored and said so in ``viddl --doctor``.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
@@ -154,8 +155,8 @@ def config_dir() -> Path:
     # ``XDG_CONFIG_HOME`` is the Linux convention and is honoured on macOS too:
     # one answer for both POSIX platforms is easier to document than two.
     xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / APP_NAME
+    folder = Path(xdg) if xdg else Path.home() / ".config"
+    return folder / APP_NAME
 
 
 def config_path() -> Path:
@@ -389,20 +390,16 @@ def _write(stored: Stored) -> None:
     lines.extend(f"{key} = {raw}" for key, raw in stored.unknown)
     path = stored.path
     if not lines:
-        try:
+        with contextlib.suppress(FileNotFoundError):
             path.unlink()
-        except FileNotFoundError:
-            pass
         return
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
     if not _is_windows():
-        try:
+        with contextlib.suppress(OSError):  # pragma: no cover - no permissions here
             os.chmod(temporary, 0o600)
-        except OSError:  # pragma: no cover - a filesystem without permissions
-            pass
     os.replace(temporary, path)
 
 

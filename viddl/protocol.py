@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -26,11 +26,10 @@ import time
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 from urllib.parse import parse_qs, unquote
 
-from . import URL_SCHEME, __version__
-from . import appdata
+from . import URL_SCHEME, __version__, appdata
 from .util import safe_video_link
 
 # How long a burst of hand-offs is collapsed into one. A page can ask for a
@@ -397,9 +396,14 @@ def _unregister_macos() -> RegistrationResult:
 
 def _register_windows() -> RegistrationResult:
     try:
-        import winreg
+        import winreg as _winreg
     except ImportError:  # pragma: no cover - not on Windows
         return RegistrationResult(False, "Windows registry access is unavailable.")
+
+    # The registry module is Windows-only, and typeshed hides its whole API on
+    # other hosts; ``is_windows()`` has already decided these lines run. Typing
+    # it as ``Any`` is what says so to a checker running on Linux (E5).
+    winreg: Any = _winreg
 
     command = launch_command()
     launcher = appdata.data_dir() / "viddl-open.cmd"
@@ -435,9 +439,14 @@ def _register_windows() -> RegistrationResult:
 
 def _unregister_windows() -> RegistrationResult:
     try:
-        import winreg
+        import winreg as _winreg
     except ImportError:  # pragma: no cover - not on Windows
         return RegistrationResult(False, "Windows registry access is unavailable.")
+
+    # The registry module is Windows-only, and typeshed hides its whole API on
+    # other hosts; ``is_windows()`` has already decided these lines run. Typing
+    # it as ``Any`` is what says so to a checker running on Linux (E5).
+    winreg: Any = _winreg
     try:
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{URL_SCHEME}\shell\open\command")
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{URL_SCHEME}\shell\open")

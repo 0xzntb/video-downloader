@@ -1218,7 +1218,7 @@ def test_the_doctor_shows_a_remembered_theme(capsys, monkeypatch):
 
     assert main(["--doctor"]) == 0
 
-    line = [line for line in capsys.readouterr().out.splitlines() if line.startswith("Theme:")][0]
+    line = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("Theme:"))
     assert "high-contrast" in line
     assert "the settings file" in line
 
@@ -1229,7 +1229,7 @@ def test_the_doctor_says_when_colour_is_off(capsys, monkeypatch):
 
     assert main(["--doctor"]) == 0
 
-    line = [line for line in capsys.readouterr().out.splitlines() if line.startswith("Theme:")][0]
+    line = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("Theme:"))
     assert "NO_COLOR is set" in line
 
 

@@ -12,8 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from viddl import URL_SCHEME
-from viddl import appdata, protocol
+from viddl import URL_SCHEME, appdata, protocol
 from viddl.protocol import (
     CHROMIUM,
     FIREFOX,

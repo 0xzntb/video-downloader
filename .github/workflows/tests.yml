@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      # pyflakes comes with the dev extra now, so one install is the whole
+      # Every checker comes with the dev extra now, so one install is the whole
       # toolchain (E4). What lands here is whatever the ranges in pyproject
       # allow today — which is the point of this matrix: it tests the range.
       - name: Install Viddl and the test tools
@@ -46,8 +46,17 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
         run: python -m pytest -q --cov=viddl --cov-report=term-missing --cov-fail-under=93
 
-      - name: Lint
-        run: python -m pyflakes viddl tests
+      # A static check reads the same source on every runner, so it is answered
+      # in one cell rather than nine (E5). ruff is pyflakes' rules plus the ones
+      # pyflakes never had; mypy is pointed at `viddl` by pyproject.toml, since
+      # that is where the annotations are. `ruff format --check` is deliberately
+      # absent: the tree is not formatted by ruff yet, and a first run that
+      # rewrites 47 files would hide every real finding in one commit.
+      - name: Lint and type-check
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: |
+          python -m ruff check viddl tests
+          python -m mypy
 
   # The matrix above proves the *declared* range installs and works, wherever
   # pip happens to resolve it today. This job proves the other half (E4): that
@@ -76,8 +85,10 @@ jobs:
       - name: Run the suite
         run: uv run python -m pytest
 
-      - name: Lint
-        run: uv run python -m pyflakes viddl tests
+      - name: Lint and type-check
+        run: |
+          uv run python -m ruff check viddl tests
+          uv run python -m mypy
 
   install-windows:
     name: install.ps1 on Windows

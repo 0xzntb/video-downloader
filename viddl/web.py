@@ -16,6 +16,7 @@ which is why this can never be a hosted website, only a local one.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import secrets
@@ -25,7 +26,7 @@ import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple
+from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple, cast
 from urllib.parse import urlsplit
 
 from . import appdata, search
@@ -336,10 +337,8 @@ class WebApp:
         for record in records:
             if record.state != "running":
                 continue
-            try:
+            with contextlib.suppress(Exception):  # pragma: no cover - a stop must not raise
                 record.job.cancel()
-            except Exception:  # pragma: no cover - a stop must not raise
-                pass
         deadline = time.monotonic() + max(0.0, wait)
         for record in records:
             thread = record.thread
@@ -355,6 +354,20 @@ class _Server(ThreadingHTTPServer):
     #: Set by build_server.
     app: WebApp
 
+    def bound_host(self) -> str:
+        """The address it actually bound, not the one it was asked for.
+
+        ``server_address`` is typed as a union with a socket path, because
+        ``BaseServer`` serves unix sockets too; this one is always a pair.
+        """
+        host, _port = cast(Tuple[str, int], self.server_address)
+        return str(host)
+
+    def bound_port(self) -> int:
+        """The port it bound — what Host and Origin are checked against."""
+        _host, port = cast(Tuple[str, int], self.server_address)
+        return int(port)
+
 
 class _Handler(BaseHTTPRequestHandler):
     """Every request is the page's, or it is not answered at all."""
@@ -364,30 +377,30 @@ class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     # -- verbs ---------------------------------------------------------------
-    def do_GET(self) -> None:  # noqa: N802 - the name is the protocol
+    def do_GET(self) -> None:
         self._dispatch()
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         self._dispatch()
 
-    def do_HEAD(self) -> None:  # noqa: N802
+    def do_HEAD(self) -> None:
         self._dispatch()
 
-    def do_OPTIONS(self) -> None:  # noqa: N802
+    def do_OPTIONS(self) -> None:
         self._dispatch()
 
-    def do_PUT(self) -> None:  # noqa: N802
+    def do_PUT(self) -> None:
         self._dispatch()
 
-    def do_DELETE(self) -> None:  # noqa: N802
+    def do_DELETE(self) -> None:
         self._dispatch()
 
-    def do_PATCH(self) -> None:  # noqa: N802
+    def do_PATCH(self) -> None:
         self._dispatch()
 
     # -- routing -------------------------------------------------------------
     def _dispatch(self) -> None:
-        app = self.server.app
+        app = cast(_Server, self.server).app
         # A request whose Host is not this loopback server is a name resolving
         # to 127.0.0.1 from somewhere else (DNS rebinding), not this page.
         if not self._host_is_ours(app):
@@ -440,7 +453,7 @@ class _Handler(BaseHTTPRequestHandler):
     # -- guards --------------------------------------------------------------
     def _host_is_ours(self, app: WebApp) -> bool:
         host = (self.headers.get("Host") or "").strip().lower()
-        port = self.server.server_address[1]
+        port = cast(_Server, self.server).bound_port()
         return host in (f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}")
 
     def _origin_is_ours(self) -> bool:
@@ -451,7 +464,7 @@ class _Handler(BaseHTTPRequestHandler):
             # cross-site page cannot arrange.
             return True
         parts = urlsplit(origin)
-        port = self.server.server_address[1]
+        port = cast(_Server, self.server).bound_port()
         return (
             parts.scheme == "http"
             and parts.hostname in ("127.0.0.1", "localhost", "::1")
@@ -500,7 +513,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _not_found(self) -> None:
         self._send(404, _json({"error": {"message": "Not found."}}), "application/json")
 
-    def _fail(self, status: int, message: str, hint: str = "") -> None:
+    def _fail(self, status: int, message: str, hint: Optional[str] = "") -> None:
         error: Dict[str, Any] = {"message": message}
         if hint:
             error["hint"] = hint
@@ -553,7 +566,7 @@ class _Handler(BaseHTTPRequestHandler):
             "web: %s %s -> %s", self.command, path, code
         )
 
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+    def log_message(self, format: str, *args: Any) -> None:
         logging.getLogger(LOGGER_NAME).debug("web: " + format, *args)
 
 
@@ -591,8 +604,7 @@ def build_server(
     )
     server = _Server((LOOPBACK, port), _Handler)
     server.app = app
-    host, bound = server.server_address[:2]
-    app.origin = f"http://{host}:{bound}"
+    app.origin = f"http://{server.bound_host()}:{server.bound_port()}"
     return server, f"{app.origin}/{app.token}/"
 
 

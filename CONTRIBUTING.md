@@ -24,12 +24,13 @@ is the one to run.
 
 ## The commands CI runs
 
-These four, in this order. A pull request that passes them locally will pass on
+These five, in this order. A pull request that passes them locally will pass on
 the runners; if it does not, that is worth an issue, not a retry.
 
 ```sh
 .venv/bin/python -m pytest                                     # the whole suite
-.venv/bin/python -m pyflakes viddl tests                       # lint
+.venv/bin/python -m ruff check viddl tests                     # lint
+.venv/bin/python -m mypy                                       # types (viddl/)
 .venv/bin/python -m pytest --cov=viddl --cov-fail-under=93     # the coverage floor
 .venv/bin/python -m pytest -m integration -rs                  # only with a real engine
 ```
@@ -45,7 +46,12 @@ serve a file from `127.0.0.1` and download it through the app's own
 `DownloadJob`. A skip is honest there; a pass is not, so never make one mark a
 test that did not run as passing.
 
-Those four run against whatever the ranges in `pyproject.toml` allow today. To
+`ruff` and `mypy` are configured in `pyproject.toml`, and both are quiet
+before a change rather than after one: a rule is switched on because it caught
+something or because the codebase already obeys it, not because ruff ships it.
+Adding a rule means fixing what it finds in the same commit.
+
+Those five run against whatever the ranges in `pyproject.toml` allow today. To
 run them against the versions they are known to pass with, use the lock:
 
 ```sh

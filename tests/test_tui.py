@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import ClassVar, Optional
 
 import pytest
 from textual.containers import VerticalScroll
@@ -28,14 +28,11 @@ from viddl.formats import MediaInfo, MediaOption, PlaylistSummary, parse_info
 from viddl.history import Entry
 from viddl.network import NetworkOptions
 from viddl.protocol import build_scheme_url
+from viddl.tui import title as title_mod
 from viddl.tui.app import (
-    DownloadScreen,
-    _failure_details,
     _SPINNER,
-    _key_label,
+    DownloadScreen,
     HelpScreen,
-    _play_file,
-    _reveal_in_folder,
     HomeScreen,
     LinksScreen,
     OptionsScreen,
@@ -46,12 +43,15 @@ from viddl.tui.app import (
     SignIn,
     StoppedScreen,
     ViddlApp,
+    _failure_details,
+    _key_label,
     _links_from_text,
     _open_folder,
+    _play_file,
+    _reveal_in_folder,
 )
-from viddl.tui import title as title_mod
-from viddl.util import REDACTED
 from viddl.tui.widgets import CURSOR_MARK, ChoiceList, ChoiceRow, ExtraToggle
+from viddl.util import REDACTED
 
 URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
@@ -483,7 +483,7 @@ async def test_launching_with_a_url_skips_the_home_screen(tmp_path):
 class RecordingJob(FakeJob):
     """Notes every download that is started, so a test can prove none was."""
 
-    started: list = []
+    started: ClassVar[list] = []
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -912,7 +912,7 @@ async def test_rows_show_the_size_and_render_as_text(tmp_path):
         # Two video qualities and eight audio rows (F4).
         assert len(rows) == 10
         first = rows[0]
-        assert first.row_size.startswith("~") or first.row_size.endswith(("MB", "GB"))  # noqa: E501
+        assert first.row_size.startswith("~") or first.row_size.endswith(("MB", "GB"))
         assert first.row_label == "1080p"
         assert "MP4" in first.row_note
         assert first.has_class("active") is True
@@ -985,7 +985,7 @@ async def test_the_box_opens_on_the_name_a_search_was_given(tmp_path):
         await settle(pilot)
 
         assert isinstance(app.screen, OptionsScreen)
-        home = [screen for screen in app.screen_stack if isinstance(screen, HomeScreen)][0]
+        home = next(screen for screen in app.screen_stack if isinstance(screen, HomeScreen))
         assert home.query_one("#url-input", Input).value == "some song"
         # What is downloaded from here is the video the search found.
         assert app.state.url == URL
@@ -1245,7 +1245,7 @@ async def test_the_download_gets_the_network_choices_the_run_was_launched_with(t
     network = NetworkOptions.parse(proxy="socks5://127.0.0.1:1080", limit_rate="1M")
 
     class WatchingJob(FakeJob):
-        made: list = []
+        made: ClassVar[list] = []
 
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -2924,7 +2924,7 @@ async def test_the_key_does_nothing_when_there_is_no_stream_to_start(tmp_path):
 @pytest.mark.asyncio
 async def test_the_download_is_told_it_is_live_and_where_to_start(tmp_path):
     class WatchingJob(FakeJob):
-        made: list = []
+        made: ClassVar[list] = []
 
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -3641,7 +3641,7 @@ async def test_the_page_fits_a_small_terminal_and_scrolls_the_rest(tmp_path):
 @pytest.mark.asyncio
 async def test_a_failed_download_can_be_tried_again(tmp_path):
     class CountingFailingJob(FailingJob):
-        made: list = []
+        made: ClassVar[list] = []
 
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -3671,7 +3671,7 @@ async def test_a_failed_download_can_be_tried_again(tmp_path):
 @pytest.mark.asyncio
 async def test_the_try_again_button_does_the_same(tmp_path):
     class CountingFailingJob(FailingJob):
-        made: list = []
+        made: ClassVar[list] = []
 
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)

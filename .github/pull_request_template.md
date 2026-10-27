@@ -13,7 +13,8 @@ the alternatives were.
 ## Checks
 
 - [ ] `python -m pytest` passes
-- [ ] `python -m pyflakes viddl tests` is clean
+- [ ] `python -m ruff check viddl tests` is clean
+- [ ] `python -m mypy` is clean
 - [ ] `python -m pytest --cov=viddl --cov-fail-under=93` passes
 - [ ] The new behaviour has a test that fails without the change
 - [ ] `CHANGELOG.md` has a line under *Unreleased* (anything a user would notice)

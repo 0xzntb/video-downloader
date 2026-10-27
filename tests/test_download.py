@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import subprocess
@@ -15,14 +16,12 @@ from typing import Optional
 
 import pytest
 
-from viddl import appdata
+from viddl import appdata, history, logfile
 from viddl import download as download_mod
-from viddl import logfile
-from viddl import history
 from viddl.download import DownloadCancelled, DownloadJob, ProbeCancelled, probe_video
 from viddl.engine import Tool, ToolError
-from viddl.network import NetworkOptions
 from viddl.formats import MediaOption
+from viddl.network import NetworkOptions
 
 SUCCESS_SCRIPT = """\
 import os, pathlib, sys
@@ -1015,10 +1014,8 @@ def test_stopping_a_download_stops_the_process_it_started(tmp_path):
         assert wait_until_gone(child_pid), "cancel left the merge running"
     finally:
         if still_running(child_pid):  # pragma: no cover - only on a failure
-            try:
+            with contextlib.suppress(OSError):  # pragma: no cover - died by now
                 os.kill(child_pid, 9)
-            except OSError:  # pragma: no cover - it died in the meantime
-                pass
 
 
 @needs_process_groups

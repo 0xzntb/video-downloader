@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **47 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E4 in section 5,
+Progress so far: **48 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E5 in section 5,
 D1–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -40,7 +40,7 @@ in `SECURITY.md`, which is what **D3** asked for.
 | # | Item | Why it matters |
 | --- | --- | --- |
 | 1 | ✅ **S1** — stop option-shaped "links" reaching yt-dlp | Proven argument injection; a web page could trigger it — **done** |
-| 2 | ◐ **E1** — add CI | The matrix (Linux/macOS/**Windows**) and `pyflakes` landed with **R10**; the coverage floor and the weekly extractor job are still missing |
+| 2 | ✅ **E1** — add CI | The matrix (Linux/macOS/**Windows**), the coverage floor and the weekly extractor job all landed; **E5** replaced `pyflakes` with `ruff` and `mypy` |
 | 3 | ✅ **E2** — add a `LICENSE` file | README and `pyproject.toml` both claimed MIT with no text to ship — **done**, with the changelog, contributor guide and issue forms |
 | 4 | ✅ **R1** + **R2** — resume interrupted downloads, and really stop them | A cancelled or dropped download started from zero, and a stop left ffmpeg writing — **both done** |
 | 5 | ✅ **R4** — `viddl --update` | Stale yt-dlp is *the* top cause of "this link stopped working" — **done** |
@@ -2974,7 +2974,7 @@ runtime dependency list at one package — that minimalism is a feature.
 > those pull requests. The lock is what makes it possible; taking it is not part
 > of this item.
 
-### E5 — Static analysis beyond pyflakes · **P2** · M
+### E5 — Static analysis beyond pyflakes · **P2** · M · ✅ **Done**
 
 `pyflakes` catches unused imports and typos; it does not check types, and the
 codebase is fully annotated (`from __future__ import annotations` everywhere,
@@ -2985,6 +2985,75 @@ unverified.
 (strict-ish, at least on `viddl/`) to CI. The types already written will find
 real bugs immediately — `_find_output`, `MediaOption` and the `Tool` candidates
 list are exactly where a checker earns its keep.
+
+> **Done: 710 findings and 225 type errors, both to zero, with one suppression
+> in the whole package.** The numbers are what the first run of each tool said,
+> not what the configuration was tuned down to.
+>
+> * **`ruff` replaces `pyflakes` outright.** `select = ["E4", "E7", "E9", "F",
+>   "B", "I", "SIM", "UP", "RUF"]` — pyflakes' rules (F) plus bugbear, import
+>   order, the small simplifications, pyupgrade and ruff's own. The rest of
+>   ruff's catalogue is **not** selected on purpose: this is a program with a
+>   screen and a subprocess, not a web service, and a rule set nobody reads is a
+>   rule set everybody suppresses. `target-version = "py39"` so a fix ruff
+>   offers still runs on the oldest Python the project claims, and the `dev`
+>   extra holds `ruff>=0.9,<1`.
+> * **Four rules are off, with the reason in the file.** `UP006`/`UP035`/`UP045`
+>   want `list[X]` and `X | None`, which 3.9 cannot evaluate at runtime and which
+>   the codebase deliberately spells the old way; `RUF001`–`RUF003` call em
+>   dashes and curly quotes ambiguous, which they are not in a sentence nobody
+>   types at a prompt.
+> * **`mypy` on `viddl/`, not on the tests.** `files = ["viddl"]`,
+>   `python_version = "3.9"`, plus `check_untyped_defs`,
+>   `no_implicit_optional`, `warn_redundant_casts` and `warn_unused_ignores` —
+>   the last is what stops an ignore from outliving the error it was written for.
+>   The tests are checked by being run, which says more about them than a type
+>   ever could.
+> * **188 of the 225 errors were one fact.** `Screen` is generic over the
+>   *result* it returns, not over the app, so `self.app.state` — most of what a
+>   screen does — was invisible to a checker. One `ViddlScreen(Screen)` base with
+>   `app = app_getter(ViddlApp)`, Textual's own `getters.app`, removed all of
+>   them, and asserts the app's type at runtime as a bonus: a screen run under
+>   the wrong app now fails loudly in a test.
+> * **The other 37 were the real thing.** `BINDINGS: ClassVar[List[BindingType]]`
+>   where a checker could not tell a class attribute from an instance one;
+>   `cast` where a stdlib stub is narrower than reality (`subprocess`' creation
+>   flags are Windows-only, `BaseServer.server_address` is typed as a union with
+>   a socket path, `copy_to_clipboard` returns nothing according to Textual and
+>   an awaitable according to every caller); `Optional` narrowed rather than
+>   assumed in the log, config and web paths; the web server's address read
+>   through two named methods instead of `server_address[1]`, one of which now
+>   reports the port it *bound* rather than the one it asked for.
+> * **Ruff's 710 were mostly mechanical, and a dozen were not.**
+>   `try/except/pass` became `contextlib.suppress`, `int(round(x))` became
+>   `round(x)`, two one-import lines became one, `getattr(subprocess, "CONST")`
+>   became a module constant read once, `do_GET` lost its `# noqa: N802` (N is
+>   not selected, so the comment was decoration). The real ones: `raise ... from
+>   None` inside an `except` that was swallowing the cause, an `OverflowError`
+>   that could escape a float parse and crash a probe, unused parameters removed
+>   from private helpers, and shadowed names in the queue.
+> * **One `# type: ignore` in the package** — `history.py`, where a float is
+>   read from a string that was already validated — and `warn_unused_ignores`
+>   keeps it from staying after the error goes.
+> * **CI answers both in one cell** (`ubuntu-latest` / 3.12) instead of nine,
+>   because a static check reads the same source on every runner; the `locked`
+>   job runs the same two commands against the lock. `pyflakes` is gone from the
+>   `dev` extra, from `uv.lock` and from both workflows: a second checker whose
+>   rules are a subset of the first only adds a way for the two to disagree.
+> * **Not done, on purpose: `ruff format --check`.** It would rewrite 47 of 59
+>   files today, and a first run that reformats half the tree would bury every
+>   real finding in one commit. A formatter is a decision about `git blame` and
+>   belongs with **E6**'s pre-commit hooks, as a change of its own — the comment
+>   in the workflow says so where somebody about to add it will read it.
+>
+> **Verified.** `ruff check viddl tests` → *All checks passed*; `mypy` →
+> *Success: no issues found in 30 source files*; both through `uv run` against
+> the lock (ruff 0.17.3, mypy 1.20.2, textual 8.2.8, pytest 9.1.1, pyflakes
+> uninstalled) and directly from the `dev` extra. The whole suite on the locked
+> set: **1276 passed, 2 skipped**, coverage **94.14%** with the 93% floor
+> enforced, exit 0. `uv lock --check` passes; both workflows still parse as
+> YAML. What has not happened is a real CI run — the `lint and type-check` step,
+> like E4's `locked` job, was proven by running its exact commands here.
 
 ### E6 — pre-commit hooks · **P2** · S
 
