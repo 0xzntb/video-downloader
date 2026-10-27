@@ -1,0 +1,130 @@
+#!/bin/sh
+# Fast checks on what is about to be committed (E6).
+#
+# Opt in once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# This is the cheap half of CI — whitespace, ruff, mypy and a two-second slice of
+# the suite. The other half (the whole suite, the coverage floor, the lock, the
+# installers) takes five minutes, and belongs on the runner: a hook that long is
+# a hook everybody commits past with --no-verify, which is worse than no hook at
+# all, because it looks like a check.
+#
+# So --no-verify is a normal thing to do here, and CI is still the gate. What
+# this buys is finding the small thing before it costs a round trip.
+#
+# Two honest limits:
+#
+# * The files are checked as they are *on disk*, not as staged. A partial stage
+#   (`git add -p`) can therefore pass here and fail on the runner.
+# * If the dev tools are missing, each step says so and is skipped. A hook that
+#   refuses to commit because somebody has not installed ruff would be a worse
+#   hook than one that tells them.
+set -u
+
+repo=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+cd "$repo" || exit 0
+
+# The interpreter that has the dev extra in it: this checkout's venv first, then
+# whatever is on PATH, which is what CI has after `pip install -e ".[dev]"`.
+python=
+for candidate in .venv/bin/python .venv/Scripts/python.exe python3 python; do
+    case $candidate in
+        python3 | python)
+            if command -v "$candidate" >/dev/null 2>&1; then
+                python=$candidate
+                break
+            fi
+            ;;
+        *)
+            if [ -x "$candidate" ]; then
+                python=$candidate
+                break
+            fi
+            ;;
+    esac
+done
+
+status=0
+
+# 1. Whitespace, in the staged content itself, for every kind of file: git's own
+#    check, which reports trailing whitespace, spaces before a tab and leftover
+#    conflict markers. It reads the index, so it is not fooled by what is on disk.
+if ! git diff --cached --check; then
+    echo "pre-commit: fix the whitespace above — it is in what you are committing." >&2
+    status=1
+fi
+
+# Split on newlines only, so a path with a space in it stays one argument.
+IFS='
+'
+staged=$(git diff --cached --name-only --diff-filter=ACMR -- '*.py')
+
+if [ -z "$staged" ]; then
+    exit $status
+fi
+
+if [ -z "$python" ]; then
+    echo "pre-commit: no Python found — lint, types and the smoke tests are skipped." >&2
+    echo "            pip install -e \".[dev]\" in a venv gives you all three." >&2
+    exit $status
+fi
+
+have() {
+    "$python" -m "$1" --version >/dev/null 2>&1
+}
+
+# 2. ruff on the staged files only. It reads pyproject.toml, so this is exactly
+#    the check CI runs, pointed at what changed instead of the whole tree.
+if have ruff; then
+    # Word splitting is wanted here: $staged is the list of files, one per line.
+    # shellcheck disable=SC2086
+    if ! "$python" -m ruff check $staged; then
+        echo "pre-commit: ruff is unhappy with the files above." >&2
+        status=1
+    fi
+else
+    echo "pre-commit: ruff is not installed; skipping the lint (pip install -e \".[dev]\")." >&2
+fi
+
+# 3. mypy reads the whole package rather than a file at a time, so it runs once
+#    and only when something under `viddl/` changed — types are not checked in
+#    the tests (E5).
+if printf '%s\n' "$staged" | grep -q '^viddl/'; then
+    if have mypy; then
+        if ! "$python" -m mypy; then
+            echo "pre-commit: mypy found the problems above." >&2
+            status=1
+        fi
+    else
+        echo "pre-commit: mypy is not installed; skipping the types." >&2
+    fi
+fi
+
+# 4. A slice of the suite, not the suite: the pure modules, which decide what a
+#    link is, what a quality means and what a failure says — 225 tests in under
+#    two seconds, no subprocess, no screen. Everything that spawns something
+#    takes minutes and is the runner's job.
+if have pytest; then
+    if ! "$python" -m pytest -q --no-cov \
+        tests/test_util.py \
+        tests/test_errors.py \
+        tests/test_formats.py \
+        tests/test_network.py \
+        tests/test_protocol.py \
+        tests/test_machine.py; then
+        echo "pre-commit: the smoke tests above failed." >&2
+        status=1
+    fi
+else
+    echo "pre-commit: pytest is not installed; skipping the smoke tests." >&2
+fi
+
+if [ "$status" -ne 0 ]; then
+    echo >&2
+    echo "pre-commit: not committing. Fix the above, or 'git commit --no-verify'" >&2
+    echo "            if you know CI will catch it later." >&2
+fi
+
+exit $status

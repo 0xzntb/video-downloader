@@ -22,6 +22,26 @@ python3 -m venv .venv
 On Windows the same commands live in `.venv\Scripts\`, and `.venv\Scripts\python`
 is the one to run.
 
+## Before you commit
+
+Those checks can run themselves, on every commit, in about two seconds. Opt in
+once per clone — nothing to install, since the hook calls the tools the `dev`
+extra already gave you:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+`.githooks/pre-commit` looks at the files you staged: trailing whitespace in any
+of them, `ruff` on the Python, `mypy` if anything under `viddl/` moved, and the
+six pure test modules (225 tests, under two seconds). The rest of the suite takes
+minutes and is the runner's job.
+
+`git commit --no-verify` skips it. That is fine — the hook is a convenience, not
+a gate, and CI is still the thing that decides. It also reads the files as they
+are on disk rather than the staged copy, so a partial stage (`git add -p`) can
+pass here and fail there.
+
 ## The commands CI runs
 
 These five, in this order. A pull request that passes them locally will pass on

@@ -115,3 +115,77 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "viddl --doctor failed" }
           & $launcher --plain --help
           if ($LASTEXITCODE -ne 0) { throw "viddl --plain --help failed" }
+
+  # A hook nobody runs is a file. This job is what makes `.githooks/pre-commit`
+  # a claim rather than an intention: it switches the hook on exactly as a
+  # contributor would, then commits through it four times — one clean change that
+  # must land, and three bad ones that must not, each bad for exactly one reason
+  # so the step proves the check it names. Windows is left out because the hook
+  # has only been exercised where `sh` is the shell executing it; Git Bash can
+  # run it by hand (`sh .githooks/pre-commit`), and the interpreter lookup
+  # already covers `.venv\Scripts\python.exe`.
+  hook:
+    name: The pre-commit hook (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # No venv here on purpose: the hook looks for one first and then falls back
+      # to PATH, and PATH is the case a contributor without a venv hits.
+      - name: Install Viddl and the test tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Switch the hook on
+        run: git config core.hooksPath .githooks
+
+      - name: A clean file is committed
+        shell: bash
+        run: |
+          git config user.email "hook@viddl.invalid"
+          git config user.name "hook test"
+          printf 'VALUE = 1\n' > probe_ok.py
+          git add probe_ok.py
+          git commit -m "probe: a clean file"
+
+      - name: Trailing whitespace is refused
+        shell: bash
+        run: |
+          printf 'VALUE = 2  \n' > probe_ok.py
+          git add probe_ok.py
+          if git commit -m "probe: trailing whitespace"; then
+            echo "::error::the hook committed a trailing space"
+            exit 1
+          fi
+
+      - name: A lint finding is refused
+        shell: bash
+        run: |
+          printf 'import os\n\nVALUE = 3\n' > probe_ok.py
+          git add probe_ok.py
+          if git commit -m "probe: unused import"; then
+            echo "::error::the hook committed an unused import"
+            exit 1
+          fi
+
+      # The smoke slice is six files, not the suite, so the failure is planted in
+      # one of them — and it is written to pass ruff, so pytest is the only thing
+      # that can refuse this commit.
+      - name: A failing smoke test is refused
+        shell: bash
+        run: |
+          printf '\n\ndef test_probe_fails():\n    value = 1\n    assert value == 2\n' >> tests/test_util.py
+          git add tests/test_util.py
+          if git commit -m "probe: failing smoke test"; then
+            echo "::error::the hook committed a failing smoke test"
+            exit 1
+          fi

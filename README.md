@@ -1137,6 +1137,26 @@ that is where the annotations are, and the tests are checked by being run.
 Neither runs through `ruff format` yet — 47 files would be rewritten, and that
 is a separate change from having the findings.
 
+The cheap part of all that can run itself before each commit. Opt in once per
+clone; there is nothing to install, because the hook is a shell script that calls
+the tools you already have:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+`.githooks/pre-commit` checks the staged files for trailing whitespace, runs
+`ruff` on the Python among them, runs `mypy` when anything under `viddl/`
+changed, and runs 225 tests in about a second — the six pure modules, the ones
+that decide what a link is, what a quality means and what a failure says.
+Everything that spawns a subprocess takes minutes and stays on the runner, since
+a five-minute hook is a hook everybody commits past with `--no-verify`. That is
+documented as a normal thing to do here, because the hook is a convenience and
+CI is the gate. It reads the files as they are on disk rather than the staged
+copy, so a partial stage can still fail on the runner, and it has only been
+exercised where `sh` is the shell executing it — on Windows, Git Bash can run
+`sh .githooks/pre-commit` by hand.
+
 `tests/test_integration.py` is the one part of the suite that uses the real
 thing rather than a stand-in engine: it serves a file from `127.0.0.1` and
 downloads it through the app's own `DownloadJob` with whatever `yt-dlp` it can

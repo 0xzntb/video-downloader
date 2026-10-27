@@ -1,0 +1,4 @@
+# The pre-commit hook is a shell script: a CRLF checkout is a syntax error for
+# `sh`, and the error arrives in the middle of a commit. Everything else is left
+# to git's own line-ending handling.
+.githooks/* text eol=lf

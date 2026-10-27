@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **48 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E5 in section 5,
+Progress so far: **49 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E6 in section 5,
 D1–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -3055,10 +3055,68 @@ list are exactly where a checker earns its keep.
 > YAML. What has not happened is a real CI run — the `lint and type-check` step,
 > like E4's `locked` job, was proven by running its exact commands here.
 
-### E6 — pre-commit hooks · **P2** · S
+### E6 — pre-commit hooks · **P2** · S · ✅ **Done**
 
 Run `ruff`, `pyflakes`, the fast test subset and a whitespace check before commit.
 Low effort, keeps CI green.
+
+> **Done: a hook with no dependency of its own, and a job that commits through it
+> rather than asserting it exists.**
+>
+> * **`.githooks/pre-commit`, a POSIX shell script.** Nothing to install: it
+>   finds the interpreter that has the `dev` extra — this checkout's `.venv`
+>   (including the Windows `.venv\Scripts\python.exe` path), then `python3` or
+>   `python` on `PATH` — and calls `ruff`, `mypy` and `pytest`, which are the
+>   same three commands **E5** put in CI. The `pre-commit` framework would have
+>   meant another dev dependency, a second copy of ruff in its own isolated
+>   environment and a network fetch on first use; this is a file in the
+>   repository that reads `pyproject.toml`, so "linted" has one definition.
+> * **Opt-in, once per clone:** `git config core.hooksPath .githooks`. Not
+>   `.git/hooks`, because that directory is not in the repository and every
+>   contributor would have to be told about it separately, in a way that cannot
+>   be read from the tree.
+> * **What it runs, in order.** Whitespace from git's own
+>   `git diff --cached --check` — read from the **index**, so a partial stage
+>   cannot hide a trailing space, and every kind of file, not just Python. Then
+>   `ruff` on the staged Python. Then `mypy` (whole package, so once) only when
+>   something under `viddl/` moved, because types are not checked in the tests.
+>   Then 225 tests — `test_util`, `test_errors`, `test_formats`, `test_network`,
+>   `test_protocol`, `test_machine`: the pure modules, no subprocess, no screen.
+>   Measured here: **1.3 s** for a change outside `viddl/`, **1.6 s** for one
+>   inside it (mypy is the difference).
+> * **Why not the suite.** It takes 307 s. A hook that long is a hook everybody
+>   commits past with `--no-verify`, and a bypassed hook is worse than none: it
+>   looks like a check. So `--no-verify` is stated as normal in the file and in
+>   the docs, and CI stays the gate.
+> * **Two limits, in the file and in the docs.** The files are checked as they
+>   are on disk, not as staged, so a partial stage (`git add -p`) can pass here
+>   and fail on the runner. And the hook has only been exercised where `sh` is
+>   the shell that runs it: Linux and macOS, which is what the new job covers.
+>   On Windows the interpreter lookup knows about `Scripts\python.exe` and Git
+>   Bash can run it by hand, but that path has not been run and is not claimed.
+> * **A `hook` job proves it**, on `ubuntu-latest` and `macos-latest`: switch it
+>   on the way a contributor does, then commit four times — a clean file that
+>   must land, trailing whitespace, an unused import, and a failing test planted
+>   in `test_util.py` that **passes ruff**, so pytest is the only thing that can
+>   refuse that one. Four steps, each bad for exactly one reason, so each step
+>   proves the check it names.
+> * **`.gitattributes` forces LF for `.githooks/*`**: a CRLF checkout is a syntax
+>   error for `sh`, and it would arrive in the middle of a commit.
+>
+> **Verified here, with the hook switched on in this checkout.** Trailing
+> whitespace → exit 1, git naming the line. An unused import → exit 1 with ruff's
+> `I001`/`F401`. A `test_probe_fails` appended to `test_util.py` → `All checks
+> passed!` from ruff, then one failing test, exit 1 — the smoke slice really
+> runs. A blank line at EOF in `viddl/util.py` → exit 1 from the whitespace
+> check, before ruff even saw it. Clean changes → exit 0, 1.3 s and 1.6 s.
+> `tests.yml` parses and now carries four jobs: `test`, `locked`,
+> `install-windows`, `hook`. **The commit that added this work went through the
+> hook itself**, which is the only end-to-end proof that matters.
+>
+> **Not verified:** the `hook` job has not run on a runner. Its steps were
+> rehearsed here one by one (the same four staged changes, the same refusals),
+> but macOS's `/bin/sh` is bash in POSIX mode rather than dash, and that
+> difference is the runner's to show.
 
 ### E7 — One real end-to-end test · **P2** · M
 
