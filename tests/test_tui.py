@@ -3940,3 +3940,79 @@ async def test_a_link_in_the_box_at_the_start_is_not_an_empty_state(tmp_path):
         home = next(screen for screen in app.screen_stack if isinstance(screen, HomeScreen))
         assert "No link yet" not in shown(home, "#field-label")
         await settle(pilot)
+
+
+# ---------------------------------------------------------------------------
+# saying so when a long download ends (F9)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_progress_screen_can_promise_to_tell_you(tmp_path):
+    """The key is where the waiting is, and the answer outlives the window."""
+    from viddl import config as config_mod
+
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        app.state.option = None
+        app.push_screen(DownloadScreen())
+        await settle(pilot)
+        assert app.state.notify is False
+
+        await pilot.press("n")
+        await pilot.pause()
+        assert app.state.notify is True
+        assert "notify = true" in config_mod.config_path().read_text(encoding="utf-8")
+
+        await pilot.press("n")
+        await pilot.pause()
+        assert app.state.notify is False
+        assert "notify = false" in config_mod.config_path().read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_a_finished_download_tells_the_desktop_when_asked(tmp_path, monkeypatch):
+    from viddl.tui import app as app_mod
+
+    told = []
+    monkeypatch.setattr(
+        app_mod.notify_mod, "tell", lambda **kwargs: told.append(kwargs) or "bell"
+    )
+
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path), notify=True)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        app.state.option = None
+        app.push_screen(DownloadScreen())
+        await settle(pilot)
+        screen = app.screen
+        assert isinstance(screen, DownloadScreen)
+        # As if the download had been running for a while.
+        screen._started_at = 0.0
+        screen.finish_ok(Path("/tmp/clip.mp4"))
+        await pilot.pause()
+
+    assert told and told[0]["saved"] == "/tmp/clip.mp4"
+
+
+@pytest.mark.asyncio
+async def test_a_finished_download_stays_quiet_by_default(tmp_path, monkeypatch):
+    from viddl.tui import app as app_mod
+
+    told = []
+    monkeypatch.setattr(
+        app_mod.notify_mod, "tell", lambda **kwargs: told.append(kwargs) or "bell"
+    )
+
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        app.state.option = None
+        app.push_screen(DownloadScreen())
+        await settle(pilot)
+        app.screen._started_at = 0.0
+        app.screen.finish_error(ToolError("The site refused the request."))
+        await pilot.pause()
+
+    assert told == []

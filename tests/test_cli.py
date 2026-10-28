@@ -1330,3 +1330,36 @@ def test_report_quotes_a_failure_without_its_credentials(capsys):
     assert "Download failed" in out
     assert "token=<redacted>" in out
     assert "hunter2" not in out, "the report must not carry what the log does not"
+
+
+# ---------------------------------------------------------------------------
+# telling the person when a long download ends (F9)
+# ---------------------------------------------------------------------------
+
+
+def test_the_flag_asks_the_plain_path_to_speak_up(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(plain, "run_plain", lambda url, **kwargs: seen.update(kwargs) or 0)
+
+    assert cli.main(["--plain", "--yes", "--notify", URL]) == 0
+    assert seen["notify"] is True
+
+
+def test_the_default_is_silence(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(plain, "run_plain", lambda url, **kwargs: seen.update(kwargs) or 0)
+
+    assert cli.main(["--plain", "--yes", URL]) == 0
+    assert seen["notify"] is False
+
+
+def test_the_file_can_ask_for_it_and_the_flag_can_refuse(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(plain, "run_plain", lambda url, **kwargs: seen.update(kwargs) or 0)
+
+    config.set_value("notify", "on")
+    assert cli.main(["--plain", "--yes", URL]) == 0
+    assert seen["notify"] is True
+
+    assert cli.main(["--plain", "--yes", "--no-notify", URL]) == 0
+    assert seen["notify"] is False

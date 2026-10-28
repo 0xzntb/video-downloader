@@ -43,10 +43,12 @@ from textual.widgets import Button, Footer, Input, ProgressBar, Static
 
 from .. import APP_TITLE, __version__, appdata, errors, search
 from .. import clipboard as clipboard_mod
+from .. import config as config_mod
 from .. import cookies as cookies_mod
 from .. import download as download_mod
 from .. import engine as engine_mod
 from .. import history as history_mod
+from .. import notify as notify_mod
 from .. import theme as theme_mod
 from ..download import (
     DownloadCancelled,
@@ -139,6 +141,9 @@ class State:
     #: ``VIDDL_QUALITY`` (F13). Empty — every run that did not ask — means the
     #: best row, which is what the app did before there was a settings file.
     prefer_quality: str = ""
+    #: Whether a finished download should say so even if the person looked away
+    #: (F9). Off unless asked for; the progress screen can turn it on.
+    notify: bool = False
     info: Optional[MediaInfo] = None
     option: Optional[MediaOption] = None
     job: Optional[DownloadJob] = None
@@ -837,6 +842,7 @@ class ViddlApp(App):
         archive: Optional[Path] = None,
         network: Optional[NetworkOptions] = None,
         live_from_start: bool = False,
+        notify: bool = False,
         services: Optional[Services] = None,
         theme_name: str = "",
     ) -> None:
@@ -874,6 +880,9 @@ class ViddlApp(App):
             network=network or NetworkOptions(),
             # Whether a live stream is recorded from its beginning (F12).
             live_from_start=bool(live_from_start),
+            # The command line's answer about a finished download (F9);
+            # the progress screen can change it, and remembers that too.
+            notify=notify,
         )
         problem = appdata.ensure_dirs()
         if problem is not None:
@@ -2687,7 +2696,12 @@ class PlaylistScreen(ViddlScreen):
 class DownloadScreen(ViddlScreen):
     """Screen 3: progress."""
 
-    BINDINGS: ClassVar[List[BindingType]] = [Binding("escape", "cancel", "Cancel", show=True)]
+    BINDINGS: ClassVar[List[BindingType]] = [
+        Binding("escape", "cancel", "Cancel", show=True),
+        # The question "will this tell me when it is done" is asked while
+        # waiting, so the answer is offered where the waiting happens (F9).
+        Binding("n", "toggle_notify", "Notify when done", show=True),
+    ]
 
     #: True once this screen has been drawn at least once (U8). Until then an
     #: ending replaces it instead of covering it, so a download that finishes
@@ -2730,6 +2744,7 @@ class DownloadScreen(ViddlScreen):
             # recording is ended by the person, and what it caught is kept
             # (F12) — the button says which of the two it is.
             self.query_one("#cancel", Button).label = "Stop recording"
+        self._started_at = time.monotonic()
         self.run_download()
         # The first refresh is when this screen has really been seen. Anything
         # before it is a screen on its way in, and an ending must not stack a
@@ -2901,6 +2916,11 @@ class DownloadScreen(ViddlScreen):
     def finish_queue(self, summary: QueueSummary) -> None:
         self.app.state.queue = None
         self.app.window_title.reset()
+        self._tell(
+            failed=summary.failed > 0,
+            stopped=bool(summary.stopped),
+            count=summary.done if summary.failed == 0 and not summary.stopped else 0,
+        )
         if not self._has_a_screen():
             return
         self.query_one("#download-bar", ProgressBar).update(progress=100.0)
@@ -3005,6 +3025,7 @@ class DownloadScreen(ViddlScreen):
     def finish_ok(self, path: Path) -> None:
         self.app.window_title.reset()
         self.app.state.saved_path = path
+        self._tell(saved=str(path))
         job = self.app.state.job
         attachments = list(getattr(job, "attachments", []))
         already_had = bool(getattr(job, "already_had", False))
@@ -3018,6 +3039,7 @@ class DownloadScreen(ViddlScreen):
     def finish_error(self, error: ToolError) -> None:
         self.app.window_title.reset()
         self.app.state.job = None
+        self._tell(failed=True)
         if not self._has_a_screen():
             return
         # Replaced rather than covered, as a stop is: Try again starts a fresh
@@ -3047,6 +3069,61 @@ class DownloadScreen(ViddlScreen):
                 option=self.app.state.option,
                 is_live=bool(getattr(job, "is_live", False)),
             )
+        )
+
+    def _began_waiting(self) -> float:
+        """When this screen started working, for the notification's threshold."""
+        return getattr(self, "_started_at", time.monotonic())
+
+    def _tell(
+        self, *, saved: Optional[str] = None, failed: bool = False,
+        stopped: bool = False, count: int = 0,
+    ) -> None:
+        """A tap on the shoulder when the download ends (F9).
+
+        Nothing is said unless the person asked, and nothing about a download
+        that finished while they were watching: ``tell`` applies the same
+        twenty-second floor the plain path does, so the two front doors behave
+        alike. It never raises — the file is already saved, and a notification
+        that failed is not a download that failed.
+        """
+        if not self.app.state.notify:
+            return
+        began = getattr(self, "_started_at", None)
+        elapsed = 0.0 if began is None else max(0.0, time.monotonic() - began)
+        notify_mod.tell(
+            saved=saved,
+            failed=failed,
+            stopped=stopped,
+            count=count,
+            elapsed=elapsed,
+        )
+
+    def action_toggle_notify(self) -> None:
+        """Turn "tell me when it is done" on or off, and remember the answer (F9).
+
+        Written to the settings file so the choice survives the window it was
+        made in: a preference that has to be given again every time is not a
+        preference. A file that cannot be written does not lose the choice for
+        this run, because the download in front of the person is the one they
+        were asking about.
+        """
+        wanted = not self.app.state.notify
+        self.app.state.notify = wanted
+        saved = True
+        try:
+            config_mod.set_value("notify", "true" if wanted else "false")
+        except (OSError, ValueError):
+            saved = False
+        if not saved:
+            self.set_status(
+                "You'll be told when this finishes (this run only)."
+                if wanted
+                else "Quiet when it finishes (this run only)."
+            )
+            return
+        self.set_status(
+            "You'll be told when this finishes." if wanted else "Quiet when it finishes."
         )
 
     def action_cancel(self) -> None:
@@ -3749,6 +3826,7 @@ def run(
     archive: Optional[Path] = None,
     network: Optional[NetworkOptions] = None,
     live_from_start: bool = False,
+    notify: bool = False,
     services: Optional[Services] = None,
     theme_name: str = "",
 ) -> None:
@@ -3762,6 +3840,10 @@ def run(
         archive=archive,
         network=network,
         live_from_start=live_from_start,
+        # The answer resolved at the command line (F9) — the flag, the
+        # variable or the settings file — carried to the progress screen,
+        # which is the only screen that ever asks it again.
+        notify=notify,
         services=services,
         # The scheme chosen by the flag, the variable or the file (U1); the
         # home screen can change it from here.

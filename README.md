@@ -344,6 +344,23 @@ path=$(viddl --plain --yes --quiet "https://www.youtube.com/watch?v=...")
 What went wrong still goes to stderr, so a failure can be read afterwards; the
 exit code stays 0/1/130 as above.
 
+A long download usually ends in a window nobody is looking at, so `--notify`
+says so where the operating system keeps its notifications: `notify-send` on
+Linux, Notification Center on macOS, a toast on Windows — and the terminal's
+own bell where the machine has none of them.
+
+```sh
+viddl --plain --yes --notify "https://www.youtube.com/watch?v=..."
+viddl --set notify on        # remember it for every run
+```
+
+It is **off unless you ask**, and a download that took less than twenty seconds
+says nothing at all: if you are still watching, an interruption is a nuisance.
+A notifier that is missing, refuses, or hangs is never an error — the file is
+already saved, and the bell is the fallback. In the app, `n` on the progress
+screen turns it on and off and remembers the answer, because the question
+occurs to you while waiting.
+
 ### For scripts: JSON
 
 `--json` prints one object instead of lined-up sentences. It works with the two
@@ -575,7 +592,12 @@ The first time you click the button your browser asks whether to allow
 window opens with the link already loaded, ready for you to pick a quality.
 
 The extension asks for very little: it only reads a page when you use the
-button or the menu on it, and it never touches sites in the background. The
+button or the menu on it, and it never touches sites in the background — no
+storage, no `webRequest`, no request for your cookies. The Chromium build also
+declares `minimum_chrome_version` 92, the first version whose injected-argument
+call the hand-off uses, so a browser too old for it refuses the install instead
+of failing quietly at the button; Firefox states the same floor its own way
+(`strict_min_version` 109). The
 Firefox build also names YouTube in `host_permissions` — the same site its
 content script already runs on — because without it the button on a watch page
 could not hand the link over without a second click on the toolbar icon.
@@ -845,6 +867,7 @@ viddl --set download-dir ~/Videos
 viddl --set quality 720
 viddl --set archive on
 viddl --set theme light
+viddl --set notify on
 ```
 
 The file is `~/.config/viddl/config.toml` (`$XDG_CONFIG_HOME/viddl/config.toml`
@@ -859,6 +882,7 @@ removing the last one deletes the file, which puts the zero-config default back.
 | `quality` | `720`, `1080p`, `best`, `audio`, `mp3-192` … | `--quality`, `--audio`, `VIDDL_QUALITY` |
 | `archive` | `on` or `off` | `--download-archive`, `VIDDL_ARCHIVE` |
 | `theme` | `dark`, `light`, `high-contrast` or `auto` | `--theme`, `VIDDL_THEME` |
+| `notify` | `on` or `off` | `--notify`, `--no-notify`, `VIDDL_NOTIFY` |
 
 **What wins:** a flag on the command line, then an environment variable, then
 this file, then the built-in default. That order is the point of a preference
@@ -1045,7 +1069,8 @@ rather than a title bar, which is the page's own business.
 
 Five variables change where Viddl looks, one changes what it asks for, one
 changes how long it waits for the network, one says what is remembered
-between runs, one sets a default quality and one picks the colours. None are
+between runs, one sets a default quality, one picks the colours and one makes a
+finished download say so. None are
 needed for normal use; they exist for tests, shared machines, slow links and
 unusual setups, and every one of them outranks the settings file above.
 `viddl --doctor` prints the ones that are set and what became of each, so none
@@ -1062,6 +1087,7 @@ of them is a secret.
 | `VIDDL_ARCHIVE` | Keep a download archive and skip videos already in it: `1`/`on`/`yes`, or `0`/`off`/`no` to say so out loud. | Take a playlist again and only get the new videos; never fetch the same link twice. |
 | `VIDDL_QUALITY` | The quality `--plain` uses when `--quality` is not given, and the row the app starts on: `720`, `best`, `audio`, `mp3-192`. | Keep a default for this shell without writing a settings file; override one command. |
 | `VIDDL_THEME` | The colour scheme the app draws in: `dark`, `light`, `high-contrast`, or `auto` to follow the terminal's own background. | Try a scheme without writing a settings file, or change a plain terminal's mind for one shell. |
+| `VIDDL_NOTIFY` | Say so when a download that took a while finishes: `1`/`on`/`yes`, or `0`/`off`/`no` to say so out loud. | Get told while a long download runs in a shell you are not watching. |
 
 Each value is checked before it is used, and one that cannot be honoured is
 ignored rather than half-applied. A value that looks like an option
@@ -1069,7 +1095,7 @@ ignored rather than half-applied. A value that looks like an option
 folder that is really a file is refused, rather than failing later in a way
 nobody can explain; and a bare program name means your `PATH` — never the
 working directory, which is not something Viddl gets to choose when a browser
-starts it. `viddl --doctor` says which of the nine are in use, which were
+starts it. `viddl --doctor` says which of the ten are in use, which were
 ignored, and why. `VIDDL_ARCHIVE` is the one with no path to check — a value
 that is neither a yes nor a no is refused (and shown as such by the doctor)
 rather than quietly read as "off".

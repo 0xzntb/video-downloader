@@ -1,6 +1,13 @@
 /**
  * Viddl — background script (Chrome/Edge/Brave service worker, Firefox event page).
  *
+ * This file never reads a page. It has no `tabs.query` for content, no
+ * `scripting.executeScript` that returns anything from the document, and no
+ * storage: the only thing it learns is the URL the user pointed at, and the
+ * only thing it does with it is hand that to the Viddl app. That promise is why
+ * the extension asks for so little — `activeTab` and `scripting` cover the
+ * click the hand-off needs, and nothing else is listed (S7).
+ *
  * Its whole job is to turn "the user wants this video" into a `viddl://` URL and
  * let the operating system open the terminal app. There is no server, no port
  * and no account involved.

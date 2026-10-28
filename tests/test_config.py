@@ -372,3 +372,42 @@ def test_the_report_names_the_file_and_what_is_in_it(no_environment):
 
     assert str(config.config_path()) in line
     assert "quality" in line
+
+
+# ---------------------------------------------------------------------------
+# notifications (F9)
+# ---------------------------------------------------------------------------
+
+
+def test_notify_is_off_until_it_is_asked_for(no_environment):
+    assert config.notify_enabled() is False
+
+    assert config.set_value("notify", "on") == "true"
+    assert "notify = true" in config.config_path().read_text(encoding="utf-8")
+    assert config.notify_enabled() is True
+
+    assert config.set_value("notify", "no") == "false"
+    assert config.notify_enabled() is False
+
+
+def test_the_notify_variable_beats_the_file(no_environment, monkeypatch):
+    config.set_value("notify", "true")
+    monkeypatch.setenv("VIDDL_NOTIFY", "off")
+
+    assert config.notify_enabled() is False
+
+
+def test_an_empty_notify_variable_means_the_default_not_the_file(
+    no_environment, monkeypatch
+):
+    """An answered question is not asked again of the file underneath it."""
+    config.set_value("notify", "true")
+    monkeypatch.setenv("VIDDL_NOTIFY", "")
+
+    assert config.notify_enabled() is False
+
+
+def test_a_notify_value_that_is_neither_yes_nor_no_is_refused(no_environment):
+    with pytest.raises(ValueError):
+        config.set_value("notify", "sometimes")
+    assert config.config_path().exists() is False

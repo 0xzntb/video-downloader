@@ -241,7 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar=("SETTING", "VALUE"),
         help=(
             "remember a preference in Viddl's settings file: "
-            "download-dir, quality, archive or theme"
+            "download-dir, quality, archive, theme or notify"
         ),
     )
     parser.add_argument(
@@ -271,6 +271,22 @@ def build_parser() -> argparse.ArgumentParser:
             "with --plain: print only the saved path — progress and notes are "
             "left out, failures still go to stderr"
         ),
+    )
+    parser.add_argument(
+        "--notify",
+        dest="notify",
+        action="store_true",
+        default=None,
+        help=(
+            "say so when a download that took a while finishes: a desktop "
+            "notification where there is one, the terminal's bell otherwise"
+        ),
+    )
+    parser.add_argument(
+        "--no-notify",
+        dest="notify",
+        action="store_false",
+        help="never notify, even when the settings file asks for it",
     )
     parser.add_argument(
         "--update",
@@ -958,6 +974,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 )
             url = target
 
+    # Whether to say so when a long download ends (F9). The flag decides; with
+    # no flag the variable, then the settings file; with neither, silence —
+    # which is the only sane default for a desktop notification.
+    tell_when_done = (
+        bool(args.notify) if args.notify is not None else config.notify_enabled()
+    )
+
     if plain_mode:
         flag = "--accessible" if args.accessible else "--plain"
         if not url:
@@ -985,6 +1008,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 quiet=bool(args.quiet),
                 # No line written over, and a bell at the end (U6).
                 accessible=bool(args.accessible),
+                # A tap on the shoulder when this took a while (F9).
+                notify=tell_when_done,
             )
         except KeyboardInterrupt:  # pragma: no cover - interactive
             return 130
@@ -1025,6 +1050,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             prefer_quality=quality,
             # The scheme resolved above (U1).
             theme_name=chosen_theme.name,
+            # The same answer the plain path gets (F9), so the two front doors
+            # cannot disagree about whether a finished download says so.
+            notify=tell_when_done,
         )
     except KeyboardInterrupt:  # pragma: no cover - interactive
         return 130

@@ -844,6 +844,8 @@ def test_the_cli_hands_the_choices_to_the_plain_path(monkeypatch):
         # The plain path is not the accessible one: it keeps its progress on one
         # line and does not ring (U6).
         "accessible": False,
+        # And it says nothing when it finishes, unless the run asked it to (F9).
+        "notify": False,
     }
 
 
@@ -1156,3 +1158,80 @@ def test_quiet_keeps_a_search_to_the_path_on_stdout():
     assert code == 0
     assert out == f"{DEST / 'A Very Real Video [dQw4w9WgXcQ].mp4'}\n"
     assert "Searching for" not in err
+
+
+# ---------------------------------------------------------------------------
+# saying so when a long download ends (F9)
+# ---------------------------------------------------------------------------
+
+
+def slow_clock(total=120.0):
+    """A clock whose second reading is a whole download later."""
+    readings = iter([0.0, total])
+    return lambda: next(readings)
+
+
+def test_a_long_download_says_so_when_it_was_asked_to(tmp_path, monkeypatch):
+    told = []
+    monkeypatch.setattr(
+        plain.notify_mod, "tell", lambda **kwargs: told.append(kwargs) or "bell"
+    )
+
+    code, _out, _err = run(assume_yes=True, notify=True, clock=slow_clock())
+
+    assert code == 0
+    assert told, "a two-minute download the person asked about says so"
+    assert told[0]["saved"].endswith(".mp4")
+    assert told[0]["elapsed"] >= 20
+    assert told[0]["failed"] is False
+
+
+def test_nothing_is_said_when_nobody_asked(tmp_path, monkeypatch):
+    """The default: a finished download does not interrupt anything (F9)."""
+    told = []
+    monkeypatch.setattr(
+        plain.notify_mod, "tell", lambda **kwargs: told.append(kwargs) or "bell"
+    )
+
+    code, _out, err = run(assume_yes=True, clock=slow_clock())
+
+    assert code == 0
+    assert told == []
+    assert "\a" not in err
+
+
+def test_a_quick_download_stays_quiet_even_when_asked(tmp_path):
+    """The floor lives in one place, so both front doors get the same answer."""
+    code, _out, err = run(assume_yes=True, notify=True, clock=lambda: 5.0)
+
+    assert code == 0
+    # The bell is what a notification falls back to, so its absence is proof
+    # that nothing was said at all.
+    assert "\a" not in err
+
+
+def test_a_failure_is_reported_as_one(tmp_path, monkeypatch):
+    told = []
+    monkeypatch.setattr(
+        plain.notify_mod, "tell", lambda **kwargs: told.append(kwargs) or "bell"
+    )
+
+    class BrokenJob(FakeJob):
+        def run(self):
+            raise ToolError("The site refused the request.")
+
+    code, _out, _err = run(assume_yes=True, notify=True, job_class=BrokenJob, clock=slow_clock())
+
+    assert code == 1
+    assert told and told[0]["failed"] is True
+    assert told[0]["saved"] is None
+
+
+def test_an_accessible_run_does_not_ring_twice(tmp_path, monkeypatch):
+    """The bell already rings at the end of an accessible run (U6)."""
+    seen = {}
+    monkeypatch.setattr(plain.notify_mod, "tell", lambda **kwargs: seen.update(kwargs) or "bell")
+
+    run(assume_yes=True, notify=True, accessible=True, clock=slow_clock())
+
+    assert seen["bell"] is False

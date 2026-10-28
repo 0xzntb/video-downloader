@@ -46,6 +46,9 @@ ENV_DOWNLOAD_DIR = "VIDDL_DOWNLOAD_DIR"
 ENV_QUALITY = "VIDDL_QUALITY"
 ENV_ARCHIVE = "VIDDL_ARCHIVE"
 ENV_THEME = theme_mod.ENV_THEME
+#: Off by default: a notification nobody asked for is the reason people turn
+#: notifications off altogether (F9).
+ENV_NOTIFY = "VIDDL_NOTIFY"
 
 #: The file, inside a folder named after the app in the platform's config place.
 FILE_NAME = "config.toml"
@@ -85,6 +88,12 @@ SETTINGS: Tuple[Setting, ...] = (
         "--theme",
         "the colours the app draws in",
     ),
+    Setting(
+        "notify",
+        ENV_NOTIFY,
+        "--notify",
+        "say so when a long download finishes, even if you looked away",
+    ),
 )
 
 SETTING_BY_NAME = {setting.name: setting for setting in SETTINGS}
@@ -118,8 +127,10 @@ def quality_words() -> Tuple[str, ...]:
 
 
 #: What the file may hold for a yes/no setting, and what it is written as.
-_ARCHIVE_ON = ("1", "on", "yes", "true")
-_ARCHIVE_OFF = ("0", "off", "no", "false")
+#: Every yes/no setting reads the same words, so somebody who typed ``on`` for
+#: ``archive`` does not have to learn ``true`` for ``notify``.
+_YES = ("1", "on", "yes", "true")
+_NO = ("0", "off", "no", "false")
 
 _BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -283,13 +294,21 @@ def _clean_quality(value: str) -> str:
     )
 
 
-def _clean_archive(value: str) -> str:
+def _clean_yes_no(value: str) -> str:
     text = value.strip().lower()
-    if text in _ARCHIVE_ON:
+    if text in _YES:
         return "true"
-    if text in _ARCHIVE_OFF:
+    if text in _NO:
         return "false"
     raise ValueError(f"'{value}' is not a yes or no (try on or off)")
+
+
+def _clean_archive(value: str) -> str:
+    return _clean_yes_no(value)
+
+
+def _clean_notify(value: str) -> str:
+    return _clean_yes_no(value)
 
 
 def _clean_theme(value: str) -> str:
@@ -303,6 +322,7 @@ _CLEANERS = {
     "quality": _clean_quality,
     "archive": _clean_archive,
     "theme": _clean_theme,
+    "notify": _clean_notify,
 }
 
 
@@ -385,7 +405,7 @@ def _write(stored: Stored) -> None:
             continue
         value = stored.values[setting.name]
         # A yes/no is written as a TOML boolean; everything else as a string.
-        rendered = value if setting.name == "archive" else _quote(value)
+        rendered = value if setting.name in ("archive", "notify") else _quote(value)
         lines.append(f"{setting.name} = {rendered}")
     lines.extend(f"{key} = {raw}" for key, raw in stored.unknown)
     path = stored.path
@@ -496,6 +516,20 @@ def archive() -> Optional[bool]:
     if raw is None:
         return None
     return raw == "true"
+
+
+def notify_enabled() -> bool:
+    """Whether a finished download should say so: the variable, the file, or no.
+
+    Nobody has asked by default, which is the only sane answer for a desktop
+    notification (F9). ``VIDDL_NOTIFY`` wins over the file the way every other
+    setting does, and an empty variable means "the default" rather than falling
+    through to a file that says otherwise.
+    """
+    asked = _asked(ENV_NOTIFY)
+    if asked is not None:
+        return asked.strip().lower() in _YES
+    return read().values.get("notify") == "true"
 
 
 def theme_name() -> str:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -84,7 +85,39 @@ def test_the_two_builds_describe_the_same_extension():
         "developer",
         "browser_specific_settings",
         "host_permissions",
+        # Chromium's own floor; Firefox states its own under
+        # ``browser_specific_settings`` instead.
+        "minimum_chrome_version",
     }
+
+
+def test_the_chromium_build_states_the_floor_it_needs():
+    """A store listing that runs on 88 would break the hand-off (S7).
+
+    ``chrome.scripting`` itself is Chrome 88+, but the ``args`` the click is
+    injected with arrived in 92, and an extension installed on 88 would fail
+    silently at the one thing it does.
+    """
+    manifest = load_manifest("manifest.json")
+    assert manifest["minimum_chrome_version"] == "92"
+    assert "minimum_chrome_version" not in load_manifest("manifest.firefox.json")
+
+
+def test_the_background_script_states_and_keeps_its_promise():
+    """It hands a URL over and reads nothing else (S7).
+
+    The promise is written in the comment at the top of the file, so the
+    assertions below are made against the code with the comments removed — a
+    promise that its own words could satisfy would prove nothing.
+    """
+    source = (EXTENSION / "background.js").read_text(encoding="utf-8")
+    assert "never reads a page" in source
+    body = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+    body = "\n".join(
+        line for line in body.splitlines() if not line.strip().startswith("//")
+    )
+    for forbidden in ("storage", "tabs.query", "webRequest", "cookies", "nativeMessaging"):
+        assert forbidden not in body, forbidden
 
 
 def test_every_referenced_file_exists():

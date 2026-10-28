@@ -15,6 +15,7 @@ answer useless.
 from __future__ import annotations
 
 import sys
+import time
 import unicodedata
 from pathlib import Path
 from typing import Callable, Optional, TextIO, cast
@@ -22,6 +23,7 @@ from typing import Callable, Optional, TextIO, cast
 from . import appdata, search
 from . import cookies as cookies_mod
 from . import engine as engine_mod
+from . import notify as notify_mod
 from .download import (
     DownloadCancelled,
     DownloadJob,
@@ -201,6 +203,53 @@ def _announce(err: TextIO, accessible: bool) -> None:
         return
     err.write("\a")
     err.flush()
+
+
+def _started(clock: Callable[[], float] = time.monotonic) -> float:
+    """When the run began, for deciding whether a notification is worth it (F9)."""
+    try:
+        return clock()
+    except Exception:  # pragma: no cover - a clock must never be the beginning
+        return 0.0
+
+
+def _elapsed(started: float, clock: Callable[[], float]) -> float:
+    """How long this run has taken, as the caller's clock measures it."""
+    try:
+        return max(0.0, clock() - started)
+    except Exception:  # pragma: no cover - a clock must never be the ending
+        return 0.0
+
+
+def _tell(
+    tell_when_done: bool,
+    err: TextIO,
+    elapsed: float,
+    *,
+    saved: Optional[str] = None,
+    failed: bool = False,
+    stopped: bool = False,
+    count: int = 0,
+    bell: bool = True,
+) -> None:
+    """Say how the run ended, if it was long enough to be worth saying (F9).
+
+    Nothing happens unless the person asked: ``notify`` is off by default, and a
+    run that finished while they watched stays quiet either way. A notification
+    that cannot be raised falls back to the terminal's bell, which is why the
+    caller says whether a bell has already been rung.
+    """
+    if not tell_when_done:
+        return
+    notify_mod.tell(
+        saved=saved,
+        failed=failed,
+        stopped=stopped,
+        count=count,
+        elapsed=elapsed,
+        stream=err,
+        bell=bell,
+    )
 
 
 def _engine_advice(engine: Engine) -> str:
@@ -519,6 +568,8 @@ def _run_playlist_plain(
     stderr: TextIO,
     report: Optional[TextIO] = None,
     accessible: bool = False,
+    notify: bool = False,
+    clock: Callable[[], float] = time.monotonic,
 ) -> int:
     """Download every video of a playlist, one at a time (F2).
 
@@ -579,6 +630,7 @@ def _run_playlist_plain(
             _say(stderr, "Nothing was downloaded.")
             return 0
 
+    started = _started(clock)
     line = _Line(report, whole_lines=accessible)
     # One piece of engine advice per run, not one per failed video: a playlist
     # of forty with a broken extractor must not print the same sentence forty
@@ -642,7 +694,22 @@ def _run_playlist_plain(
     _say(report, result.headline)
     if result.stopped:
         _say(report, "Run the same command again to carry on from here.")
+        _tell(
+            notify,
+            stderr,
+            _elapsed(started, clock),
+            stopped=True,
+            bell=not accessible,
+        )
         return 130
+    _tell(
+        notify,
+        stderr,
+        _elapsed(started, clock),
+        failed=result.failed > 0,
+        count=result.done if result.failed == 0 else 0,
+        bell=not accessible,
+    )
     return 0 if result.failed == 0 else 1
 
 
@@ -660,6 +727,7 @@ def run_plain(
     live_from_start: bool = False,
     quiet: bool = False,
     accessible: bool = False,
+    notify: bool = False,
     engine: Optional[Engine] = None,
     probe: Callable[..., MediaInfo] = probe_video,
     make_job: Callable[..., DownloadJob] = DownloadJob,
@@ -667,6 +735,7 @@ def run_plain(
     stdin: Optional[TextIO] = None,
     stdout: Optional[TextIO] = None,
     stderr: Optional[TextIO] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> int:
     """Download one link without the full-screen app. Returns an exit code.
 
@@ -699,6 +768,7 @@ def run_plain(
     side of the screen can ask for attention. Everything else is the plain
     path, because a line at a time is already what a screen reader needs.
     """
+    started = _started(clock)
     out = stdout or sys.stdout
     err = stderr or sys.stderr
     # What the person reads while it works, as opposed to what went wrong.
@@ -719,6 +789,7 @@ def run_plain(
         info = probe(engine, url, cookies=cookies)
     except ToolError as exc:
         _explain_failure(err, exc, engine)
+        _tell(notify, err, _elapsed(started, clock), failed=True)
         return 1
 
     # Once a search has answered, what is downloaded is the video it found, not
@@ -732,6 +803,7 @@ def run_plain(
         _say(err, f"error: {exc.message}")
         if exc.hint:
             _say(err, f"  {exc.hint}")
+        _tell(notify, err, _elapsed(started, clock), failed=True)
         return 1
 
     _menu(info, chosen, report)
@@ -771,7 +843,7 @@ def run_plain(
         # twice is deliberate — once above the menu, because the note is about
         # the link, and once here, because this is where the choice is made.
         if playlist:
-            return _run_playlist_plain(
+            code = _run_playlist_plain(
                 engine,
                 info,
                 chosen,
@@ -788,7 +860,26 @@ def run_plain(
                 stderr=err,
                 report=report,
                 accessible=accessible,
+                notify=notify,
+                clock=clock,
             )
+            if code == 130:
+                _tell(
+                    notify,
+                    err,
+                    _elapsed(started, clock),
+                    stopped=True,
+                    bell=not accessible,
+                )
+            elif code != 0:
+                _tell(
+                    notify,
+                    err,
+                    _elapsed(started, clock),
+                    failed=True,
+                    bell=not accessible,
+                )
+            return code
         _say(report, f"  Viddl will download the first of the {info.playlist.count} videos.")
         _say(report, "  Add --playlist to download all of them.")
     elif playlist:
@@ -849,17 +940,38 @@ def run_plain(
         # delivered here rather than left as a ``.part`` nobody can play (F12).
         recorded = job.keep_recording() if job is not None and info.is_live else None
         _announce(err, accessible)
+        _tell(
+            notify,
+            err,
+            _elapsed(started, clock),
+            stopped=True,
+            bell=not accessible,
+        )
         return _stopped(recorded, out, err)
     except DownloadCancelled:
         line.clear()
         # The job delivered the recording as it stopped (F12).
         recorded = getattr(job, "recorded", None) if job is not None else None
         _announce(err, accessible)
+        _tell(
+            notify,
+            err,
+            _elapsed(started, clock),
+            stopped=True,
+            bell=not accessible,
+        )
         return _stopped(recorded, out, err)
     except ToolError as exc:
         line.clear()
         _explain_failure(err, exc, engine)
         _announce(err, accessible)
+        _tell(
+            notify,
+            err,
+            _elapsed(started, clock),
+            failed=True,
+            bell=not accessible,
+        )
         return 1
 
     line.clear()
@@ -882,4 +994,11 @@ def run_plain(
     # a transliterated filename would point at a file that is not there.
     out.write(f"{path}\n")
     out.flush()
+    _tell(
+        notify,
+        err,
+        _elapsed(started, clock),
+        saved=str(path),
+        bell=not accessible,
+    )
     return 0

@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **56 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E11 and E13–E14 in
+Progress so far: **58 of 60** — S1–S7 in section 1, R1–R11 in section 2,
+F1–F9, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E11 and E13–E14 in
 section 5,
 D1–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
@@ -307,7 +307,7 @@ read from the environment with no checking at all. `VIDDL_YTDLP` in particular
 pointed the app at an arbitrary executable: useful and intended, but a
 config-injection vector in shared/CI environments, and invisible to users.
 
-### S7 — Extension hygiene (already good, keep it that way) · **P2** · S
+### S7 — Extension hygiene (already good, keep it that way) · **P2** · S · ✅ **Done**
 
 The manifest is genuinely minimal: `contextMenus`, `activeTab`, `scripting`, one
 content script scoped to `*://*.youtube.com/*`, MV3 service worker, no host
@@ -317,6 +317,24 @@ README as a selling point.
 **Do:** add `minimum_chrome_version`, keep the "no background page reads" promise
 in a comment, and add a Firefox build (see **F15**). (`SECURITY.md` now exists,
 with a place to report — the remaining half of this item is the manifest.)
+
+> **Done.** `manifest.json` declares `"minimum_chrome_version": "92"` — the
+> first Chromium whose `scripting.executeScript` takes the `args` the hand-off
+> injects with. The API itself is Chrome 88+, so 88 would install on a browser
+> where the one button the extension has would fail; a floor below the feature
+> is worse than no floor, because it turns "not supported" into "broken".
+> Firefox states its own under `browser_specific_settings`, which **F15** added.
+>
+> **The promise is written where the code keeps it.** `background.js` opens by
+> saying what it does not do — no `tabs.query` for content, no storage, no read
+> of the document — and `tests/test_extension.py` checks that sentence against
+> the code **with the comments stripped**, so the promise cannot be satisfied by
+> its own words. A review of the four permissions is what makes the extension
+> easy to trust, and a promise nobody tests is how that review starts being
+> wrong. The README now says the same thing in the language a person reads.
+>
+> **Verified:** the manifest tests cover the floor and both builds; the promise
+> test reads the file. `ruff` and `mypy` clean.
 
 ---
 
@@ -1554,13 +1572,57 @@ binding (**U5**). Never auto-fill silently, never auto-start.
 > Windows and macOS commands are covered by tests with the platform simulated,
 > not run on those systems.
 
-### F9 — Tell the user when a long download finishes · **P2** · M
+### F9 — Tell the user when a long download finishes · **P2** · M · ✅ **Done**
 
 A 40-minute download ends in a terminal the user has long since switched away
 from. There is no desktop notification and no terminal bell.
 
 **Do:** opt-in notifications (`notify-send`, `osascript`, PowerShell toast) with a
 terminal-bell fallback, plus a "when done" toggle on the progress screen.
+
+> **Done, and silent by default.** `--notify`, `notify = true` in the settings
+> file or `VIDDL_NOTIFY=on` makes a run of at least **twenty seconds** end with
+> a desktop notification: `notify-send` on Linux, `osascript` on macOS, a
+> PowerShell toast on Windows — each *looked for* rather than assumed, because a
+> container, a server and an SSH session have none of them. Where there is no
+> notifier, or the notifier exits non-zero, cannot start or times out, the
+> terminal's bell rings instead. The accessible mode has already rung it, so it
+> passes `bell=False` and nobody is pinged twice.
+>
+> **The floor is the design, not a detail.** A download that finished in five
+> seconds is still on the screen the person is watching, so
+> `notify.MIN_SECONDS = 20` keeps it quiet; a notification for every clip is how
+> a feature gets switched off for good. The same constant decides for the app
+> and for `--plain`, so the two front doors cannot disagree, and both take the
+> clock as an argument so the test says "two minutes" without waiting two
+> minutes.
+>
+> **The toggle is on the progress screen.** `n` turns it on and off and writes
+> the answer to the settings file: the question "will this tell me when it is
+> done?" occurs while waiting, which is where the key is. A file that cannot be
+> written keeps the choice for the run and says so in the status line rather
+> than losing an instruction silently.
+>
+> **Nothing here can fail a download.** Every notifier call is bounded at five
+> seconds and every error is swallowed: the file is saved, and a courtesy that
+> failed is not a download that failed.
+>
+> **Verified.** `tests/test_notify.py` (21 tests) covers all three command
+> lines; a quote escaping into AppleScript and `&`/`<` into the toast's XML — a
+> real bug, found by the test: the title was going in unescaped, so a video
+> called "Rock & Roll" would have raised no toast at all; a notifier that exits
+> non-zero, cannot start or times out, each falling back to the bell; the
+> twenty-second floor; and the words for a saved file, a failure, a stop and a
+> nine-video playlist. `tests/test_plain.py` drives the plain path with a fake
+> clock (asked/quiet/failed/accessible), `tests/test_tui.py` presses `n` and
+> checks the setting is written, and `tests/test_config.py` holds
+> variable-beats-file. **1066 tests pass**, `ruff` and `mypy` clean.
+>
+> **Not done, and not claimed.** No notification was *seen* on a real desktop:
+> this machine has no session bus, so the Linux path is proven by its command
+> line and its fallback rather than by a popup, and the Windows toast is proven
+> the same way. A Linux desktop with `libnotify` and a Windows box are the two
+> checks still owed.
 
 ### F10 — Machine-readable output · **P2** · M · ✅ **Done**
 
