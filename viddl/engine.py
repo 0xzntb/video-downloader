@@ -36,7 +36,13 @@ from .util import human_size
 StatusCallback = Callable[[str], None]
 ProgressCallback = Callable[[int, Optional[int]], None]
 
-_UA = f"Viddl/{__version__} (+https://github.com/freebuff/viddl)"
+# What the helpers' downloads say they are (E13). A site operator who reads this
+# in their logs has to land on *this* project, and a version number is the whole
+# of what they need: pretending to be a browser would be a lie told to a server
+# that did nothing to deserve one. `tests/test_engine.py` reads the address out
+# of `pyproject.toml` and compares, so this line cannot drift from the package
+# metadata the way a hand-typed placeholder did.
+_UA = f"Viddl/{__version__} (+https://github.com/0xzntb/video-downloader)"
 _YTDLP_BASE = "https://github.com/yt-dlp/yt-dlp/releases/latest/download"
 _TIMEOUT = 30
 _PROBE_TIMEOUT = 25

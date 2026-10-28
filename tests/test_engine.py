@@ -1837,3 +1837,25 @@ def test_the_doctor_says_whether_the_log_has_anything_in_it(tmp_path):
     assert str(log) in report
     # The size, so "is what I am looking at the failure or a stale one" is answered.
     assert "last written" in report
+
+
+def test_the_user_agent_points_at_this_repository():
+    """E13: a UA names a URL, so it has to name *this* project's.
+
+    The address is read out of ``pyproject.toml`` rather than repeated here: the
+    point is that the two agree, and a copy in the test would have drifted
+    alongside the placeholder that was there before.
+    """
+    import re
+    from pathlib import Path
+
+    from viddl import __version__
+    from viddl.engine import _UA as user_agent
+
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    home = re.search(r'^Homepage = "([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M)
+    assert home is not None, "pyproject.toml has no Homepage to check against"
+    expected = f"Viddl/{__version__} (+{home.group(1)})"
+    assert user_agent == expected
+    # Still what it is: a version and an address, never a browser impersonation.
+    assert "Mozilla" not in user_agent

@@ -10,8 +10,9 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **54 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E11 in section 5,
+Progress so far: **55 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E11 and E13 in
+section 5,
 D1–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make. E12 is ◐: the package builds, is checked and
@@ -3482,12 +3483,30 @@ every bug report needs.
 > **Not verified:** nothing has been uploaded to PyPI, and the `package` job
 > has not run on a runner — both need the network and a credential respectively.
 
-### E13 — The user-agent points at the wrong repo · **P3** · S
+### E13 — The user-agent points at the wrong repo · **P3** · S · ✅ **Done**
 
 `_UA = f"Viddl/{__version__} (+https://github.com/freebuff/viddl)"` — that URL is
 not this repository, so any site operator who follows it lands somewhere
 unrelated. Fix the URL or make it configurable, and keep the UA informative
 (version only) rather than pretending to be a browser.
+
+> **Done.** The address is fixed rather than configurable: the UA is a
+> courtesy to whoever reads a log, and a setting nobody would ever change is
+> a setting to get wrong. It still says only `Viddl/<version> (+<repository>)` —
+> no browser impersonation, which would be a lie told to a server that did
+> nothing to deserve one.
+>
+> **The test is the point, not the edit.** A placeholder URL survives every
+> check that only looks at the shape of a user agent, which is why it survived
+> here for so long. `test_the_user_agent_points_at_this_repository` reads
+> `Homepage` out of `pyproject.toml` and compares the whole string, so the two
+> cannot drift apart again — including when the repository moves, which is the
+> one time a hard-coded address is allowed to change.
+>
+> **Verified here:** the new test passes, `ruff` and `mypy` are clean, and the
+> UA is the only address of its kind in the package — the other `github.com`
+> strings around it are the yt-dlp and ffmpeg download hosts, which are
+> correct.
 
 ### E14 — Local, sanitised failure reporting · **P3** · S
 
