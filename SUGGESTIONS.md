@@ -1616,7 +1616,9 @@ terminal-bell fallback, plus a "when done" toggle on the progress screen.
 > nine-video playlist. `tests/test_plain.py` drives the plain path with a fake
 > clock (asked/quiet/failed/accessible), `tests/test_tui.py` presses `n` and
 > checks the setting is written, and `tests/test_config.py` holds
-> variable-beats-file. **1066 tests pass**, `ruff` and `mypy` clean.
+> variable-beats-file. **1368 tests are collected and the suite passes**
+> (the JavaScript and browser cases skip where Node or Playwright is absent), `ruff`
+> and `mypy` clean.
 >
 > **Not done, and not claimed.** No notification was *seen* on a real desktop:
 > this machine has no session bus, so the Linux path is proven by its command
