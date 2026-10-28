@@ -334,6 +334,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="with --version: also print Python, yt-dlp and ffmpeg",
     )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help=(
+            "print a block to paste into a bug report: versions, the log's last "
+            "failure (already redacted) and where it lives — nothing is sent"
+        ),
+    )
     return parser
 
 
@@ -512,6 +520,27 @@ def version_report(verbose: bool = False, engine: Optional[Engine] = None) -> Li
     return lines
 
 
+def report_block(engine: Optional[Engine] = None, path: Optional[Path] = None) -> List[str]:
+    """Everything a bug report would otherwise have to ask for (E14).
+
+    Assembled and printed, never written to a file or sent anywhere: the next
+    step is the person's own, and Viddl has no telemetry to send it with. The
+    log lines at the end are the ones already written through the redacting
+    formatter (S4), so a link in a failure is the ``<redacted>`` one.
+    """
+    log_path = path or appdata.log_path()
+    lines = version_report(verbose=True, engine=engine)
+    lines.append(f"Log: {log_path}")
+    tail = logfile.report_tail(log_path)
+    if tail:
+        lines.append("Last failure, as it was written (credentials already removed):")
+        lines.extend(f"  {line}" for line in tail)
+    else:
+        lines.append("Nothing has failed on this machine yet, so the log is empty.")
+    lines.append("Nothing here leaves this computer unless you send it.")
+    return lines
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -528,6 +557,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "--verbose adds detail to --version.",
             "Try: viddl --version --verbose",
         )
+
+    # The report is read-only and local: it prints, the person decides where
+    # it goes. Handled before the log is opened, so asking for one cannot be
+    # the thing that starts writing to it (E14).
+    if args.report:
+        for line in report_block():
+            print(line)
+        return 0
 
     _enable_log_file()
 

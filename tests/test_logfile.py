@@ -282,3 +282,18 @@ def test_a_log_that_cannot_be_written_does_not_become_the_failure(tmp_path):
 
     # Must not raise, and must not stop the caller.
     logfile.failure("the download failed", command=["x"], detail="y", logger=logger)
+
+
+def test_the_report_tail_is_the_end_of_the_log(tmp_path):
+    from viddl import logfile
+
+    path = tmp_path / "viddl.log"
+    path.write_text("\n".join(f"line {number}" for number in range(100)) + "\n", encoding="utf-8")
+
+    assert logfile.report_tail(path, lines=3) == ["line 97", "line 98", "line 99"]
+
+
+def test_the_report_tail_of_a_missing_log_is_empty(tmp_path):
+    from viddl import logfile
+
+    assert logfile.report_tail(tmp_path / "never-written.log") == []

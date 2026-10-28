@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **55 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E11 and E13 in
+Progress so far: **56 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E11 and E13–E14 in
 section 5,
 D1–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
@@ -3508,13 +3508,50 @@ unrelated. Fix the URL or make it configurable, and keep the UA informative
 > strings around it are the yt-dlp and ffmpeg download hosts, which are
 > correct.
 
-### E14 — Local, sanitised failure reporting · **P3** · S
+### E14 — Local, sanitised failure reporting · **P3** · S · ✅ **Done**
 
 The app handles errors well but gives the user nothing to paste into a bug
 report. `viddl --report` could print a copy-pasteable block: versions from
 **E12**, the platform, which tool origin was used, the last error (redacted
 automatically by the log's own filter, see **S4**) and the log path. No telemetry, no network — consistent with the
 project's "nothing leaves your machine" promise.
+
+> **Done.** `viddl --report` prints one block: the four versions from E12, the
+> log's path, and the last failure as it was written. On a machine that has
+> never failed it says so rather than printing nothing — a report that refuses
+> to report is the wrong way round.
+>
+> ```
+> Viddl 1.0.0
+> Python 3.12.3 on Linux-6.1.102-x86_64-with-glibc2.39
+> yt-dlp 2026.10.26 (installed as a Python package)
+> ffmpeg not installed (viddl --update-ffmpeg)
+> Log: ~/.local/share/viddl/viddl.log
+> Nothing has failed on this machine yet, so the log is empty.
+> Nothing here leaves this computer unless you send it.
+> ```
+>
+> **Nothing is sent.** There is no telemetry in Viddl and no network call on
+> this path: the block is printed and the person decides where it goes. That is
+> the same promise the rest of the app keeps (`SECURITY.md`), and it is why the
+> step is a print rather than an upload.
+>
+> **The redaction is the log's own, not a second copy.** `report_tail` reads the
+> file and quotes it; the lines were already written through
+> `RedactingFormatter` (S4), so a link in a failure is the `<redacted>` one. A
+> second filter here would be a second thing to keep in step — and the one that
+> gets forgotten when a new secret shape appears. The test drives the real
+> logger with `?token=hunter2`, runs `--report`, and greps the block for the
+> secret, so the two ends are checked together rather than separately.
+>
+> **It never starts writing.** `--report` is answered before the log is opened,
+> so asking for a report cannot be the thing that creates the file it is about.
+>
+> **Verified here:** `viddl --report` prints the block above;
+> `pytest tests/test_cli.py tests/test_logfile.py` passes, including the
+> end-to-end redaction check and the empty-log case; `ruff` and `mypy` are
+> clean. What was not run: the block has not been pasted into a real issue by
+> anybody, so its usefulness is a judgement rather than a measurement.
 
 ---
 

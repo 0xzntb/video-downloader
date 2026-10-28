@@ -88,6 +88,10 @@ If something goes wrong, `viddl --version --verbose` prints the four numbers a
 bug report needs — Viddl, Python, yt-dlp and ffmpeg, with where each one lives —
 in one block. It only looks for the helpers, so it never starts a download.
 
+`viddl --report` prints that block plus the last failure from the log, already
+redacted, ready to paste into an issue. Nothing is sent anywhere: Viddl has no
+telemetry, and the report is only something your own terminal prints.
+
 It does the same things, for your account only: a private environment in
 `%LOCALAPPDATA%\viddl`, a `viddl.cmd` launcher on your user `PATH`, and the
 `viddl://` handler. Open a new terminal window afterwards. `install.ps1

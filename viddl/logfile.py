@@ -24,7 +24,7 @@ import os
 import shlex
 import sys
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
 from . import __version__, appdata
 from .util import REDACTED, redact
@@ -41,6 +41,11 @@ BACKUP_COUNT = 1
 DETAIL_LINES = 40
 DETAIL_WIDTH = 500
 
+#: How much of the log ``viddl --report`` quotes (E14): one failure record —
+#: the summary, the command line, the exit code and what the tool said — and
+#: short enough to paste into a chat window without scrolling.
+REPORT_TAIL_LINES = 40
+
 #: The logger the rest of Viddl writes to (``tui.app`` uses the same name).
 LOGGER_NAME = "viddl"
 
@@ -51,10 +56,12 @@ __all__ = [
     "LOGGER_NAME",
     "LOG_MAX_BYTES",
     "REDACTED",
+    "REPORT_TAIL_LINES",
     "OwnerOnlyRotatingFileHandler",
     "RedactingFormatter",
     "enable",
     "failure",
+    "report_tail",
 ]
 
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -188,3 +195,25 @@ def enable(
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
     return target
+
+
+def report_tail(
+    path: Optional[Path] = None, lines: int = REPORT_TAIL_LINES
+) -> List[str]:
+    """The end of the log, for somebody to paste into a bug report (E14).
+
+    Read, never written. The redaction happened when the bytes went in (S4), so
+    quoting the file cannot leak what writing it did not — which is the whole
+    reason this is allowed to exist: a report that shipped the raw log would be
+    a worse idea than no report at all.
+
+    An unreadable or missing log is an empty list rather than an error. A report
+    is more useful with versions and no log than not at all.
+    """
+    target = path or appdata.log_path()
+    try:
+        text = target.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    kept = [line for line in text.splitlines() if line.strip()]
+    return kept[-lines:]

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from viddl import appdata, cli, config, plain
+from viddl import appdata, cli, config, logfile, plain
 from viddl.cli import main
 from viddl.engine import Tool, ToolError
 from viddl.formats import MediaInfo, MediaOption
@@ -1284,3 +1284,49 @@ def test_the_doctor_as_json_has_the_theme(capsys, monkeypatch):
     assert report["theme"]["source"] == "the default"
     assert report["theme"]["colour"] is True
     assert report["theme"]["worst_text_contrast"] >= 4.5
+
+
+def test_report_prints_versions_and_where_the_log_is(capsys):
+    """E14: one block, and the person decides what to do with it."""
+    assert main(["--report"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("Viddl ")
+    assert lines[1].startswith("Python ")
+    assert any(line.startswith("Log: ") for line in lines)
+    assert lines[-1] == "Nothing here leaves this computer unless you send it."
+
+
+def test_report_quotes_a_failure_without_its_credentials(capsys):
+    """The log's own redaction is what quotes a failure, not a second filter.
+
+    Written to the log the app actually reads — the one the fixture redirects
+    into the test's own home — because the point is that both ends agree about
+    which file that is.
+    """
+    log = appdata.log_path()
+    log.parent.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger(logfile.LOGGER_NAME)
+    # ``enable`` is a no-op when the logger already has a handler, and another
+    # test may have left one pointing into its own folder. Clearing first is what
+    # keeps this test about the report rather than about test order.
+    for handler in list(logger.handlers):
+        handler.close()
+        logger.removeHandler(handler)
+    try:
+        assert logfile.enable(path=log) == log
+        logfile.failure(
+            "Download failed",
+            command=["yt-dlp", "https://example.com/v?token=hunter2&v=abc"],
+            exit_code=1,
+            detail="ERROR: something odd",
+        )
+        assert main(["--report"]) == 0
+    finally:
+        for handler in list(logger.handlers):
+            handler.close()
+            logger.removeHandler(handler)
+
+    out = capsys.readouterr().out
+    assert "Download failed" in out
+    assert "token=<redacted>" in out
+    assert "hunter2" not in out, "the report must not carry what the log does not"
