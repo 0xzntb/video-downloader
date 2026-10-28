@@ -14,7 +14,8 @@ Progress so far: **54 of 60** — S1–S6 in section 1, R1–R11 in section 2,
 F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E11 in section 5,
 D1–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
-are the publisher's to make.
+are the publisher's to make. E12 is ◐: the package builds, is checked and
+installs from its wheel; the upload is the publisher's to make.
 That is the security pass on section 1: nothing the app downloads is run
 unchecked, nothing it writes down is readable by anyone else, nothing it writes
 down keeps a secret, and a web page can no longer start it *doing* anything —
@@ -3427,7 +3428,7 @@ of weak-assertion gap automatically: it flips code and checks the suite notices.
 > has only been exercised here, on Linux and Python 3.12 — which is the only
 > Python it can run on, and the only one the job uses.
 
-### E12 — Distribution and packaging · **P3** · L
+### E12 — Distribution and packaging · **P3** · L · ◐ **partly done**
 
 Right now: `git clone` + `./install.sh`. `pipx install viddl` would be one line
 if the package were on PyPI; Homebrew/Scoop/winget/AUR reach people who do not
@@ -3438,6 +3439,48 @@ clone repos; `install.ps1` closes the Windows gap the README admits.
 add a Homebrew tap and a Scoop manifest. Add a `--version --verbose`
 that prints Viddl, Python, yt-dlp and ffmpeg versions in one block — that is what
 every bug report needs.
+
+> ◐ **Partly done.** Everything up to the upload.
+>
+> * **The metadata a package page needs** is in `pyproject.toml`: authors,
+>   keywords, fourteen classifiers and four URLs. `twine check` passes on both
+>   artefacts, which is exactly what that command verifies.
+> * **`LICENSE` travels in the wheel** (`viddl-1.0.0.dist-info/licenses/LICENSE`)
+>   as well as the sdist. E2 added the file; this is what carries it to an
+>   installed copy, and a wheel that cannot show its terms is a packaging bug.
+> * **The wheel is checked rather than assumed.** A new `package` job in
+>   `tests.yml` builds both artefacts, runs `twine check`, asserts the browser
+>   extension and the `--web` page are inside the wheel — they arrive only
+>   because `package-data` says so, which is the kind of line a refactor drops —
+>   then installs the wheel into an empty virtualenv and runs
+>   `viddl --version --verbose` and `viddl --doctor` from it.
+> * **`--version --verbose`** prints Viddl, Python, yt-dlp and ffmpeg in one
+>   block, each with its path and where it came from, and says which command
+>   fetches a missing one. It only *looks* for the helpers, so it is safe on a
+>   machine that has never downloaded anything — and it no longer goes through
+>   argparse's `action="version"`, which printed and exited before `--verbose`
+>   could be seen.
+> * **`pipx` is documented** with the `git+https://` form that works today and
+>   the bare `pipx install viddl` that will work after the upload.
+>
+> **What is left is the publisher's step.** `twine upload` needs a PyPI token
+> this repository does not have and should not: the release is
+> `python -m build && twine upload dist/*` on the day somebody decides to make
+> one. Homebrew, Scoop, winget and AUR were not attempted — each is a file in a
+> *different* repository that can only be tested against a published artefact,
+> and four manifests nobody can check would be worse than none. They are the
+> natural next step after the upload, not before it.
+>
+> **Verified here:** `python -m build` → sdist and wheel, `twine check` PASSED
+> on both; the wheel carries 50 files, including `viddl/browser_extension/*`,
+> `viddl/web_ui/index.html` and the licence; a fresh virtualenv installed from
+> that wheel prints `Viddl 1.0.0` / `Python 3.12.3 on Linux…` /
+> `yt-dlp 2026.10.21 (downloaded by Viddl) — …` / `ffmpeg not installed
+> (viddl --update-ffmpeg)`, runs `--doctor`, and finds its own extension folder.
+> `pytest tests/test_cli.py` passes, `ruff` and `mypy` are clean.
+>
+> **Not verified:** nothing has been uploaded to PyPI, and the `package` job
+> has not run on a runner — both need the network and a credential respectively.
 
 ### E13 — The user-agent points at the wrong repo · **P3** · S
 

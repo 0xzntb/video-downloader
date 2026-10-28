@@ -72,6 +72,22 @@ On Windows, in the folder you downloaded:
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
+You do not have to keep a checkout: `pipx` installs the same `viddl` command
+from the package, in an environment of its own.
+
+```sh
+pipx install viddl          # once the package is on PyPI
+pipx install git+https://github.com/0xzntb/video-downloader
+```
+
+The second line is the one that works today: the metadata and the wheel are
+ready, and publishing is a step the maintainer has not taken yet. Either way
+the command is `viddl`, and it still fetches its own yt-dlp on first run.
+
+If something goes wrong, `viddl --version --verbose` prints the four numbers a
+bug report needs — Viddl, Python, yt-dlp and ffmpeg, with where each one lives —
+in one block. It only looks for the helpers, so it never starts a download.
+
 It does the same things, for your account only: a private environment in
 `%LOCALAPPDATA%\viddl`, a `viddl.cmd` launcher on your user `PATH`, and the
 `viddl://` handler. Open a new terminal window afterwards. `install.ps1

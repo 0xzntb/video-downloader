@@ -193,10 +193,39 @@ def test_a_failed_update_is_explained_and_returns_nonzero(capsys, monkeypatch):
 
 
 def test_version_flag(capsys):
-    with pytest.raises(SystemExit) as caught:
-        main(["--version"])
-    assert caught.value.code == 0
-    assert "Viddl" in capsys.readouterr().out
+    assert main(["--version"]) == 0
+    out = capsys.readouterr().out
+    assert out.strip().startswith("Viddl ")
+    assert len(out.splitlines()) == 1, "--version alone is one line"
+
+
+def test_version_verbose_names_the_helpers_it_borrows(capsys):
+    """The four numbers a bug report needs, gathered in one go (E12)."""
+    assert main(["--version", "--verbose"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("Viddl ")
+    assert lines[1].startswith("Python ")
+    assert [line.split()[0] for line in lines[2:]] == ["yt-dlp", "ffmpeg"]
+
+
+def test_the_version_block_says_what_to_do_when_a_helper_is_missing():
+    class FakeEngine:
+        def find_ytdlp(self):
+            return None
+
+        def find_ffmpeg(self):
+            return Tool(
+                "ffmpeg", ["/fake/ffmpeg"], "system", version="7.1", path=Path("/fake/ffmpeg")
+            )
+
+    lines = cli.version_report(verbose=True, engine=FakeEngine())
+    assert "yt-dlp not installed yet (viddl --update)" in lines[2]
+    assert lines[3].startswith("ffmpeg 7.1")
+    assert "/fake/ffmpeg" in lines[3]
+
+
+def test_verbose_without_version_is_refused():
+    assert main(["--verbose"]) == 1
 
 
 def test_download_dir_flag_is_honoured(tmp_path, capsys):

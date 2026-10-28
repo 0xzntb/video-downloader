@@ -31,9 +31,10 @@ import argparse
 import contextlib
 import logging
 import os
+import platform
 import sys
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
 from . import (
     APP_TITLE,
@@ -323,7 +324,16 @@ def build_parser() -> argparse.ArgumentParser:
             "the same tools, for when a browser tab is easier than a terminal"
         ),
     )
-    parser.add_argument("--version", action="version", version=f"{APP_TITLE} {__version__}")
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="print the version; with --verbose, the versions of everything it uses",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="with --version: also print Python, yt-dlp and ffmpeg",
+    )
     return parser
 
 
@@ -473,10 +483,52 @@ def _print_result(result) -> int:
     return 0 if result.ok else 1
 
 
+def version_report(verbose: bool = False, engine: Optional[Engine] = None) -> List[str]:
+    """The version block, which is the first thing a bug report needs (E12).
+
+    ``--verbose`` adds the machine to it: the app, the Python running it, and
+    the two programs it borrows. Those four numbers are what every "it does not
+    work" has to be narrowed down with, and collecting them one at a time is
+    how a report arrives incomplete.
+
+    The helpers are only *looked* for — finding is not installing — so this is
+    safe to run on a machine that has never downloaded anything, and it says
+    what the fix is when one is missing rather than leaving a blank.
+    """
+    lines = [f"{APP_TITLE} {__version__}"]
+    if not verbose:
+        return lines
+    lines.append(f"Python {platform.python_version()} on {platform.platform()}")
+    engine = engine or Engine()
+    for label, tool, advice in (
+        ("yt-dlp", engine.find_ytdlp(), "not installed yet (viddl --update)"),
+        ("ffmpeg", engine.find_ffmpeg(), "not installed (viddl --update-ffmpeg)"),
+    ):
+        if tool is None:
+            lines.append(f"{label} {advice}")
+            continue
+        where = f" — {tool.path}" if tool.path is not None else ""
+        lines.append(f"{label} {tool.version or 'unknown version'} ({tool.origin_text}){where}")
+    return lines
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
     _prepare_console()
+
+    # Answering "which version is this" must not create a log file or install
+    # anything, so it happens before either (E12).
+    if args.version:
+        for line in version_report(verbose=args.verbose):
+            print(line)
+        return 0
+    if args.verbose:
+        return _fail(
+            "--verbose adds detail to --version.",
+            "Try: viddl --version --verbose",
+        )
+
     _enable_log_file()
 
     # Which language the sentences are in (U7), settled before anything can go

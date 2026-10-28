@@ -219,3 +219,61 @@ jobs:
           node --test --test-reporter=tap tests/extension.browser.test.js | tee browser-output.txt
           # A run that exercised nothing is not a green run.
           grep -qE "^# pass [1-9]" browser-output.txt
+
+  # E12: the artefact somebody installs. Everything above runs against a checkout,
+  # where every file is on the path and nothing has to be packaged; a wheel is a
+  # different thing, and the browser extension and the --web page only reach it if
+  # `package-data` says so. This builds both artefacts, checks the metadata and then
+  # installs the wheel into an empty environment and runs it from there.
+  package:
+    name: The wheel a pipx install would get
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Not in the dev extra: building and checking a release is a step somebody
+      # takes on purpose, and two more tools in every contributor's install to
+      # support it would be the wrong trade.
+      - name: Build the sdist and the wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+
+      - name: Check the metadata a package page would show
+        run: python -m twine check dist/*
+
+      - name: Everything the app needs at run time is in the wheel
+        run: |
+          python - <<'PY'
+          import glob
+          import sys
+          import zipfile
+
+          names = zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+          needed = [
+              "viddl/browser_extension/manifest.json",
+              "viddl/browser_extension/manifest.firefox.json",
+              "viddl/browser_extension/background.js",
+              "viddl/web_ui/index.html",
+          ]
+          missing = [name for name in needed if name not in names]
+          if missing:
+              sys.exit("the wheel is missing: " + ", ".join(missing))
+          if not any("LICENSE" in name for name in names):
+              sys.exit("the wheel is missing the licence")
+          print(f"{len(names)} files in the wheel, extension, page and licence included")
+          PY
+
+      - name: Install it into an empty environment, the way pipx would
+        run: |
+          python -m venv /tmp/installed
+          /tmp/installed/bin/pip install --quiet dist/*.whl
+          /tmp/installed/bin/viddl --version --verbose
+          /tmp/installed/bin/viddl --doctor > /dev/null
+          # The app reads its own files at run time, so a wheel that imports but
+          # cannot find the extension is only half-installed.
+          /tmp/installed/bin/python -c "from viddl.protocol import extension_source_dir as d; assert (d() / 'manifest.json').is_file(), d()"

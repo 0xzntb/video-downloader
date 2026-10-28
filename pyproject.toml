@@ -9,6 +9,27 @@ description = "A friendly terminal app that downloads videos and MP3s by pasting
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
+# What a package page needs (E12). The author is the project's own name: there is
+# no single maintainer to credit, and an invented person on PyPI would be a name
+# nobody could correct.
+authors = [{ name = "Viddl contributors" }]
+keywords = ["yt-dlp", "video", "download", "mp3", "terminal", "tui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Video",
+]
 # The app's themes (U1) need Textual 0.86, but the screen already needed more:
 # its stylesheet uses text-wrap/text-overflow, which 1.0 refuses, and 2.0's
 # test pilot is still loose enough to fail four of our tests. 3.0 is the oldest
@@ -53,8 +74,21 @@ dev = [
     "mutmut>=3.8,<4; python_version >= '3.10'",
 ]
 
+# Where the package page sends somebody who wants to read, report or look at the
+# history. All four are the same repository, which is the truth today.
+[project.urls]
+Homepage = "https://github.com/0xzntb/video-downloader"
+Repository = "https://github.com/0xzntb/video-downloader"
+Issues = "https://github.com/0xzntb/video-downloader/issues"
+Changelog = "https://github.com/0xzntb/video-downloader/blob/main/CHANGELOG.md"
+
 [project.scripts]
 viddl = "viddl.cli:main"
+
+[tool.setuptools]
+# The licence travels in the wheel as well as the sdist: an installed copy that
+# cannot show its terms is a packaging bug, not a small one (E2, E12).
+license-files = ["LICENSE"]
 
 [tool.setuptools.packages.find]
 include = ["viddl*"]
