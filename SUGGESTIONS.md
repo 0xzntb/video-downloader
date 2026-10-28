@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **52 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E9 in section 5,
+Progress so far: **53 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E10 in section 5,
 D1–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -2718,6 +2718,8 @@ users.
 > prints *"FAIL Required test coverage of 93% not reached"* and exits **1**. The
 > floor is 93 rather than 94 on purpose: new code must not fail the build for
 > being new, or the first thing anyone learns about the floor is how to lower it.
+> **E10 raised it to 94** once the suite measured 94.3%, which keeps that balance
+> and stops the number drifting back down.
 >
 > *The weekly job.* An empty scheduled job is theatre, so this one got the test
 > it was supposed to run. `tests/test_integration.py` — marked `integration`,
@@ -3311,7 +3313,7 @@ targets for `hypothesis` (plus a small fuzz run over `parse_scheme`).
 > The 3.9 and Windows cells read the same seeded input, and nothing in these
 > properties is platform-specific — but that is reasoning, not a run.
 
-### E10 — Coverage ratchet and the remaining gaps · **P2** · S · ◐ **partly done**
+### E10 — Coverage ratchet and the remaining gaps · **P2** · S · ✅ **Done**
 
 93% overall; the thin spots are `tui/widgets.py` (89%), `errors.py` (86%),
 `protocol.py` (87%) and `__main__.py` (0%). Meanwhile the two OS-specific
@@ -3321,10 +3323,45 @@ registration paths are *simulated* rather than executed.
 `__main__.py` trivially, and be explicit in the README that Windows/macOS
 registration behaviour is simulated by the suite (**E1**'s matrix is the real fix).
 
-> ◐ **The floor landed with E1.** CI fails the build below **93%** (measured
-> 94.0%) — see that entry for the numbers and the command. Still open here:
-> `__main__.py` is at 0% and there is one sentence about simulated platform
-> paths that the README does not yet say.
+> **Done.** Three pieces, and the correction the item's own numbers needed.
+>
+> * **`__main__.py` is covered, by running it.** `tests/test_main.py` executes the
+>   file the way the shell does — `runpy.run_module("viddl", run_name="__main__")`
+>   with the command line patched — and checks both that `main()` is called and
+>   that the number it returns becomes the exit status. **0% → 100%** for three
+>   statements nothing else could reach: the console script goes through
+>   `viddl.cli.main` and never through this file.
+> * **The floor is a ratchet, now at 94%.** It landed at 93 with E1 when the suite
+>   measured 94.0%; the suite measures **94.3%** today, so CI fails below 94. That
+>   leaves about twenty uncovered statements — a patch of new code fits, a hole
+>   does not — and both README and CONTRIBUTING say raising the floor belongs to
+>   the change that moves it, not to a separate chore.
+> * **The README says what is only simulated.** The suite runs on Linux, macOS and
+>   Windows, which is what proves the app works on all three, but the macOS app
+>   bundle and the Windows registry key are produced by pretending to be that
+>   platform and inspecting the artifacts, because a test cannot install a URL
+>   handler for a whole machine. That limit is now written down where the
+>   development commands are.
+>
+> **The thin spots named above have mostly closed since.** Those numbers come from
+> the 222-test baseline: `tui/widgets.py` is 95% now rather than 89%, `errors.py`
+> 96% rather than 86%, `protocol.py` 90% rather than 87% — E9's property tests are
+> where most of that came from. What is left is `plain.py` at 89% and `tui/app.py`
+> at 91%, both large, with their missed lines in branches a screen reaches only
+> with a terminal attached.
+>
+> **Still open, and honestly so:** the two platform registration paths are
+> *executed* on Linux only. Simulating the platform checks what Viddl writes, not
+> that macOS or Windows accepts it; only E1's matrix on real runners could say
+> that, and it says nothing about the handler either. This item closes the
+> documentation half of that, not the verification half.
+>
+> **Verified here:** `pytest --cov=viddl --cov-fail-under=94` → **1303
+> passed, 2 skipped**, coverage **94.31%** against the 94% floor, exit 0, and
+> `viddl/__main__.py` at **100%**. The two skips are this machine's, not the
+> code's: Playwright is not installed here and there is no ffmpeg for the
+> merge test. `ruff check viddl tests` and `mypy` clean; both workflows
+> still parse; the commit went through the pre-commit hook.
 
 ### E11 — Mutation testing · **P3** · M
 

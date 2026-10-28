@@ -25,7 +25,7 @@ dependencies = ["textual>=3.0,<9"]
 [project.optional-dependencies]
 # pytest-cov is here rather than in CI's own install line so that the coverage
 # floor can be reproduced exactly: `pip install -e ".[dev]"` and
-# `pytest --cov=viddl --cov-fail-under=93` is what the workflow runs (E1).
+# `pytest --cov=viddl --cov-fail-under=94` is what the workflow runs (E1, E10).
 # Upper bounds for the same reason as textual's (E4), and every checker is here
 # so that one install is the whole toolchain.
 dev = [

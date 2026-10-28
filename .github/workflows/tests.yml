@@ -40,11 +40,12 @@ jobs:
         if: matrix.os != 'ubuntu-latest' || matrix.python != '3.12'
         run: python -m pytest -q
 
-      # 94.0% measured on this cell when the floor was set; 93 leaves room for
-      # a patch of new code without room for a hole (E1, E10).
+      # 94.3% measured on this cell when the floor was last raised; 94 leaves
+      # room for about twenty uncovered statements — a patch — without room
+      # for a hole (E1, E10).
       - name: Run the suite, with a coverage floor
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
-        run: python -m pytest -q --cov=viddl --cov-report=term-missing --cov-fail-under=93
+        run: python -m pytest -q --cov=viddl --cov-report=term-missing --cov-fail-under=94
 
       # A static check reads the same source on every runner, so it is answered
       # in one cell rather than nine (E5). ruff is pyflakes' rules plus the ones

@@ -1114,12 +1114,25 @@ suite passes on and 8.2.8 is the one it is developed against, so a 9.0 has to be
 tried before it is allowed. Moving that number is a measurement, not an edit.
 
 Coverage is measured in one cell of that matrix — Linux on Python 3.12 — and
-held to a floor of **93%** (94% when the floor was set). The command is the one
-CI runs, and it fails the run rather than printing a number nobody reads:
+held to a floor of **94%** (94.3% when the floor was last raised). The command
+is the one CI runs, and it fails the run rather than printing a number nobody
+reads:
 
 ```sh
-.venv/bin/python -m pytest --cov=viddl --cov-fail-under=93
+.venv/bin/python -m pytest --cov=viddl --cov-fail-under=94
 ```
+
+The floor only ever moves up: it is set a little under what the suite actually
+covers, so a patch of new code fits and a hole does not. Raising it is part of
+landing coverage, not a separate chore.
+
+One limit worth knowing about: the suite runs on Linux, macOS and Windows,
+which is what proves the app works on all three, but the registration behind
+the browser button is only *executed* on Linux. The macOS app bundle and the
+Windows registry key are produced by pretending to be that platform and
+inspecting what comes out, because a test cannot install a URL handler for a
+whole machine. Treat those two paths as checked by construction rather than
+exercised end to end.
 
 Alongside the examples, `tests/test_properties.py` states the rules the parsers
 have to keep for *every* input and lets `hypothesis` generate it: a `viddl://`

@@ -53,12 +53,14 @@ the runners; if it does not, that is worth an issue, not a retry.
 .venv/bin/python -m pytest                                     # the whole suite
 .venv/bin/python -m ruff check viddl tests                     # lint
 .venv/bin/python -m mypy                                       # types (viddl/)
-.venv/bin/python -m pytest --cov=viddl --cov-fail-under=93     # the coverage floor
+.venv/bin/python -m pytest --cov=viddl --cov-fail-under=94     # the coverage floor
 .venv/bin/python -m pytest -m integration -rs                  # real yt-dlp; the merge needs ffmpeg
 ```
 
-Coverage is 94.0% when the floor was set and the floor is 93, so new code can
-land without the build failing for being new — but it cannot leave a hole.
+Coverage is 94.3% when the floor was last raised and the floor is 94, so new
+code can land without the build failing for being new — but it cannot leave a
+hole. When your change moves the number up, raise the floor in the same commit;
+`--cov=viddl` without the flag prints it.
 `pytest-cov` arrives with the `dev` extra, which is why the command above is the
 same one CI runs.
 
