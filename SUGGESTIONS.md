@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **53 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E10 in section 5,
+Progress so far: **54 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E11 in section 5,
 D1–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -3363,11 +3363,69 @@ registration behaviour is simulated by the suite (**E1**'s matrix is the real fi
 > merge test. `ruff check viddl tests` and `mypy` clean; both workflows
 > still parse; the commit went through the pre-commit hook.
 
-### E11 — Mutation testing · **P3** · M
+### E11 — Mutation testing · **P3** · M · ✅ **Done**
 
 We found two genuine bugs by hand while writing tests — a `[Merger]` regex in a
 dead branch and a missing `await`. Mutation testing (`mutmut`) finds that class
 of weak-assertion gap automatically: it flips code and checks the suite notices.
+
+> **Done.** `mutmut` runs over `viddl/util.py` and `viddl/errors.py`, with the
+> seven test modules that reach them (`[tool.mutmut]` in `pyproject.toml`). The
+> scope is narrow on purpose: a mutant costs a pytest run, so the files mutated
+> are the ones where a flipped statement is a *safety* decision — the link
+> check, the redaction, the size and duration formatting, the error table.
+>
+> **The first run found 22 assertions that were not there.** The pattern is
+> worth naming, because it is invisible from a coverage report: every one of
+> those lines *ran*, and the test still passed with the code changed.
+>
+> * `is_interactive` had no test at all — a mutant that always answered "yes"
+>   was green, which is the answer that redraws a progress line into a log.
+> * `is_fatal_ytdlp_line` had none either: the function that decides which
+>   engine line reaches the user could have matched lowercase, or nothing.
+> * `_clean_raw` was only ever asserted *through* `explain` ("the hint mentions
+>   the text"), so replacing the log prefix with `XXXX`, joining lines with
+>   `XX XX`, and stopping at the first skipped line all passed. Its
+>   400-character cut was never tested at the boundary either: 400 and 401 are
+>   one mutant apart.
+> * `shorten`'s `limit` was checked at 5 and 10, never at 1, 2, or exactly the
+>   length of the text.
+> * `safe_video_link` unwrapped a single-quoted link by accident, and refused
+>   `/tmp/video.mp4` for the wrong reason — the right answer, from the wrong
+>   branch, which is the one a refactor takes away.
+> * `explain`'s last-resort branch quoted the tool's own output back as the
+>   hint, and no test looked at it.
+>
+> **Then the score.** 256 of 265 mutants killed, **96.6%**, and the nine
+> survivors are all *equivalent* — the code cannot behave differently: `text or
+> "XXXX"` on empty input still has no host, `strip(None)` after `strip('"')`
+> still strips whitespace, `re.IGNORECASE` over an already-lowercased haystack
+> changes nothing, a `/`-prefixed path always has an empty first segment, and
+> `<= 0` against a value that `not seconds` already caught is the same answer.
+> They are listed here rather than papered over with a test that asserts nothing.
+>
+> **The gate.** `tools/mutation_score.py` reads `mutmut export-cicd-stats`,
+> prints the score and every mutant that got through, and exits non-zero below
+> **95%** — a little under the measured 96.6%, the same balance the coverage
+> floor strikes. `no_tests` counts against the score rather than for it: treating
+> an unreachable mutant as a kill is how a score stays high while the file rots.
+>
+> **Where it runs.** `.github/workflows/mutation.yml`, weekly and on demand,
+> with a 30-minute timeout and four children (a runner has two cores; a number
+> that means something beats a faster number). It is deliberately not on a pull
+> request: every mutant is a test run, and the checks that gate a change are the
+> ones cheap enough to run on every one.
+>
+> **Verified here:** `mutmut run` → 265 mutants, 256 killed, 9 survived, 0
+> unreachable, in about 22 seconds on eight children; `tools/mutation_score.py`
+> → 96.6% against the 95% floor, exit 0. The two test modules the run selects
+> pass, `ruff` and `mypy` are clean, and `uv lock` resolves the new dev
+> dependency (mutmut 3 needs 3.10, so it carries a marker and the app still
+> installs on 3.9).
+>
+> **Not verified:** the `mutation` workflow has not run on a runner. `mutmut`
+> has only been exercised here, on Linux and Python 3.12 — which is the only
+> Python it can run on, and the only one the job uses.
 
 ### E12 — Distribution and packaging · **P3** · L
 

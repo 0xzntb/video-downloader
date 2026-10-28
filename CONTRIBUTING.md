@@ -92,6 +92,20 @@ stream reported as the finished file. `hypothesis` comes with the `dev` extra.
 The generators are seeded (`derandomize=True`): a rule that breaks is still
 broken tomorrow, and the failure prints the smallest input that broke it.
 
+Mutation testing is the slow version of the same idea, and it is not part of
+the commands above: `mutmut` flips a statement in `viddl/util.py` or
+`viddl/errors.py` and checks the suite notices. Run it when you have changed
+one of those two files — a survivor means an assertion is missing, and the
+answer is a test, never a lower floor:
+
+```sh
+python -m mutmut run && python tools/mutation_score.py
+```
+
+A few mutants are equal in behaviour to the original and no test can kill
+them; those are written down where they are known rather than hidden by a
+weaker gate. The floor is 95%, and the weekly `mutation` workflow enforces it.
+
 `ruff` and `mypy` are configured in `pyproject.toml`, and both are quiet
 before a change rather than after one: a rule is switched on because it caught
 something or because the codebase already obeys it, not because ruff ships it.

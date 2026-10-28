@@ -14,3 +14,7 @@ coverage.xml
 htmlcov/
 .DS_Store
 node_modules/
+
+# mutation testing (E11): the mutated copy and its result cache
+mutants/
+.mutmut-cache

@@ -45,6 +45,12 @@ dev = [
     # of. hypothesis generates the rest (E9). Bounded the same way as the
     # others, and pinned exactly in `uv.lock`.
     "hypothesis>=6.98,<7",
+    # Mutation testing (E11) flips the code and checks the suite notices, which
+    # is the only thing that can tell a real assertion from one that happens to
+    # pass. It is slow, so it only runs in the weekly job.
+    # mutmut 3 needs 3.10; the app itself still runs on 3.9, and the weekly
+    # job that uses it runs on 3.12, so the marker keeps both true (E4).
+    "mutmut>=3.8,<4; python_version >= '3.10'",
 ]
 
 [project.scripts]
@@ -126,4 +132,23 @@ source = ["viddl"]
 exclude_also = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
+]
+
+[tool.mutmut]
+# Mutation testing (E11) is deliberately narrow. Flipping a statement in the
+# screen's layout would report a gap nobody cares about, and every mutant costs a
+# pytest run; these two files are where a flipped statement is a *safety*
+# decision — the link check, the redaction, the formatting — and their tests are
+# fast enough to make the run worth having.
+source_paths = ["viddl/util.py", "viddl/errors.py"]
+# mutmut copies only the files it mutates; the rest of the package has to
+# come along or `viddl/__init__.py` is missing and every import fails.
+also_copy = ["viddl/"]
+pytest_add_cli_args_test_selection = [
+    "tests/test_util.py",
+    "tests/test_errors.py",
+    "tests/test_logfile.py",
+    "tests/test_title.py",
+    "tests/test_search.py",
+    "tests/test_properties.py",
 ]

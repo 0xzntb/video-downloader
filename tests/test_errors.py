@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from viddl.errors import SIGN_IN_MARK, explain
+from viddl.errors import SIGN_IN_MARK, _clean_raw, explain, is_fatal_ytdlp_line
+from viddl.i18n import t
 
 
 @pytest.mark.parametrize(
@@ -223,3 +224,64 @@ def test_the_advice_for_a_sign_in_names_the_row_that_signs_in():
     # The mark itself is what the screen looks for, so it has to be the words
     # the interface actually uses.
     assert SIGN_IN_MARK == "Sign in with my browser"
+
+
+# ---------------------------------------------------------------------------
+# the detail quoted back to the user
+#
+# Every case here kills a mutant that used to survive (E11): ``_clean_raw`` was
+# only ever asserted through ``explain``, and "the hint mentions trait is
+# broken" passes whether the log prefix was removed, replaced, or kept.
+# ---------------------------------------------------------------------------
+
+
+def test_the_detail_has_the_log_prefix_removed_rather_than_replaced():
+    assert _clean_raw("[youtube] trait is broken") == "trait is broken"
+    assert _clean_raw("ERROR: something odd") == "something odd"
+
+
+def test_the_detail_drops_blank_lines_and_the_downloader_own_noise():
+    assert _clean_raw("\nhello") == "hello", "a blank line is not kept as a space"
+    assert _clean_raw("first\n--[debug] noise\nsecond") == "first second"
+
+
+def test_the_detail_is_one_line_joined_with_single_spaces():
+    assert _clean_raw("first\nsecond\nthird") == "first second third"
+
+
+def test_a_trailing_null_is_removed_rather_than_replaced():
+    assert _clean_raw("it went wrong null") == "it went wrong"
+
+
+def test_the_detail_is_cut_at_the_limit_and_not_before_it():
+    """400 is the documented limit, and the boundary is where a mutant hides."""
+    assert len(_clean_raw("a" * 400)) == 400
+    assert "…" not in _clean_raw("a" * 400), "text that fits is not shortened"
+    cut = _clean_raw("a" * 401)
+    assert len(cut) == 400
+    assert cut.endswith("…")
+
+
+def test_the_cut_does_not_leave_a_space_before_the_ellipsis():
+    assert _clean_raw("a" * 398 + " " + "b" * 20) == "a" * 398 + "…"
+
+
+def test_an_error_with_nothing_left_after_cleaning_still_reads_well():
+    friendly = explain("ERROR:")
+    assert friendly.hint
+    assert not friendly.hint.startswith("\n"), "no stray blank line before the advice"
+
+
+def test_output_with_no_error_in_it_quotes_itself_back():
+    """The last resort: the tool stopped without saying why (R10)."""
+    friendly = explain("Stopping after 3 of 10 items null")
+    assert friendly.message == t("error.unfinished")
+    assert friendly.hint == "Stopping after 3 of 10 items"
+
+
+def test_only_a_real_error_line_is_surfaced():
+    assert is_fatal_ytdlp_line("ERROR: Video unavailable") is True
+    assert is_fatal_ytdlp_line("  ERROR: Video unavailable") is True
+    assert is_fatal_ytdlp_line("error: lower case is a note, not a failure") is False
+    assert is_fatal_ytdlp_line("WARNING: something") is False
+    assert is_fatal_ytdlp_line("") is False

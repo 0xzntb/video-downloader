@@ -1141,6 +1141,25 @@ printed on stderr. It runs as part of the suite, needs nothing beyond the `dev`
 extra, and its generators are seeded — a failure is the same failure tomorrow,
 with the smallest input that caused it.
 
+Mutation testing asks the other question: not whether a line ran but whether
+anything would have noticed if it hadn't. `mutmut` flips a statement, runs the
+tests, and counts the flips nobody caught. It is far too slow for a pull
+request — every mutant is a test run — so it has its own weekly workflow, and
+its scope is two files rather than the whole program: `viddl/util.py` and
+`viddl/errors.py`, where a flipped statement is a safety decision (the link
+check, the redaction, the formatting, the error table).
+
+```sh
+python -m mutmut run            # flips the code, runs the selected tests
+python tools/mutation_score.py  # the score, the floor, and what got through
+```
+
+The score is killed ÷ (killed + missed), and a mutant in a line the tests never
+reach counts as missed rather than as a kill — a score that stays high while a
+file rots is the failure mode it exists to prevent. The run this landed with
+killed 256 of 265, and the nine survivors are equal in behaviour to the
+original, which is why the gate is a score and not zero.
+
 Two static checks come with the `dev` extra and read the same source on every
 runner, so CI answers them in one cell rather than nine:
 

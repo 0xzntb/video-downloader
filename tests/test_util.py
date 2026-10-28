@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+
 import pytest
 
 from viddl.util import (
@@ -9,6 +11,7 @@ from viddl.util import (
     SECRET_PARAMS,
     human_duration,
     human_size,
+    is_interactive,
     is_probably_url,
     redact,
     safe_video_link,
@@ -73,8 +76,16 @@ def test_is_probably_url_accepts_links_and_rejects_sentences():
         ("data:text/html,x", None),
         ("ftp://example.com/v", None),
         ("/usr/local/bin", None),
+        # A path that looks enough like a site to be upgraded unless the leading
+        # slash is refused first (found by mutation, E11).
+        ("/tmp/video.mp4", None),
         ("~/videos", None),
+        ("~/videos.mp4", None),
         ("./relative", None),
+        # Quoted links are unwrapped, whichever quote a shell or a page used.
+        ("'https://example.com/v'", "https://example.com/v"),
+        # Exactly the length limit is still a link; one more character is not.
+        ("https://example.com/" + "a" * 2028, "https://example.com/" + "a" * 2028),
         ("hello there", None),
         # Control characters must not survive into a command line either.
         ("https://example.com/v\x00evil", None),
@@ -146,3 +157,58 @@ def test_is_probably_url_refuses_option_shaped_input():
     for payload in ("--exec=calc.exe", "--config-locations=./x.conf", "--paths=./out"):
         assert not is_probably_url(payload)
         assert safe_video_link(payload) is None
+
+
+# ---------------------------------------------------------------------------
+# the edges a mutation run found assertion-free (E11)
+#
+# Each case below kills a mutant that used to survive: the code could be made
+# to answer differently and the suite said nothing. That is the gap mutation
+# testing exists to find, and it is cheap to close once it is named.
+# ---------------------------------------------------------------------------
+
+
+class _Stream:
+    """A stream that answers the one question ``is_interactive`` asks."""
+
+    def __init__(self, tty: bool) -> None:
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
+
+
+def test_is_interactive_asks_the_stream_it_was_given():
+    """A download redirected to a log has a file on stderr, not a terminal (U4).
+
+    The question is asked of the stream that will actually be written to, so a
+    stream that says "no" is believed even when standard input is a tty.
+    """
+    assert is_interactive(_Stream(True)) is True
+    assert is_interactive(_Stream(False)) is False
+
+
+def test_is_interactive_says_no_when_the_stream_cannot_answer():
+    """Anything not known to be a terminal is not treated as one."""
+
+    class Mute:
+        pass
+
+    assert is_interactive(Mute()) is False
+    assert is_interactive(io.StringIO()) is False
+
+
+def test_shorten_never_returns_more_than_it_was_allowed():
+    """``limit`` is a promise about the length, ellipsis included."""
+    assert shorten("abcdef", 2) == "a…"
+    assert shorten("abcdef", 5) == "abcd…"
+    assert shorten("ab", 2) == "ab", "a string that already fits is not cut"
+    assert shorten("abc", 3) == "abc"
+    # A limit of one is degenerate rather than useful: there is no room for a
+    # character and an ellipsis, so the text is left alone instead of becoming
+    # two characters where one was asked for.
+    assert shorten("abcdef", 1) == "abcdef"
+
+
+def test_shorten_cuts_before_the_ellipsis_without_a_trailing_space():
+    assert shorten("ab cdef", 4) == "ab…"
