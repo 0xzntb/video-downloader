@@ -10,8 +10,8 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **51 of 60** — S1–S6 in section 1, R1–R11 in section 2,
-F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E8 in section 5,
+Progress so far: **52 of 60** — S1–S6 in section 1, R1–R11 in section 2,
+F1–F8, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E9 in section 5,
 D1–D3 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make.
@@ -3249,12 +3249,67 @@ is also where **S1**'s fix gets a second, independent lock.
 > reach without a real toolbar click, so the popup test covers rendering and the
 > refusal branch, with the success path covered by the YouTube-button tests.
 
-### E9 — Fuzz and property tests for the parsers · **P2** · M
+### E9 — Fuzz and property tests for the parsers · **P2** · M · ✅ **Done**
 
 `parse_scheme()` parses untrusted input from the web; `errors.explain()` matches
 regexes against arbitrary tool output; `human_size`/`human_duration`/
 `estimate_size`/`_find_output` all have invariants. Those are the highest-value
 targets for `hypothesis` (plus a small fuzz run over `parse_scheme`).
+
+> **Done.** `tests/test_properties.py` — 23 tests over generated input, and
+> `hypothesis>=6.98,<7` in the `dev` extra (pinned in `uv.lock`, so the `locked`
+> CI job installs it too). Every generator is seeded (`derandomize=True`): a
+> rule that breaks is still broken tomorrow, and the failure prints the smallest
+> input that broke it. The module costs about three seconds, so it belongs to
+> the suite and not to the commit hook, which still promises two.
+>
+> **The rules, not the examples.** Anything the hand-off parser accepts must be
+> a link the URL check would itself accept, start with `http(s)`, carry no
+> whitespace or control characters, stay under 2048 characters, and keep the
+> host the page actually sent. An option-shaped remainder is refused in all
+> three shapes. `build_scheme_url` → `parse_scheme` is byte-identical in both
+> encoded shapes, including for a link that carries an escape of its own; the
+> unencoded shapes (`viddl://<url>`) may only ever answer with the *decoded*
+> link or a refusal — which is what a link containing `%00` gets, and the first
+> draft of that property claimed more than the format promises.
+>
+> **A fuzz run of its own**, from a fixed seed: 1500 strings assembled from the
+> pieces a hostile page has (`--exec=calc.exe`, `%00`, `javascript:`, quotes,
+> newlines), then 1500 mutations of a good hand-off, one to three characters at
+> a time. Both feed the same invariant helper as the generated tests, so the two
+> cannot drift into checking different things.
+>
+> **`errors.explain` always answers with a sentence from the catalogue** — never
+> with the engine's own words — checked against the rule table itself, so a rule
+> added tomorrow is covered and one that returns raw output fails. The same
+> output twice gives the same answer, and a 12 KB wall of it is explained inside
+> the profile's 2-second deadline, which is how a pattern that backtracks badly
+> would surface. `_clean_raw` never returns more than its limit.
+>
+> **Four genuine bugs, found before the suite could go green** — all of them in
+> the parsing of what a *site* says, which is the case no hand-written example
+> had:
+>
+> * `_num` accepted `"nan"` and `"inf"`, and `int()` raises on both — so a
+>   format carrying `filesize: "NAN"` took the qualities screen down with a
+>   `ValueError`, and `"INF"` with an `OverflowError`. It now refuses anything
+>   not finite, and the duration is read through the same check.
+> * A sub-byte `filesize` was rendered as **`0 B`**, which reads as “nothing to
+>   download”; `_bytes()` keeps the smallest size at one byte.
+> * `human_size(nan)` printed **`nan GB`** and `human_size(inf)` **`inf GB`**.
+>   Both are `?` now, like every other unknown size.
+> * `human_duration(nan)` raised `ValueError` instead of returning `?`.
+>
+> **Verified here:** `pytest tests/test_properties.py` → 23 passed in about
+> three seconds; the whole suite → **1302 passed, 1 skipped** (the Playwright
+> one), coverage **94.27%** against the 93% floor, exit 0. `ruff check viddl
+> tests` and `mypy` clean; `uv lock --check` agrees with `pyproject.toml`.
+> README and CONTRIBUTING say where the module is and why it needs nothing
+> beyond the `dev` extra.
+>
+> **Not verified:** the suite has only been run here on Linux and Python 3.12.
+> The 3.9 and Windows cells read the same seeded input, and nothing in these
+> properties is platform-specific — but that is reasoning, not a run.
 
 ### E10 — Coverage ratchet and the remaining gaps · **P2** · S · ◐ **partly done**
 

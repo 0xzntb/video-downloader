@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -261,9 +262,22 @@ def _num(value: Any) -> Optional[float]:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    if number <= 0:
+    # ``"nan"`` and ``"inf"`` are floats to Python and nothing like a size, so
+    # they are rejected here rather than crashing the screen further on (E9):
+    # ``int(nan)`` is a ValueError and ``int(inf)`` an OverflowError, and the
+    # quality list is not the place to find that out.
+    if not math.isfinite(number) or number <= 0:
         return None
     return number
+
+
+def _bytes(value: float) -> int:
+    """A whole number of bytes, never less than one.
+
+    A site that claims half a byte still has a row to draw, and ``0 B`` next to
+    a quality reads as "nothing to download".
+    """
+    return max(1, int(value))
 
 
 def _has_video(fmt: Dict[str, Any]) -> bool:
@@ -280,18 +294,21 @@ def estimate_size(fmt: Dict[str, Any], duration: Optional[float]) -> Tuple[Optio
     """Bytes for a single format, plus whether the number is a guess."""
     exact = _num(fmt.get("filesize"))
     if exact:
-        return int(exact), False
+        return _bytes(exact), False
 
     approx = _num(fmt.get("filesize_approx"))
     if approx:
-        return int(approx), True
+        return _bytes(approx), True
 
     bitrate = _num(fmt.get("tbr")) or (
         (_num(fmt.get("vbr")) or 0) + (_num(fmt.get("abr")) or 0)
     )
-    if bitrate and duration:
+    # The duration is a site's claim too, so it goes through the same check: a
+    # ``nan`` here used to reach ``int()`` and take the window down with it.
+    length = _num(duration)
+    if bitrate and length:
         # Bitrate is kilobits per second.
-        return int(bitrate * 1000 / 8 * duration), True
+        return _bytes(bitrate * 1000 / 8 * length), True
     return None, True
 
 

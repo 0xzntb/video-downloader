@@ -39,6 +39,12 @@ dev = [
     # codebase already carries; they were written and then left unverified.
     "ruff>=0.9,<1",
     "mypy>=1.11,<2",
+    # The parsers take untrusted input — a ``viddl://`` URL from any web page,
+    # whatever a site said its file weighs, whatever the engine wrote on stderr
+    # — and hand-written examples only ever cover the shapes someone thought
+    # of. hypothesis generates the rest (E9). Bounded the same way as the
+    # others, and pinned exactly in `uv.lock`.
+    "hypothesis>=6.98,<7",
 ]
 
 [project.scripts]

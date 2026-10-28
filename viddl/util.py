@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Optional, TextIO
 from urllib.parse import urlsplit
@@ -74,10 +75,17 @@ def is_interactive(stream: TextIO) -> bool:
 
 
 def human_size(num_bytes: Optional[float]) -> str:
-    """``12345678`` -> ``"12.4 MB"``; unknown sizes become ``"?"``."""
-    if num_bytes is None or num_bytes <= 0:
+    """``12345678`` -> ``"12.4 MB"``; unknown sizes become ``"?"``.
+
+    A size the metadata gave as ``nan`` or ``inf`` is unknown just like a
+    missing one (E9): those parse as floats, which is why they reached the
+    quality list and were shown as ``nan GB``.
+    """
+    if num_bytes is None:
         return "?"
     size = float(num_bytes)
+    if not math.isfinite(size) or size <= 0:
+        return "?"
     for unit in ("B", "KB", "MB", "GB"):
         if size < 1024 or unit == "GB":
             if unit == "B":
@@ -88,8 +96,12 @@ def human_size(num_bytes: Optional[float]) -> str:
 
 
 def human_duration(seconds: Optional[float]) -> str:
-    """``3725`` -> ``"1:02:05"``."""
-    if not seconds or seconds < 0:
+    """``3725`` -> ``"1:02:05"``; unknown durations become ``"?"``.
+
+    Zero is unknown rather than ``0:00``: a site reports it for a live stream
+    whose length nobody knows yet (E9).
+    """
+    if not seconds or seconds < 0 or not math.isfinite(seconds):
         return "?"
     total = int(seconds)
     hours, remainder = divmod(total, 3600)

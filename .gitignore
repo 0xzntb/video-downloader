@@ -6,6 +6,9 @@ __pycache__/
 build/
 dist/
 .pytest_cache/
+# hypothesis keeps a database of interesting examples next to the tests; it is
+# a local cache like .pytest_cache, not part of the repository (E9).
+.hypothesis/
 .coverage
 coverage.xml
 htmlcov/

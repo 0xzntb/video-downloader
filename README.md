@@ -1121,6 +1121,13 @@ CI runs, and it fails the run rather than printing a number nobody reads:
 .venv/bin/python -m pytest --cov=viddl --cov-fail-under=93
 ```
 
+Alongside the examples, `tests/test_properties.py` states the rules the parsers
+have to keep for *every* input and lets `hypothesis` generate it: a `viddl://`
+URL from any page, whatever a site says its file weighs, whatever the engine
+printed on stderr. It runs as part of the suite, needs nothing beyond the `dev`
+extra, and its generators are seeded — a failure is the same failure tomorrow,
+with the smallest input that caused it.
+
 Two static checks come with the `dev` extra and read the same source on every
 runner, so CI answers them in one cell rather than nine:
 

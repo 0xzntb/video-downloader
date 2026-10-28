@@ -81,6 +81,15 @@ in the test, so nothing leaves the machine:
 npm install && npx playwright install chromium
 ```
 
+The parsers have a module of their own for the input nobody writes down, and it
+needs no extra tooling: `tests/test_properties.py` runs the `viddl://` parser,
+the error explainer, the size and duration formatters and the "which file is the
+download" check over generated input, and states the rules that have to hold for
+*every* one of them — never an option where a link belongs, never a leftover
+stream reported as the finished file. `hypothesis` comes with the `dev` extra.
+The generators are seeded (`derandomize=True`): a rule that breaks is still
+broken tomorrow, and the failure prints the smallest input that broke it.
+
 `ruff` and `mypy` are configured in `pyproject.toml`, and both are quiet
 before a change rather than after one: a rule is switched on because it caught
 something or because the codebase already obeys it, not because ruff ships it.
