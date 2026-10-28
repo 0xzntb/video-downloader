@@ -3071,10 +3071,6 @@ class DownloadScreen(ViddlScreen):
             )
         )
 
-    def _began_waiting(self) -> float:
-        """When this screen started working, for the notification's threshold."""
-        return getattr(self, "_started_at", time.monotonic())
-
     def _tell(
         self, *, saved: Optional[str] = None, failed: bool = False,
         stopped: bool = False, count: int = 0,
