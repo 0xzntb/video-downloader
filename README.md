@@ -779,6 +779,24 @@ When the engine is more than a month old, the app says so on its first screen
 and `viddl --doctor` repeats it. `VIDDL_YTDLP` points Viddl at a particular copy
 of yt-dlp when you want to manage that yourself.
 
+### The short list
+
+Six things account for most "it does not work" messages. Each row is a symptom,
+what it usually is, and the one command worth trying before anything else.
+
+| What you see | What it usually is | What to do |
+| --- | --- | --- |
+| *"It worked last week."* A link that downloaded fine now fails, or the home screen says the engine is a month old. | The site changed, and the part that knows how to read it is stale. | `viddl --update` — or the **Update engine** button on the failure screen, which then asks the same link again by itself. |
+| A video *wants you to be signed in*, is age-restricted or members-only, and opens fine in the browser you are signed into. | The site wants that session, and Viddl does not have it. | `viddl --cookies-from-browser chrome` (also `firefox`, `edge`, `brave`, `safari`, or `auto`), or the **Sign in with my browser** row on the qualities screen. Close the browser first if it holds the store locked. |
+| Every download stalls, times out, or answers 403 on a work network — while a browser on the same machine is fine. | The connection goes through a proxy Viddl has not been told about. | `viddl --proxy socks5://host:port` (or `http://host:port`, with a sign-in if it needs one). Add `--limit-rate 2M` if the proxy is metered. Both work with `--plain`. |
+| Boxes, question marks or a garbled screen in a Windows console, or *"Viddl needs a real terminal window to run."* | A legacy code page, or a console that cannot move the cursor — `TERM=dumb`, a log file, a double-click. | `viddl --plain --yes <link>` writes ASCII one line at a time; `--accessible` is the same path for a screen reader. Nothing needs installing. |
+| A long download ends and nothing pops up. | Only runs of twenty seconds or more are announced, and only when notifications were asked for; a machine with no notifier rings the terminal's bell instead. | `viddl --set notify on` (or `--notify` for one run). A successful desktop notification needs `libnotify` on Linux — a bare server or an SSH session has nothing to raise one with. |
+| You want the details, or want to send the failure to somebody. | The log holds failures only, and its path is not worth remembering. | `viddl --report` prints the versions, the log's path and the last failure with credentials already removed; `viddl --doctor` prints the folders and whether each tool works. |
+
+If none of that helps, `viddl --report` is the thing to paste into an issue: it
+is assembled on this machine and sent nowhere, and the failure lines in it came
+out of the log already redacted.
+
 ## Removing it
 
 ```sh
