@@ -1378,7 +1378,9 @@ python3 docs/demo/render.py banner
 
 Bug reports, translations and patches are all welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md)
 has the setup commands, the four commands CI runs, and a map of which file does
-what. [`CHANGELOG.md`](CHANGELOG.md) says what has changed — nothing is tagged
+what; [`docs/architecture.md`](docs/architecture.md) explains how the pieces fit
+together — the seam the screens are tested through, why there is no server, and
+which setting wins when two of them disagree. [`CHANGELOG.md`](CHANGELOG.md) says what has changed — nothing is tagged
 yet, so it describes what this version does rather than what it added.
 
 Everyone taking part is expected to follow the [code of conduct](CODE_OF_CONDUCT.md).

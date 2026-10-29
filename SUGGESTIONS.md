@@ -10,10 +10,10 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **60 of 60** — S1–S7 in section 1, R1–R11 in section 2,
-F1–F9, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E11 and E13–E14 in
-section 5,
-D1–D5 in section 6.
+Progress so far: **every item is done except two** — S1–S7 in section 1,
+R1–R11 in section 2, F1–F9, F10–F14 and F16 in section 3, U1–U9 in section 4,
+E1–E11 and E13–E14 in section 5,
+D1–D6 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make. E12 is ◐: the package builds, is checked and
 installs from its wheel; the upload is the publisher's to make.
@@ -3628,7 +3628,7 @@ project's "nothing leaves your machine" promise.
 | **D3** | ✅ **Document the `viddl://` security model** | Done with **S5**: `SECURITY.md` states the guarantee (any page may open the app; nothing downloads without a click) and what it does *not* cover, and the README links to it. |
 | **D4** | ✅ **Troubleshooting / FAQ** | Done: **The short list** now ends the README's *When something goes wrong* — six symptoms, what each one usually is, and the command that fixes it. Stale extractor (`--update`, or the button that re-asks the link), login-required sites (`--cookies-from-browser`, **F1**), proxies (`--proxy`, **F11**), legacy Windows consoles (`--plain`, **R10**), a missing notification (the twenty-second floor and the bell fallback, **F9**), and where the log lives (`--report`, **E14**). |
 | **D5** | ✅ **`--version --verbose` and a man page** | Done: `man/viddl.1` is a real section-1 page — every option the parser takes, the ten environment variables, the files Viddl writes, its exit statuses and worked examples — and **packaged** rather than only checked in: `data-files` puts it at `share/man/man1/viddl.1` inside the wheel, so `man viddl` works for anyone who installs instead of cloning. The README's install section now carries the verbose version block from **E12** as a code block and says where the page is. `tests/test_manpage.py` compares the page with `build_parser()` in both directions, so a flag renamed in the code cannot leave the manual describing one that no longer exists — which is what makes this documentation that stays true rather than documentation that was true once. |
-| **D6** | **Architecture notes** | A short `docs/` page on the `Services` seam, why the app is local-only, and the precedence rules for engine and config. It is the thing a new contributor needs most. |
+| **D6** | ✅ **Architecture notes** | Done: [`docs/architecture.md`](docs/architecture.md) — the `Services` seam the screens are tested through and the two rules it implies, why there is no server (and what `--web` and `viddl://` do instead), and the two precedence ladders kept apart on purpose: settings (flag → environment → `config.toml` → default, with an empty variable counting as an answer) and the engine (`VIDDL_YTDLP` outright, otherwise the newest copy that runs, ties to Viddl's own; ffmpeg picks the first that runs instead, and the page says why). It ends with the path a new flag takes through the code — including the man page, which `tests/test_manpage.py` now enforces — so it is a map rather than a museum. Linked from `CONTRIBUTING.md` and the README's *Contributing*. |
 
 ---
 

@@ -144,6 +144,7 @@ falling out of step fails the pull request instead of somebody's install.
 | `viddl/web_ui/` | The page `--web` serves |
 | `viddl/util.py` | Link checking, redaction, and the small shared pieces |
 | `docs/demo/` | The recorder and renderer behind the README's GIF and banner |
+| [`docs/architecture.md`](docs/architecture.md) | The `Services` seam, why there is no server, and what wins when two settings disagree |
 
 ## House rules
 
