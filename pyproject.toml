@@ -105,6 +105,12 @@ viddl = [
     "web_ui/*.css",
 ]
 
+# A man page is part of a Unix package, so it travels in the wheel and the sdist
+# rather than living only in the checkout (D5). pip installs data files under
+# the prefix it is installing into, which is where a package recipe looks.
+[tool.setuptools.data-files]
+"share/man/man1" = ["man/viddl.1"]
+
 [tool.ruff]
 # The code the project claims to support, so a fix ruff offers is one that still
 # runs on 3.9.

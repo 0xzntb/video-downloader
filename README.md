@@ -84,9 +84,25 @@ The second line is the one that works today: the metadata and the wheel are
 ready, and publishing is a step the maintainer has not taken yet. Either way
 the command is `viddl`, and it still fetches its own yt-dlp on first run.
 
+A man page travels with the package, so `man viddl` says the same things as
+`viddl --help` with the detail of a manual: every option, the environment
+variables, the files it writes and what each exit status means. From a
+checkout it is `man ./man/viddl.1`.
+
 If something goes wrong, `viddl --version --verbose` prints the four numbers a
 bug report needs — Viddl, Python, yt-dlp and ffmpeg, with where each one lives —
-in one block. It only looks for the helpers, so it never starts a download.
+in one block. It only looks for the helpers, so it never starts a download:
+
+```
+$ viddl --version --verbose
+Viddl 1.0.0
+Python 3.12.3 on Linux-6.1.102-x86_64-with-glibc2.39
+yt-dlp 2026.10.26 (installed as a Python package)
+ffmpeg not installed (viddl --update-ffmpeg)
+```
+
+A helper that is there takes the place of that last line, as
+`ffmpeg 7.1 (downloaded by Viddl) — /home/you/.local/share/viddl/bin/ffmpeg`.
 
 `viddl --report` prints that block plus the last failure from the log, already
 redacted, ready to paste into an issue. Nothing is sent anywhere: Viddl has no

@@ -1,0 +1,408 @@
+.\" The manual page for Viddl.  roff rather than Markdown because it has to
+.\" survive `man`, and because a package recipe looks for a file in this shape
+.\" rather than for a paragraph on a web page.
+.TH VIDDL 1 "2026-10-29" "Viddl 1.0.0" "User Commands"
+.SH NAME
+viddl \- download a video or a song by pasting a link
+.SH SYNOPSIS
+.B viddl
+.RI [ options ]
+.RI [ target ]
+.SH DESCRIPTION
+.B viddl
+downloads a video, or just its audio, from any of the hundreds of sites
+.B yt-dlp
+supports.  Run with no arguments it opens a full\-screen terminal app: paste a
+link, pick a quality from the list it fetches, and the file lands in your
+Downloads folder with its path printed when it is done.  Mouse and keyboard
+both work.
+.PP
+The app looks after its own dependencies.  The first download fetches
+.B yt-dlp
+(about 3 MB) into its own folder, or uses one already installed, preferring the
+newest copy it can find.
+.B ffmpeg
+is only fetched when a job needs it \- a conversion to MP3, M4A, Opus, FLAC or
+WAV, or a quality whose video and audio have to be merged \- and it says how
+large that download is before starting it.
+.PP
+There is no server and no account, and nothing leaves the machine except the
+download itself.  Links handed over by the browser extension are only ever
+filled into the link box; nothing is looked up or saved until a person presses
+Enter and then chooses a quality.
+.SH OPTIONS
+.SS Everyday use
+.TP
+.B \-h, \-\-help
+Show the options and exit.
+.TP
+.BI \-\-uri " URL"
+A
+.B viddl://
+link handed over by the browser extension.
+.TP
+.B \-\-audio
+Start on the audio options: the site's own file, or MP3, M4A, Opus, FLAC or WAV.
+.TP
+.BI \-\-list\-qualities " URL"
+Print the qualities a link offers and exit, without downloading anything.
+.TP
+.BI \-\-download\-dir " DIR"
+Save downloads here for this run instead of the Downloads folder.
+.TP
+.BI \-\-extras " LIST"
+Also add subtitles, details (title, channel, date and chapters) or a cover
+image.  The list is comma\-separated:
+.IR subs ,
+.IR details ,
+.IR cover ,
+or
+.I all
+for the three of them.
+.TP
+.BI \-\-cookies\-from\-browser " BROWSER"
+Let the download use the cookies the browser already has, for a site that asks
+you to sign in:
+.IR chrome ,
+.IR firefox ,
+.IR edge ,
+.IR brave ,
+.IR safari ,
+or
+.I auto
+for whichever is installed.
+.TP
+.B \-\-download\-archive
+Remember what has been downloaded, in Viddl's own folder, and skip videos
+already saved.  Re\-running a playlist then takes only the videos it has not
+fetched yet.
+.TP
+.B \-\-live\-from\-start
+For a live stream, record it from its beginning instead of from the moment you
+start.  Not every site can serve the part it has already played.
+.SS Downloading without the screen
+.TP
+.B \-\-plain
+Download a line at a time instead of opening the full\-screen app, in plain
+ASCII, for scripts and older consoles.
+.TP
+.B \-\-accessible
+Like
+.BR \-\-plain ,
+but no line is ever written over and the end rings the bell, for a screen
+reader.
+.TP
+.B \-\-quiet
+With
+.BR \-\-plain ,
+print only the saved path.  Progress and notes are left out; failures still go
+to standard error.
+.TP
+.BI \-\-quality " QUALITY"
+With
+.BR \-\-plain :
+a height such as
+.I 720
+or
+.IR 1080 ,
+.IR best ,
+or an audio format:
+.IR audio ,
+.IR mp3 ,
+.IR m4a ,
+.IR opus ,
+.IR flac ,
+.IR wav ,
+or a preset such as
+.IR mp3\-192 .
+.TP
+.B \-\-yes
+With
+.BR \-\-plain :
+download without asking first, for scripts.
+.TP
+.B \-\-playlist
+With
+.BR \-\-plain :
+download every video of a playlist, one after another, instead of only the
+first.
+.TP
+.B \-\-json
+With
+.B \-\-doctor
+or
+.BR \-\-list\-qualities :
+print one JSON object instead of sentences, for scripts.
+.SS A slow connection, a busy one, or a proxy
+.TP
+.BI \-\-limit\-rate " SPEED"
+Download no faster than this, so other things on the connection still work:
+.IR 500K ,
+.IR 2M ,
+or a number of bytes per second.
+.TP
+.BI \-\-proxy " ADDRESS"
+Send downloads through a proxy:
+.IR http://host:port ,
+.IR socks5://host:port ,
+or an address that carries a sign\-in.
+.TP
+.BI \-\-concurrent\-fragments " N"
+How many pieces of one video to fetch at once, from 1 to 32 (the default is 4).
+Lower it when a site or a proxy complains.
+.TP
+.BI \-\-throttled\-rate " SPEED"
+Give up on a source that stays slower than this and try another:
+.I 100K
+or
+.IR 1M .
+.SS What the screen looks like
+.TP
+.BI \-\-theme " THEME"
+The colours the app draws in:
+.IR dark ,
+.IR light ,
+.IR high\-contrast ,
+or
+.I auto
+to follow the terminal's background.
+.TP
+.BI \-\-lang " LANG"
+The language the explanations are written in:
+.I en
+or
+.IR es .
+The default is whichever language the computer is set to.
+.SS Remembered settings
+.TP
+.BI \-\-set " SETTING VALUE"
+Remember a preference in Viddl's settings file.  The settings are
+.IR download\-dir ,
+.IR quality ,
+.IR archive ,
+.I theme
+and
+.IR notify .
+.TP
+.BI \-\-unset " SETTING"
+Forget a remembered preference, so the built\-in default applies again.
+.SS Tools and versions
+.TP
+.B \-\-doctor
+Show where Viddl keeps its files, where downloads go, whether the engine and
+.B ffmpeg
+are ready, and which environment variables are in effect.
+.TP
+.B \-\-update
+Fetch the newest video engine.  This is the fix for a link that used to work and
+now does not, and it says which version it moved from and to.
+.TP
+.B \-\-update\-ffmpeg
+Fetch the newest
+.B ffmpeg
+build.  This is the fix when merging or converting fails.
+.TP
+.B \-\-version
+Print the version and exit.
+.TP
+.B \-\-verbose
+With
+.BR \-\-version :
+also print Python, yt\-dlp and ffmpeg, each with where it came from \- the four
+numbers a bug report needs, in one block.  It only looks for the helpers, so it
+is safe on a machine that has never downloaded anything.
+.TP
+.B \-\-report
+Print a block to paste into a bug report: the version block, the last failure
+from the log already redacted, and where the log lives.  Nothing is sent
+anywhere.
+.SS The browser hand\-off
+.TP
+.B \-\-register\-protocol
+Make
+.B viddl://
+links open the app.  The browser extension needs this; the installer does it.
+.TP
+.B \-\-unregister\-protocol
+Stop handling
+.B viddl://
+links.
+.TP
+.BI \-\-install\-browser\-extension " [BROWSER]"
+Copy the bundled extension to a folder you can load:
+.I chrome
+(also Edge and Brave) or
+.IR firefox .
+Give no browser to do both.
+.TP
+.BI \-\-extension\-zip " [BROWSER]"
+Write the extension as the zip an add\-on store accepts.
+.TP
+.B \-\-extension\-path
+Print the folder holding the bundled browser extension.
+.SS A page in your browser
+.TP
+.B \-\-web
+Open a page on this computer that downloads with the same tools, for when a
+browser tab is easier than a terminal.  It listens on 127.0.0.1 only, never on
+the network, and every request must carry the random token printed when the page
+started.
+.SS Being told when it is done
+.TP
+.B \-\-notify
+Say so when a download that took a while finishes: a desktop notification where
+there is one, the terminal's bell otherwise.  Very short downloads stay quiet.
+.TP
+.B \-\-no\-notify
+Never notify, even when the settings file asks for it.
+.SH ENVIRONMENT
+.TP
+.B VIDDL_HOME
+The one folder Viddl owns.  Defaults to
+.I ~/.local/share/viddl
+on Linux and macOS and
+.I %LOCALAPPDATA%/viddl
+on Windows.
+.TP
+.B VIDDL_DOWNLOAD_DIR
+Where downloads are saved.  Defaults to the usual Downloads folder.
+.TP
+.B VIDDL_YTDLP
+A particular copy of
+.B yt\-dlp
+to run, instead of the one Viddl would choose.
+.TP
+.B VIDDL_FFMPEG
+A particular
+.B ffmpeg
+to run, including one Viddl installed for itself.
+.TP
+.B VIDDL_YTDLP_ARGS
+Extra options for
+.BR yt\-dlp .
+Options that would write files or run commands are refused rather than passed on.
+.TP
+.B VIDDL_TIMEOUT
+How long to wait for the network, in seconds, before a look\-up is given up on.
+.TP
+.B VIDDL_ARCHIVE
+When set, skip videos already downloaded, as
+.B \-\-download\-archive
+does.
+.TP
+.B VIDDL_QUALITY
+The quality to use when none is chosen, as
+.B \-\-set quality
+would remember.
+.TP
+.B VIDDL_THEME
+The colour scheme to draw in, as
+.B \-\-set theme
+would remember.
+.TP
+.B VIDDL_NOTIFY
+When set to something true, say so when a long download finishes, as
+.B \-\-notify
+does; set it to false to turn that off again.
+.PP
+A flag on the command line beats an environment variable, an environment
+variable beats the settings file, and the settings file beats the built\-in
+default.  A setting that quietly does not apply is worse than no setting, so
+.B \-\-doctor
+prints which of these are in effect.
+.SH FILES
+.TP
+.I ~/.local/share/viddl/
+Viddl's own folder, private to the account that created it.  It holds:
+.TP
+.I ~/.local/share/viddl/bin/yt\-dlp
+The video engine, if Viddl fetched one.
+.TP
+.I ~/.local/share/viddl/bin/ffmpeg
+The copy Viddl installed, if it did.
+.TP
+.I ~/.local/share/viddl/viddl.log
+What failed and what the failing tool said.  No run that worked writes a line.
+The file rolls over at 256 KB and keeps one older copy.
+.TP
+.I ~/.local/share/viddl/recent.json
+The list of what was saved lately, shown by pressing
+.I r
+in the app.
+.TP
+.I $XDG_CONFIG_HOME/viddl/config.toml
+The optional settings file.  On Linux and macOS without
+.BR XDG_CONFIG_HOME ,
+.I ~/.config/viddl/config.toml
+is used; on Windows,
+.IR %APPDATA%/viddl/config.toml .
+The file is written only by
+.B \-\-set
+and
+.BR \-\-unset .
+.SH EXIT STATUS
+.TP
+.B 0
+The requested work succeeded.
+.TP
+.B 1
+Something failed.  The reason is on standard error, written for a person rather
+than for a log.
+.TP
+.B 130
+Interrupted with Ctrl\-C.
+.SH EXAMPLES
+Open the app with a link already loaded:
+.PP
+.RS 4
+.nf
+viddl 'https://www.youtube.com/watch?v=...'
+.fi
+.RE
+.PP
+Download 720p without the screen, for a script:
+.PP
+.RS 4
+.nf
+viddl \-\-plain \-\-yes \-\-quality 720 'https://www.youtube.com/watch?v=...'
+.fi
+.RE
+.PP
+Make an MP3 from a link that needs a sign\-in:
+.PP
+.RS 4
+.nf
+viddl \-\-plain \-\-yes \-\-quality mp3 \e
+      \-\-cookies\-from\-browser firefox 'https://www.youtube.com/watch?v=...'
+.fi
+.RE
+.PP
+See whether a link is worth downloading, as JSON:
+.PP
+.RS 4
+.nf
+viddl \-\-json \-\-list\-qualities 'https://www.youtube.com/watch?v=...'
+.fi
+.RE
+.PP
+Collect the numbers a bug report needs:
+.PP
+.RS 4
+.nf
+viddl \-\-version \-\-verbose
+viddl \-\-report
+.fi
+.RE
+.SH SEE ALSO
+.BR ffmpeg (1)
+and the project's README at https://github.com/0xzntb/video\-downloader for the
+screens, the settings and the browser extension.  The engine's own options are
+documented at https://github.com/yt\-dlp/yt\-dlp.
+.SH BUGS
+Report them at https://github.com/0xzntb/video\-downloader/issues, with the
+output of
+.B viddl \-\-report
+pasted in.  Nothing is sent automatically: Viddl has no telemetry, and the
+report is only something your own terminal prints.
+.SH AUTHOR
+Viddl contributors.

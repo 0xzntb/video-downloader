@@ -10,10 +10,10 @@ runtime dependency (`textual>=0.80`).
 
 Work is marked in place as it lands: ✅ **Done**, with the evidence that proved
 it (◐ **partly done** says what landed and what did not).
-Progress so far: **59 of 60** — S1–S7 in section 1, R1–R11 in section 2,
+Progress so far: **60 of 60** — S1–S7 in section 1, R1–R11 in section 2,
 F1–F9, F10–F14 and F16 in section 3, U1–U9 in section 4, E1–E11 and E13–E14 in
 section 5,
-D1–D4 in section 6.
+D1–D5 in section 6.
 F15 is ◐: the Firefox build and the store packaging landed; the submissions
 are the publisher's to make. E12 is ◐: the package builds, is checked and
 installs from its wheel; the upload is the publisher's to make.
@@ -3627,7 +3627,7 @@ project's "nothing leaves your machine" promise.
 | **D2** | ✅ **Undocumented environment variables** | Done with **S6**: the README has a table of all four — what each overrides, why you would use it, and how a value is checked — and `--doctor` prints which are in effect. |
 | **D3** | ✅ **Document the `viddl://` security model** | Done with **S5**: `SECURITY.md` states the guarantee (any page may open the app; nothing downloads without a click) and what it does *not* cover, and the README links to it. |
 | **D4** | ✅ **Troubleshooting / FAQ** | Done: **The short list** now ends the README's *When something goes wrong* — six symptoms, what each one usually is, and the command that fixes it. Stale extractor (`--update`, or the button that re-asks the link), login-required sites (`--cookies-from-browser`, **F1**), proxies (`--proxy`, **F11**), legacy Windows consoles (`--plain`, **R10**), a missing notification (the twenty-second floor and the bell fallback, **F9**), and where the log lives (`--report`, **E14**). |
-| **D5** | **`--version --verbose` and a man page** | `viddl.1` for Unix packaging; the verbose version block from **E12** embedded as a code block in the README. |
+| **D5** | ✅ **`--version --verbose` and a man page** | Done: `man/viddl.1` is a real section-1 page — every option the parser takes, the ten environment variables, the files Viddl writes, its exit statuses and worked examples — and **packaged** rather than only checked in: `data-files` puts it at `share/man/man1/viddl.1` inside the wheel, so `man viddl` works for anyone who installs instead of cloning. The README's install section now carries the verbose version block from **E12** as a code block and says where the page is. `tests/test_manpage.py` compares the page with `build_parser()` in both directions, so a flag renamed in the code cannot leave the manual describing one that no longer exists — which is what makes this documentation that stays true rather than documentation that was true once. |
 | **D6** | **Architecture notes** | A short `docs/` page on the `Services` seam, why the app is local-only, and the precedence rules for engine and config. It is the thing a new contributor needs most. |
 
 ---
