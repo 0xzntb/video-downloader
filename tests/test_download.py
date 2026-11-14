@@ -576,6 +576,20 @@ def test_progress_line_tolerates_missing_values():
     assert job.progress.speed == ""
 
 
+def test_a_non_finite_progress_field_does_not_end_the_download():
+    """``int(inf)`` used to raise ``OverflowError`` out of the read loop."""
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), Path("/tmp"))
+
+    job._handle_progress_line("VIDDLPROGRESS|inf|inf|inf|inf|inf|inf|/tmp/v.mp4")
+
+    assert job.progress.percent is None
+    assert job.progress.speed == ""
+    assert job.progress.eta == ""
+    assert job.progress.downloaded == 0
+    assert job.progress.total is None
+    assert job.progress.phase == "download"
+
+
 def test_find_output_falls_back_to_the_newest_file(tmp_path):
     out = tmp_path / "Downloads"
     out.mkdir()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -193,15 +194,18 @@ def _to_float(value: str) -> Optional[float]:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return number if number >= 0 else None
+    # ``"nan"`` and ``"inf"`` are floats to Python and nothing like a progress
+    # figure: ``int(inf)`` raises ``OverflowError``, which used to escape the
+    # progress parser and end a download that was otherwise fine. The quality
+    # list already rejects them the same way (``formats._num``).
+    if not math.isfinite(number) or number < 0:
+        return None
+    return number
 
 
 def _to_int(value: str) -> Optional[int]:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return int(number) if number >= 0 else None
+    number = _to_float(value)
+    return int(number) if number is not None else None
 
 
 def _fmt_speed(bits_per_second: Optional[float]) -> str:

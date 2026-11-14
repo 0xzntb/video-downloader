@@ -97,10 +97,9 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 
 **🟠 High — none open.** The one found here is fixed and kept above with what changed.
 
-**🟡 Medium**
-
-#### 🟡 Bug — `_to_int` raises `OverflowError` on a non-finite progress field
+#### ✅ Fixed (was 🟡 Bug) — A non-finite progress field no longer ends a download
 - **Location**: `viddl/download.py:199-205`, called at `viddl/download.py:1632` and `1636-1637`
+- **Status**: Fixed — `_to_float` rejects anything `math.isfinite` refuses before the value can reach `int()`, and `_to_int` now derives from it, so one guard covers percent, speed, ETA and both byte counts. `tests/test_download.py` sends a progress line made entirely of `inf` through the real parser.
 - **Problem**: `float("inf")` passes the `>= 0` check and `int(inf)` raises `OverflowError`. That exception escapes `_handle_progress_line`, aborts the read loop in `_run_once`, and ends a download that was otherwise fine. `formats._num` (`formats.py:258-271`) already documents and fixes exactly this class of bug; the progress parser never got the same treatment, and `_to_float` (line 191-196) has the same gap for `speed`/`eta`/`percent`.
 - **Fix**:
   ```python
@@ -117,6 +116,8 @@ First impression: this is unusually disciplined code. Boundaries that usually le
       number = _to_float(value)
       return int(number) if number is not None else None
   ```
+
+**🟡 Medium**
 
 #### 🟡 Bug — A stale claim file permanently blocks resuming that download
 - **Location**: `viddl/download.py:747-781` (`_enter_work_dir`)
@@ -225,12 +226,12 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 
 ### Overall Score: 9/10
 
-This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical and High closed, the remaining drag is the Medium lifecycle gaps — stale claims, the unbounded web job table, cross-process writes — and a few of the codebase's own lessons (finite-number guards, delivery windows, option-shaped values) not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
+This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical and High closed, the remaining drag is the Medium lifecycle gaps — stale claims, the unbounded web job table, cross-process writes — and a few of the codebase's own lessons (delivery windows, option-shaped values, the recent list's own float guard) not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
 
 ### Top 3 Priority Fixes
 
 1. **Fix the lifecycle gaps that turn a crash into permanent breakage.** Reap stale `.viddl-busy` claims with a PID/TTL check (`download.py:747-781`), bound the web job table, and give `history`/`config` per-process temporary names so two windows cannot erase each other's rows.
 
-2. **Guard the numbers that come from elsewhere.** `_to_int`/`_to_float` lack the `isfinite` check their sibling in `formats._num` has (`download.py:191-205`), and `history._as_float` lets `inf` into the recent list — a malformed progress line or a hand-edited file should not end a download or a screen.
+2. **Make the Downloads fallback keep its promise.** `downloads_dir()` calls `_secure_dir` inside its own `except OSError`, so a read-only home directory raises instead of returning the path it documents (`appdata.py:645-657`) — wrap the fallback creation and let the job report the problem in its own sentence.
 
-3. **Make the Downloads fallback keep its promise.** `downloads_dir()` calls `_secure_dir` inside its own `except OSError`, so a read-only home directory raises instead of returning the path it documents (`appdata.py:645-657`) — wrap the fallback creation and let the job report the problem in its own sentence.
+3. **Close the delivery window that leaves an empty "finished" file.** The destination is created zero-byte and filled by `os.replace` (`download.py:1276-1302`), so a kill in between leaves a file that looks like a successful download; claim under a dot name and rename onto the final one only after the move.
