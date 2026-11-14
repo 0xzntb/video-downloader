@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -75,6 +77,36 @@ def test_the_list_keeps_only_the_newest_fifty(tmp_path):
     # The newest survived; the oldest five went.
     assert found[0].title == f"Video {history.HISTORY_LIMIT + 4}"
     assert all(entry.title != "Video 0" for entry in found)
+
+
+def test_two_windows_recording_at_once_keep_every_row(tmp_path):
+    """Two Viddl windows are supported (R6), and neither may drop the other's rows."""
+    folder = tmp_path / "dl"
+    script = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from viddl import history\n"
+        "folder = Path(sys.argv[1])\n"
+        "for number in range(8):\n"
+        "    path = folder / f'{sys.argv[2]} {number}.mp4'\n"
+        "    path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    path.write_bytes(b'x')\n"
+        "    history.record(url=f'https://x.invalid/{number}', path=path,\n"
+        "                   title=f'{sys.argv[2]} {number}')\n"
+    )
+    repo = Path(__file__).resolve().parent.parent
+    children = [
+        subprocess.Popen([sys.executable, "-c", script, str(folder), name], cwd=str(repo))
+        for name in ("Window One", "Window Two")
+    ]
+    for child in children:
+        assert child.wait(timeout=60) == 0
+
+    titles = {entry.title for entry in history.entries()}
+    expected = {
+        f"{name} {number}" for name in ("Window One", "Window Two") for number in range(8)
+    }
+    assert titles == expected, "a row written by one window must not be lost by the other"
 
 
 def test_a_row_whose_file_is_gone_stays_and_says_so(tmp_path):

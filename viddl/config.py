@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from . import APP_NAME
+from . import APP_NAME, filelock
 from . import theme as theme_mod
 from .formats import AUDIO_FORMATS, ORIGINAL_AUDIO_KEY
 
@@ -415,7 +415,10 @@ def _write(stored: Stored) -> None:
         return
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
+    # This process's own temporary name: two windows writing at the same moment
+    # would otherwise open, truncate and fill the same file, and whichever
+    # replaced it last would take whatever half of both was on disk.
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
     if not _is_windows():
         with contextlib.suppress(OSError):  # pragma: no cover - no permissions here
@@ -435,9 +438,12 @@ def set_value(name: str, value: str) -> str:
         known = ", ".join(setting.name for setting in SETTINGS)
         raise ValueError(f"Unknown setting '{name}'. The settings are: {known}.")
     cleaned = _checked(key, value)
-    stored = read()
-    stored.values[key] = cleaned
-    _write(stored)
+    # Read and write are one turn: a second window that reads before the first
+    # saves would write back a file missing the first window's new setting.
+    with filelock.held(config_path()):
+        stored = read()
+        stored.values[key] = cleaned
+        _write(stored)
     return cleaned
 
 
@@ -447,11 +453,12 @@ def unset(name: str) -> bool:
     if key not in SETTING_BY_NAME:
         known = ", ".join(setting.name for setting in SETTINGS)
         raise ValueError(f"Unknown setting '{name}'. The settings are: {known}.")
-    stored = read()
-    if key not in stored.values:
-        return False
-    del stored.values[key]
-    _write(stored)
+    with filelock.held(config_path()):
+        stored = read()
+        if key not in stored.values:
+            return False
+        del stored.values[key]
+        _write(stored)
     return True
 
 

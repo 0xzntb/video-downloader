@@ -166,19 +166,25 @@ First impression: this is unusually disciplined code. Boundaries that usually le
       return fallback
   ```
 
-**🟡 Medium**
-
-#### 🟡 Bug — Two Viddl windows can clobber the recent list and the settings file
+#### ✅ Fixed (was 🟡 Bug) — Two Viddl windows no longer clobber the recent list or the settings file
 - **Location**: `viddl/history.py:58` and `viddl/history.py:112-145`; the same pattern at `viddl/config.py:394-420`
+- **Status**: Fixed — temp files carry the pid (`recent.json.<pid>.tmp`, `config.toml.<pid>.tmp`) and the whole read-modify-write runs under the operating system's own lock, taken on a sibling `<file>.lock`. `tests/test_history.py` and `tests/test_config.py` spawn two windows that each write eight/ twenty times and assert no row or setting is lost.
 - **Problem**: Writes go through a fixed neighbour name (`recent.json.tmp`, `config.toml.tmp`) and are serialised only by a module-level `threading.Lock`. Two processes — a scenario the project explicitly supports and designs for (`R6`, concurrent downloads) — each open the same temporary file, truncate it, write, and `os.replace` it. The result is either lost rows or a mixed file; the lock does nothing across processes.
-- **Fix**: Give each writer its own temporary file, and serialise cross-process when the data matters.
+- **Fix**: Per-process temporary names plus an OS-level lock held across the whole read-modify-write.
   ```python
+  from . import filelock
+
   temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
   ...
-  os.replace(temp, path)
-  # For true serialisation across windows, wrap the read-modify-write in an
-  # OS file lock (fcntl.flock on POSIX, msvcrt.locking on Windows).
+  with filelock.held(path):
+      kept = [old for old in _read() if old.path != entry.path]
+      kept.insert(0, entry)
+      if not _write_file(path, _as_json(kept)):
+          return None
   ```
+  `filelock.held` uses `fcntl.flock` on POSIX and `msvcrt.locking` on Windows, on a sibling `<file>.lock` so that `os.replace` cannot swap the locked inode out from under it.
+
+**🟡 Medium**
 
 #### 🟡 Bug — A crash between claiming and moving leaves an empty "finished" file
 - **Location**: `viddl/download.py:1276-1302` (`_deliver`)
@@ -224,12 +230,12 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 
 ### Overall Score: 9/10
 
-This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical and High closed, the remaining drag is the Medium lifecycle gaps — cross-process writes, the delivery window — and a few of the codebase's own lessons (delivery windows, option-shaped values, the recent list's own float guard) not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
+This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical and High closed, the remaining drag is the one Medium lifecycle gap left — the delivery window — and a few of the codebase's own lessons (delivery windows, option-shaped values, the recent list's own float guard) not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
 
 ### Top 3 Priority Fixes
 
-1. **Give `history` and `config` per-process temporary files.** Both write through a fixed neighbour name (`recent.json.tmp`, `config.toml.tmp`) that two windows can truncate at once (`history.py:58`, `config.py:394-420`), so a supported two-window session can lose rows or mix a file.
+1. **Close the delivery window that leaves an empty "finished" file.** The destination is created zero-byte and filled by `os.replace` (`download.py:1276-1302`), so a kill in between leaves a file that looks like a successful download; claim under a dot name and rename onto the final name only after the move.
 
-2. **Close the delivery window that leaves an empty "finished" file.** The destination is created zero-byte and filled by `os.replace` (`download.py:1276-1302`), so a kill in between leaves a file that looks like a successful download; claim under a dot name and rename onto the final name only after the move.
+2. **Give the recent list the same float guard as progress.** `history._as_float` accepts `inf`, and `datetime.fromtimestamp(inf)` raises wherever a hand-edited row is rendered (`history.py:263-270`) — one `math.isfinite` call, the same lesson already applied in `formats` and `download`.
 
-3. **Give the recent list the same float guard as progress.** `history._as_float` accepts `inf`, and `datetime.fromtimestamp(inf)` raises wherever a hand-edited row is rendered (`history.py:263-270`) — one `math.isfinite` call, the same lesson already applied in `formats` and `download`.
+3. **Replace the `assert`s on production paths.** `python -O` / `PYTHONOPTIMIZE=1` removes the checks at `download.py:1164` and `tui/app.py:3355`, so `self._process.stdout` and `path` flow on as `None` and fail further away with a less useful error; an explicit `if … is None: raise ToolError(...)` keeps the message where the cause is.

@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from . import appdata
+from . import appdata, filelock
 from .util import human_size
 
 #: How many downloads the recent list keeps. A list is not an archive: the
@@ -117,8 +117,12 @@ def _write_file(path: Path, text: str) -> bool:
     each. The mode is set on the temporary file, which is the one that
     survives: a reader must never see these lines at anyone else's expense,
     not even for the length of a write.
+
+    The temporary name carries this process's id: two windows writing at the
+    same moment would otherwise open, truncate and fill the same file, and
+    whichever replaced it last would take whatever half of both was on disk.
     """
-    temp = path.with_name(path.name + ".tmp")
+    temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         # The folder is made here as well as by ``ensure_dirs``: the first
         # download of a fresh install arrives before anything else has needed
@@ -154,12 +158,22 @@ def record(url: str, path: Path, title: str = "") -> Optional[Entry]:
         size=_size_of(path),
         when=time.time(),
     )
-    with _LOCK:
-        kept = [old for old in _read() if old.path != entry.path]
-        kept.insert(0, entry)
-        kept = kept[:HISTORY_LIMIT]
-        if not _write_file(appdata.history_path(), _as_json(kept)):
-            return None
+    path = appdata.history_path()
+    try:
+        # The lock is this module's, then the operating system's: the first
+        # orders two downloads finishing in one window, the second two windows,
+        # which is what keeps one of them from reading the list before the
+        # other saved it.
+        with _LOCK, filelock.held(path):
+            kept = [old for old in _read() if old.path != entry.path]
+            kept.insert(0, entry)
+            kept = kept[:HISTORY_LIMIT]
+            if not _write_file(path, _as_json(kept)):
+                return None
+    except OSError:
+        # The folder could not be made, so the lock could not be taken either:
+        # a lost nicety, never a download failure.
+        return None
     return entry
 
 

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -71,6 +73,30 @@ def test_a_changed_quality_is_written_and_read_back(no_environment):
     assert config.config_path().read_text(encoding="utf-8") == 'quality = "720"\n'
     assert config.quality() == "720"
     assert config.read().values == {"quality": "720"}
+
+
+def test_two_windows_changing_settings_keep_both(no_environment, tmp_path):
+    """A supported two-window session must not lose the other window's setting."""
+    folder = tmp_path / "Videos"
+    folder.mkdir()
+    script = (
+        "import sys\n"
+        "from viddl import config\n"
+        "name, value = sys.argv[1], sys.argv[2]\n"
+        "for _ in range(20):\n"
+        "    config.set_value(name, value)\n"
+    )
+    repo = Path(__file__).resolve().parent.parent
+    children = [
+        subprocess.Popen([sys.executable, "-c", script, name, value], cwd=str(repo))
+        for name, value in (("download-dir", str(folder)), ("quality", "720"))
+    ]
+    for child in children:
+        assert child.wait(timeout=60) == 0
+
+    stored = config.read().values
+    assert stored.get("quality") == "720"
+    assert stored.get("download-dir") == str(folder.resolve())
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
