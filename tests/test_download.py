@@ -1519,6 +1519,52 @@ def test_a_folder_another_run_is_using_is_not_resumed_into(tmp_path):
     assert (busy / "A Video [abc].mp4.part").read_bytes() == b"theirs"
 
 
+def test_a_claim_left_by_a_dead_run_is_taken_over(tmp_path):
+    """A crash must not keep the folder — and its resumable .part — forever."""
+    out = tmp_path / "Downloads"
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    work = job.work_dir()
+    work.mkdir(parents=True)
+    (work / "A Video [abc].mp4.part").write_bytes(b"half")
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    (work / ".viddl-busy").write_text(
+        f"{dead.pid} {time.time():.0f}\n", encoding="ascii"
+    )
+
+    claimed = job._enter_work_dir()
+
+    assert claimed == work
+    assert (work / "A Video [abc].mp4.part").read_bytes() == b"half"
+    owner = (work / ".viddl-busy").read_text(encoding="ascii").split()
+    assert owner[0] == str(os.getpid())
+
+
+def test_a_fresh_empty_claim_is_left_alone(tmp_path):
+    """An older version wrote no owner, so a live claim can only be respected."""
+    out = tmp_path / "Downloads"
+    busy = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)._enter_work_dir()
+    (busy / ".viddl-busy").write_text("", encoding="ascii")
+
+    claimed = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)._enter_work_dir()
+
+    assert claimed.name.startswith(busy.name + "-")
+
+
+def test_an_empty_claim_from_a_dead_version_expires(tmp_path):
+    """With no owner recorded, age is the only thing that can free it."""
+    out = tmp_path / "Downloads"
+    job = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    work = job.work_dir()
+    work.mkdir(parents=True)
+    claim = work / ".viddl-busy"
+    claim.write_text("", encoding="ascii")
+    old = time.time() - download_mod._CLAIM_TTL - 60
+    os.utime(claim, (old, old))
+
+    assert job._enter_work_dir() == work
+
+
 def test_two_downloads_at_once_do_not_write_the_same_file(tmp_path, monkeypatch):
     monkeypatch.setenv("PARALLEL_MARKER", str(tmp_path / "marker"))
     out = tmp_path / "Downloads"

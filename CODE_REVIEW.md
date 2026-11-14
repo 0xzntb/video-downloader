@@ -119,24 +119,23 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 
 **🟡 Medium**
 
-#### 🟡 Bug — A stale claim file permanently blocks resuming that download
+#### ✅ Fixed (was 🟡 Bug) — A crash no longer leaves a folder claimed forever
 - **Location**: `viddl/download.py:747-781` (`_enter_work_dir`)
+- **Status**: Fixed — the claim now records the process and birth time, and `_enter_work_dir` takes over a claim whose process is gone (with `_CLAIM_TTL` as the fallback when a PID may have been reused or an older version wrote an empty claim). `tests/test_download.py` covers a dead owner, a live in-process claim, a fresh legacy claim and an expired one.
 - **Problem**: The claim is an empty `.viddl-busy` file created with `O_EXCL`, and nothing ever expires it. After a crash, a `SIGKILL`, or a power loss, the folder stays claimed forever: the `.part` inside can never be resumed, and every later attempt for the same link/quality takes the next name along (`-2`, `-3`, …), leaving hidden folders in the user's Downloads until the loop's 99 (or the 20-copies message) limit turns this into a permanent failure.
 - **Fix**: Write the owner and birth time into the claim, and treat a claim whose process is gone (or that is older than a generous TTL) as free.
   ```python
   os.write(handle, f"{os.getpid()} {time.time():.0f}\n".encode("ascii"))
 
-  def _claim_is_stale(claim: Path, ttl: float = 12 * 3600) -> bool:
-      try:
-          pid_text, born_text = claim.read_text(encoding="ascii").split()
-          pid, born = int(pid_text), float(born_text)
-          return time.time() - born > ttl or not _process_alive(pid)
-      except (OSError, ValueError):
-          return False
-  # in the collision branch: if claim.exists() and _claim_is_stale(claim):
-      #     contextlib.suppress(OSError, claim.unlink)
-      #     continue with this name
+  # In the FileExistsError branch, before trying the next name:
+  if _claim_is_stale(claim):
+      contextlib.suppress(OSError, claim.unlink)
+      handle = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+      # somebody else may have won that race: then this name is still not ours
   ```
+  ``_process_alive`` uses ``os.kill(pid, 0)`` on POSIX and ``OpenProcess`` on Windows, where signal 0 is a termination request rather than a probe.
+
+**🟡 Medium**
 
 #### 🟡 Bug — The web page's job table only ever grows
 - **Location**: `viddl/web.py:144`, insertion at `viddl/web.py:236-241`
@@ -226,11 +225,11 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 
 ### Overall Score: 9/10
 
-This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical and High closed, the remaining drag is the Medium lifecycle gaps — stale claims, the unbounded web job table, cross-process writes — and a few of the codebase's own lessons (delivery windows, option-shaped values, the recent list's own float guard) not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
+This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical and High closed, the remaining drag is the Medium lifecycle gaps — the unbounded web job table, cross-process writes, the delivery window — and a few of the codebase's own lessons (delivery windows, option-shaped values, the recent list's own float guard) not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
 
 ### Top 3 Priority Fixes
 
-1. **Fix the lifecycle gaps that turn a crash into permanent breakage.** Reap stale `.viddl-busy` claims with a PID/TTL check (`download.py:747-781`), bound the web job table, and give `history`/`config` per-process temporary names so two windows cannot erase each other's rows.
+1. **Finish the lifecycle gaps that turn a crash into permanent breakage.** Stale claims are reaped now; what remains is the unbounded web job table (`web.py:144`) and the fixed temporary names `history`/`config` share between windows (`history.py:58`, `config.py:394-420`).
 
 2. **Make the Downloads fallback keep its promise.** `downloads_dir()` calls `_secure_dir` inside its own `except OSError`, so a read-only home directory raises instead of returning the path it documents (`appdata.py:645-657`) — wrap the fallback creation and let the job report the problem in its own sentence.
 

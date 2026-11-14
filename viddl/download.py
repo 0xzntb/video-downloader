@@ -96,6 +96,11 @@ _RETRY_SLICE_SECONDS = 0.1
 #: test and the claim in one step, which is what keeps two windows apart.
 _CLAIM_NAME = ".viddl-busy"
 
+#: How long a claim is believed when its owner cannot be checked. A process id
+#: can be reused by an unrelated program, and versions before this one wrote no
+#: owner at all, so age is the fallback that cannot be fooled.
+_CLAIM_TTL = 12 * 3600
+
 #: yt-dlp's own socket timeout, unless ``VIDDL_TIMEOUT`` says otherwise (R11).
 _SOCKET_TIMEOUT = 20
 
@@ -229,6 +234,82 @@ def seconds_text(seconds: float) -> str:
     if abs(seconds - round(seconds)) < 1e-9:
         return f"{round(seconds)}s"
     return f"{seconds:.1f}s"
+
+
+def _windows_process_alive(pid: int) -> bool:
+    """Windows' answer to ``os.kill(pid, 0)``, without the kill.
+
+    ``OpenProcess`` succeeds on a process that has exited while its parent
+    still holds a handle to it, so the exit code decides: ``STILL_ACTIVE`` is
+    the only answer that means "running". A missing handle means either no such
+    process or (``ERROR_ACCESS_DENIED``) one that belongs to somebody else.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.GetExitCodeProcess.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: it exists
+    try:
+        code = wintypes.DWORD(0)
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _process_alive(pid: int) -> bool:
+    """Whether a process with this id still exists, on either platform.
+
+    ``os.kill(pid, 0)`` is the POSIX way, but on Windows it is not a probe: a
+    signal other than the two console events terminates the process.
+    """
+    if pid <= 0:
+        return False
+    if is_windows():
+        return _windows_process_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:  # pragma: no cover - a kernel that says something else
+        return True
+    return True
+
+
+def _claim_is_stale(claim: Path) -> bool:
+    """Whether a claim was left by a run that is no longer writing here.
+
+    The claim names its process and the time it was made. One whose process has
+    exited is free immediately; one that cannot be read (older versions wrote an
+    empty file) or that has outlived :data:`_CLAIM_TTL` is written off as well,
+    because a process id may have been reused since.
+    """
+    try:
+        pid_text, born_text = claim.read_text(encoding="ascii").split()
+        pid, born = int(pid_text), float(born_text)
+    except (OSError, ValueError):
+        pid, born = 0, 0.0
+    now = time.time()
+    if pid > 0 and math.isfinite(born) and now - born <= _CLAIM_TTL:
+        return not _process_alive(pid)
+    try:
+        return now - claim.stat().st_mtime > _CLAIM_TTL
+    except OSError:
+        return False
 
 
 def stop_process_tree(process: subprocess.Popen, force: bool = False) -> None:
@@ -757,6 +838,11 @@ class DownloadJob:
         stopped download has no claim, so it is claimed again and its ``.part``
         is resumed; a folder another window is using is left alone and the next
         name along is tried.
+
+        A claim whose process is gone is not a claim: a crash, a ``SIGKILL`` or
+        a power cut would otherwise keep the folder — and the best copy of the
+        bytes — unusable forever. Such a claim is taken over, which is the only
+        way the ``.part`` inside can be resumed.
         """
         base = self.work_dir()
         for number in range(1, 100):
@@ -767,8 +853,16 @@ class DownloadJob:
                 handle = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             except FileExistsError:
                 # A file where the folder should be, or a claim somebody else
-                # holds: either way this name is not ours, so try the next.
-                continue
+                # holds. Only a claim left by a run that is gone may be taken.
+                if not _claim_is_stale(claim):
+                    continue
+                with contextlib.suppress(OSError):
+                    claim.unlink()
+                try:
+                    handle = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                except OSError:
+                    # Two runs noticed the same dead claim; the other one won.
+                    continue
             except OSError as exc:
                 # Not a collision — the folder cannot be written in at all. Say
                 # that, rather than looping and blaming too many downloads.
@@ -777,6 +871,10 @@ class DownloadJob:
                     f"It is not allowed to write in {self.out_dir}: {exc}",
                     raw=str(exc),
                 ) from exc
+            with contextlib.suppress(OSError):
+                # The file's existence is the claim; the owner and its age only
+                # let a later run tell a live claim from one left behind.
+                os.write(handle, f"{os.getpid()} {time.time():.0f}\n".encode("ascii"))
             os.close(handle)
             self._work_dir = candidate
             self._claim = claim
