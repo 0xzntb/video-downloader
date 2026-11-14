@@ -87,6 +87,13 @@ next one — so a reader can always tell what they have from what they do not.
 - **A window title that says how it is going** — percentage, position in a
   playlist and the video's name, cleaned of anything that could reorder or
   escape the title.
+- **One-click launch on Windows.** The installer leaves a **Viddl** icon in the
+  Start menu and on the Desktop; it opens the app in Windows Terminal where it
+  is installed, and in a console window otherwise. It works for a `pipx`
+  install too: the icon runs a launcher `--install-shortcut` writes into
+  Viddl's own folder, so no checkout has to stay around. `install.ps1 -NoShortcut`
+  skips it, and `viddl --install-shortcut` / `--uninstall-shortcut` put the
+  icons back or take them away again.
 - **Installers for both platforms** that work for one account: a private virtual
   environment, a launcher on the user `PATH`, and the `viddl://` handler.
   `uninstall.sh` / `uninstall.ps1` take it all back out again.

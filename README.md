@@ -109,9 +109,15 @@ redacted, ready to paste into an issue. Nothing is sent anywhere: Viddl has no
 telemetry, and the report is only something your own terminal prints.
 
 It does the same things, for your account only: a private environment in
-`%LOCALAPPDATA%\viddl`, a `viddl.cmd` launcher on your user `PATH`, and the
-`viddl://` handler. Open a new terminal window afterwards. `install.ps1
--NoPath -NoProtocol` skips the two steps that touch the rest of your account.
+`%LOCALAPPDATA%\viddl`, a `viddl.cmd` launcher on your user `PATH`, a **Viddl**
+icon in the Start menu and on the Desktop, and the
+`viddl://` handler. The icon opens the app in Windows Terminal where that is
+installed, and in a console window otherwise, so starting it needs no typing.
+Installed with `pipx` instead? `viddl --install-shortcut` adds the same icon and
+writes the launcher it needs into `%LOCALAPPDATA%\viddl\bin`.
+Open a new terminal window for the `viddl` command itself. `install.ps1
+-NoPath -NoProtocol -NoShortcut` skips the steps that touch the rest of your
+account.
 
 Then:
 
@@ -154,6 +160,7 @@ Nothing is installed system-wide and no configuration files are created.
 | You want to… | Do this |
 | --- | --- |
 | Start it | `viddl` |
+| Start it with one click (Windows) | Click the **Viddl** icon in the Start menu or on the Desktop; `install.ps1` puts one there |
 | Go straight to a link | `viddl https://www.youtube.com/watch?v=…` |
 | Only know the name of what you want | `viddl "the song you mean"` (see [Search by name](#search-by-name)) |
 | Start on the audio options | `viddl --audio <link>` |
@@ -846,6 +853,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 | `viddl/errors.py` | Maps raw tool output onto plain-language explanations, and says whether the failure is one another attempt may fix. The patterns are here; the sentences are catalogue keys (U7). |
 | `viddl/i18n/` | The sentences themselves, one plain dict per language, and the order that decides whether `--lang` or the machine's own locale picks one. No build step and no compiled catalogue: a missing translation falls back to English, key by key. |
 | `viddl/protocol.py` | The `viddl://` hand-off and its per-OS registration. |
+| `viddl/shortcut.py` | The Windows Start menu and Desktop icons: `.lnk` files written through the shell's own shortcut object. |
 | `viddl/browser_extension/` | The browser extension: one set of files, a manifest for Chromium (service worker) and one for Firefox (event page). |
 
 Nothing is ever written outside `~/.local/share/viddl` (plus your Downloads
@@ -853,7 +861,8 @@ folder, and the optional settings file in `~/.config/viddl` described under
 [Settings](#settings-optional)), apart from the two small system bits that make the browser button work:
 a `.desktop` entry on Linux, an app bundle in `~/Applications` on macOS, or a
 registry key under `HKEY_CURRENT_USER` on Windows. Viddl's own folder and the
-log are readable only by you.
+log are readable only by you. The two Windows shortcut icons are ordinary `.lnk`
+files that can be deleted at any time.
 
 Any page can ask the system to open Viddl with a link, so the link is only ever
 put in the box for you to look at: nothing downloads until you choose a quality,

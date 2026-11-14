@@ -221,7 +221,9 @@ def test_the_version_block_says_what_to_do_when_a_helper_is_missing():
     lines = cli.version_report(verbose=True, engine=FakeEngine())
     assert "yt-dlp not installed yet (viddl --update)" in lines[2]
     assert lines[3].startswith("ffmpeg 7.1")
-    assert "/fake/ffmpeg" in lines[3]
+    # Path renders a POSIX literal with backslashes on Windows, so compare the
+    # string the platform produced rather than the literal typed above.
+    assert str(Path("/fake/ffmpeg")) in lines[3]
 
 
 def test_verbose_without_version_is_refused():

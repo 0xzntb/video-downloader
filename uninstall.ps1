@@ -6,7 +6,8 @@
 .DESCRIPTION
     Unregisters the viddl:// handler, removes the viddl.cmd launcher and the
     folder it came from, and takes %LOCALAPPDATA%\viddl\bin off your user PATH.
-    The yt-dlp and ffmpeg helpers and the log are kept unless you pass -Purge.
+    The Viddl icons in the Start menu and on the Desktop go too. The yt-dlp and
+    ffmpeg helpers and the log are kept unless you pass -Purge.
 
 .PARAMETER Purge
     Remove everything, including the helpers and the log.
@@ -41,9 +42,14 @@ $BinDir = Join-Path $DataDir 'bin'
 $VenvPython = Join-Path $Venv 'Scripts\python.exe'
 $Launcher = Join-Path $BinDir 'viddl.cmd'
 $ProtocolLauncher = Join-Path $DataDir 'viddl-open.cmd'
+$Shortcuts = @(
+    (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Viddl.lnk'),
+    (Join-Path $env:USERPROFILE 'Desktop\Viddl.lnk')
+)
 
 if (Test-Path $VenvPython) {
     & $VenvPython -m viddl --unregister-protocol 2>$null | Out-Null
+    & $VenvPython -m viddl --uninstall-shortcut 2>$null | Out-Null
 }
 
 if (Test-Path $Launcher) {
@@ -54,6 +60,13 @@ if (Test-Path $Launcher) {
 if (Test-Path $ProtocolLauncher) {
     Remove-Item -LiteralPath $ProtocolLauncher -Force
     Write-Say "Removed $ProtocolLauncher"
+}
+
+foreach ($shortcut in $Shortcuts) {
+    if (Test-Path $shortcut) {
+        Remove-Item -LiteralPath $shortcut -Force
+        Write-Say "Removed $shortcut"
+    }
 }
 
 if (Test-Path $Venv) {

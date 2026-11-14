@@ -20,6 +20,9 @@
 .PARAMETER NoProtocol
     Do not register the viddl:// link handler.
 
+.PARAMETER NoShortcut
+    Do not add the Viddl icon to the Start menu and the Desktop.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\install.ps1
 
@@ -30,7 +33,8 @@
 param(
     [string]$Python = "",
     [switch]$NoPath,
-    [switch]$NoProtocol
+    [switch]$NoProtocol,
+    [switch]$NoShortcut
 )
 
 $ErrorActionPreference = 'Stop'
@@ -138,6 +142,17 @@ if (-not $NoPath) {
     $env:Path = "$BinDir;$env:Path"
 }
 
+# --- one-click launch -------------------------------------------------------
+
+if (-not $NoShortcut) {
+    Write-Say ""
+    Write-Say "Adding a Viddl icon to the Start menu and the Desktop..."
+    & $Launcher --install-shortcut
+    if ($LASTEXITCODE -ne 0) {
+        Write-Say "The icon could not be made - start Viddl with:  viddl"
+    }
+}
+
 # --- browser hand-off -------------------------------------------------------
 
 if (-not $NoProtocol) {
@@ -155,6 +170,7 @@ Write-Say ""
 Write-Say "Viddl is installed."
 Write-Say "  1. Open a new terminal window (so it finds the new command)."
 Write-Say "  2. Run:      viddl"
+Write-Say "     (or click the Viddl icon in the Start menu)"
 Write-Say "  3. Paste any video link and pick a quality."
 Write-Say ""
 Write-Say "Windows Terminal gives the full-screen app its colours and characters."

@@ -23,6 +23,9 @@ piece is also reachable from the command line:
 * ``viddl --theme light <link>``  draw the app in a light or high-contrast scheme (U1)
 * ``viddl --lang es <link>``  write the explanations in another language (U7)
 * ``viddl --web``             serve the same downloads as a page on 127.0.0.1 (F16)
+* ``viddl --install-shortcut``  put a Viddl icon in the Start menu and on the
+  Desktop (Windows)
+* ``viddl --uninstall-shortcut``  remove those icons
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ from . import (
     logfile,
     protocol,
     search,
+    shortcut,
     theme,
 )
 from . import cookies as cookies_mod
@@ -307,6 +311,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--unregister-protocol",
         action="store_true",
         help="stop handling viddl:// links",
+    )
+    parser.add_argument(
+        "--install-shortcut",
+        action="store_true",
+        help="add a Viddl icon to the Start menu and the Desktop (Windows)",
+    )
+    parser.add_argument(
+        "--uninstall-shortcut",
+        action="store_true",
+        help="remove those icons (Windows)",
     )
     parser.add_argument(
         "--install-browser-extension",
@@ -782,6 +796,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _print_result(register())
     if args.unregister_protocol:
         return _print_result(unregister())
+
+    if args.install_shortcut:
+        return _print_result(shortcut.install())
+    if args.uninstall_shortcut:
+        return _print_result(shortcut.remove())
 
     if args.extension_path:
         print(extension_source_dir())

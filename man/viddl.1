@@ -240,6 +240,18 @@ Write the extension as the zip an add\-on store accepts.
 .TP
 .B \-\-extension\-path
 Print the folder holding the bundled browser extension.
+.SS A one\-click icon (Windows)
+.TP
+.B \-\-install\-shortcut
+Put a Viddl icon in the Start menu and on the Desktop.  The Windows installer
+does this; the icon opens the app in Windows Terminal where it is installed,
+and in a console window otherwise.  It writes the launcher it needs into
+Viddl's own folder, so it works for an install made with
+.B pipx
+as well.
+.TP
+.B \-\-uninstall\-shortcut
+Remove those icons.
 .SS A page in your browser
 .TP
 .B \-\-web

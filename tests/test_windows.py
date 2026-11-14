@@ -75,6 +75,19 @@ def test_the_uninstaller_undoes_what_the_installer_did():
     assert "[switch]$Purge" in body
 
 
+def test_the_installer_adds_a_one_click_icon_unless_told_not_to():
+    body = text("install.ps1")
+    assert "[switch]$NoShortcut" in body
+    assert "if (-not $NoShortcut)" in body
+    assert "--install-shortcut" in body
+
+
+def test_the_uninstaller_removes_the_shortcut_icons():
+    body = text("uninstall.ps1")
+    assert "--uninstall-shortcut" in body
+    assert "Viddl.lnk" in body
+
+
 def test_the_readme_no_longer_says_there_is_no_windows_installer():
     readme = text("README.md")
     assert "There is no\n  `install.ps1` yet" not in readme
