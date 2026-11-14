@@ -4,7 +4,7 @@
 
 Viddl is a terminal application (plus `--plain`, `--web` and a `viddl://` handler) that turns a pasted video link or search phrase into a file by driving the `yt-dlp` and `ffmpeg` binaries. Roughly 16.7k lines of Python across 30 package modules, one runtime dependency (`textual>=3.0,<9`), `requires-python = ">=3.9"`, no framework beyond the standard library on the server side (`http.server`, `urllib`, `subprocess`). Architecture is a clean layered split: `appdata`/`config` (paths and preferences), `engine` (tool discovery, verified downloads), `formats`/`errors`/`download`/`queue` (parsing and running work), `protocol`/`shortcut`/`web`/`cli`/`plain`, and `tui` (Textual screens).
 
-First impression: this is unusually disciplined code. Boundaries that usually leak (untrusted metadata, argv construction, file permissions, log redaction) are each handled by a named module with a docstring that explains the threat, and the test suite has a coverage floor, property-based parser tests and a weekly mutation run. The weaknesses that remain are concentrated in the newest OS-integration surface — the `viddl://` handlers and the Windows shortcut — where OS-supplied strings are still turned into script or batch syntax, plus a handful of robustness gaps that the rest of the codebase already knows how to avoid. The handler and program-lookup findings are now closed (kept below, marked fixed); the remaining high is a notifier that blocks the UI thread.
+First impression: this is unusually disciplined code. Boundaries that usually leak (untrusted metadata, argv construction, file permissions, log redaction) are each handled by a named module with a docstring that explains the threat, and the test suite has a coverage floor, property-based parser tests and a weekly mutation run. The weaknesses that remain are concentrated in the newest OS-integration surface — the `viddl://` handlers and the Windows shortcut — where OS-supplied strings are still turned into script or batch syntax, plus a handful of robustness gaps that the rest of the codebase already knows how to avoid. No Critical or High findings remain (kept below, marked fixed); what is left is the Medium lifecycle and robustness gaps the rest of the codebase already knows how to avoid.
 
 ---
 
@@ -78,27 +78,24 @@ First impression: this is unusually disciplined code. Boundaries that usually le
       return None
   ```
 
-**🟠 High**
-
-#### 🟠 Performance / UX — A notification blocks the UI thread for up to five seconds
+#### ✅ Fixed (was 🟠 High) — A notification no longer blocks the UI thread
 - **Location**: `viddl/notify.py:185-212` (`send`), called from `viddl/tui/app.py:3086-3108` (`_tell`)
+- **Status**: Fixed — `_tell` hands the notification to an app-owned thread worker with `exit_on_error=False`; `finish_ok`/`finish_error` return as soon as the result screen is set. `tests/test_tui.py` covers that the toast is still raised on the worker and that a notifier blocked inside `tell` does not delay the result screen.
 - **Problem**: `send` runs `subprocess.run(argv, timeout=5)` synchronously. `_tell` is called from `finish_ok`, which is dispatched onto the Textual event loop, so a cold PowerShell toast (or an `osascript`/`notify-send` that stalls) freezes the screen — on the exact frame where the user expects "Saved" to appear. On Windows the PowerShell start-up cost alone is commonly hundreds of milliseconds.
-- **Fix**: Treat the notification as the background courtesy it is.
+- **Fix**: Treat the notification as the background courtesy it is, and give the worker to the app rather than the screen so a screen replaced at the end of the download does not cancel the pending toast.
   ```python
-  def _tell(self, *, saved: Optional[str] = None, failed: bool = False,
-            stopped: bool = False, count: int = 0) -> None:
-      if not self.app.state.notify:
-          return
-      began = getattr(self, "_started_at", None)
-      elapsed = 0.0 if began is None else max(0.0, time.monotonic() - began)
-      # A notifier is another program with its own start-up cost; the result
-      # screen must not wait for it.
-      self.run_worker(
-          lambda: notify_mod.tell(saved=saved, failed=failed, stopped=stopped,
-                                  count=count, elapsed=elapsed),
-          thread=True,
-      )
+  self.app.run_worker(
+      lambda: notify_mod.tell(
+          saved=saved, failed=failed, stopped=stopped, count=count, elapsed=elapsed,
+      ),
+      name="notify",
+      group="notify",
+      thread=True,
+      exit_on_error=False,   # a failed courtesy must not end the app
+  )
   ```
+
+**🟠 High — none open.** The one found here is fixed and kept above with what changed.
 
 **🟡 Medium**
 
@@ -228,12 +225,12 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 
 ### Overall Score: 9/10
 
-This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and mostly enforced, and the test discipline is above what most applications of this size carry. With the security highs closed, the remaining drag is the notifier blocking the UI thread, the Medium lifecycle gaps, and a few of the codebase's own lessons (finite-number guards, cross-process writes, stale locks) not being applied consistently across modules. None of the issues require redesign; the two handler fixes are local, and the rest are the kind of hardening a follow-up patch covers.
+This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical and High closed, the remaining drag is the Medium lifecycle gaps — stale claims, the unbounded web job table, cross-process writes — and a few of the codebase's own lessons (finite-number guards, delivery windows, option-shaped values) not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
 
 ### Top 3 Priority Fixes
 
-1. **Take the notifier off the UI thread.** `notify.send` runs a subprocess with a five-second timeout from `finish_ok` (`notify.py:185-212`, `tui/app.py:3086-3108`), so a slow toast freezes the frame that says "Saved".
+1. **Fix the lifecycle gaps that turn a crash into permanent breakage.** Reap stale `.viddl-busy` claims with a PID/TTL check (`download.py:747-781`), bound the web job table, and give `history`/`config` per-process temporary names so two windows cannot erase each other's rows.
 
-2. **Fix the lifecycle gaps that turn a crash into permanent breakage.** Reap stale `.viddl-busy` claims with a PID/TTL check (`download.py:747-781`), bound the web job table, and give `history`/`config` per-process temporary names so two windows cannot erase each other's rows.
+2. **Guard the numbers that come from elsewhere.** `_to_int`/`_to_float` lack the `isfinite` check their sibling in `formats._num` has (`download.py:191-205`), and `history._as_float` lets `inf` into the recent list — a malformed progress line or a hand-edited file should not end a download or a screen.
 
-3. **Guard the numbers that come from elsewhere.** `_to_int`/`_to_float` lack the `isfinite` check their sibling in `formats._num` has (`download.py:191-205`), and `history._as_float` lets `inf` into the recent list — a malformed progress line or a hand-edited file should not end a download or a screen.
+3. **Make the Downloads fallback keep its promise.** `downloads_dir()` calls `_secure_dir` inside its own `except OSError`, so a read-only home directory raises instead of returning the path it documents (`appdata.py:645-657`) — wrap the fallback creation and let the job report the problem in its own sentence.

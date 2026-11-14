@@ -3995,10 +3995,50 @@ async def test_a_finished_download_tells_the_desktop_when_asked(tmp_path, monkey
         screen._started_at = 0.0
         screen.finish_ok(Path("/tmp/clip.mp4"))
         await pilot.pause()
+        # The toast is raised on a worker now, so wait for it rather than the
+        # single frame it used to cost.
+        await app.workers.wait_for_complete()
 
     # The string the notification gets is the platform's own spelling of the
     # path, which is not the POSIX literal on Windows.
     assert told and told[0]["saved"] == str(Path("/tmp/clip.mp4"))
+
+
+@pytest.mark.asyncio
+async def test_a_slow_notifier_does_not_hold_up_the_result_screen(tmp_path, monkeypatch):
+    """The toast is a courtesy; the frame that says "Saved" must not wait for it."""
+    from viddl.tui import app as app_mod
+
+    blocked = threading.Event()
+    answered = threading.Event()
+
+    def slow_tell(**kwargs):
+        blocked.wait(2.0)
+        answered.set()
+        return "bell"
+
+    monkeypatch.setattr(app_mod.notify_mod, "tell", slow_tell)
+
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(b"x")
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path), notify=True)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        app.state.option = None
+        app.push_screen(DownloadScreen())
+        await settle(pilot)
+        screen = app.screen
+        assert isinstance(screen, DownloadScreen)
+        screen._started_at = 0.0
+        screen.finish_ok(path)
+        await settle(pilot)
+
+        assert isinstance(app.screen, ResultScreen), "the result waited for the toast"
+        assert not answered.is_set(), "the notifier should still be running"
+
+        blocked.set()
+        await app.workers.wait_for_complete()
+    assert answered.is_set(), "the notification was dropped instead of deferred"
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,7 @@ with the keyboard (arrows, Enter, Tab, Escape).
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import logging
 import threading
@@ -3094,18 +3095,33 @@ class DownloadScreen(ViddlScreen):
         twenty-second floor the plain path does, so the two front doors behave
         alike. It never raises — the file is already saved, and a notification
         that failed is not a download that failed.
+
+        The notifier is another program with its own start-up cost — a cold
+        PowerShell, or a ``notify-send`` waiting on a session bus — so it runs
+        on a worker rather than here: the screen that says "Saved" appears
+        before the toast is raised, and a notifier that hangs is written off in
+        the background. The worker belongs to the app, not to this screen, so
+        the screen being replaced at the end does not cancel the notification.
         """
         if not self.app.state.notify:
             return
         began = getattr(self, "_started_at", None)
         elapsed = 0.0 if began is None else max(0.0, time.monotonic() - began)
-        notify_mod.tell(
-            saved=saved,
-            failed=failed,
-            stopped=stopped,
-            count=count,
-            elapsed=elapsed,
-        )
+        with contextlib.suppress(RuntimeError):  # an app already on its way out
+            self.app.run_worker(
+                lambda: notify_mod.tell(
+                    saved=saved,
+                    failed=failed,
+                    stopped=stopped,
+                    count=count,
+                    elapsed=elapsed,
+                ),
+                name="notify",
+                group="notify",
+                thread=True,
+                # A courtesy that fails must not take the app down with it.
+                exit_on_error=False,
+            )
 
     def action_toggle_notify(self) -> None:
         """Turn "tell me when it is done" on or off, and remember the answer (F9).
