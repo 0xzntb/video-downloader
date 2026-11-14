@@ -4,7 +4,7 @@
 
 Viddl is a terminal application (plus `--plain`, `--web` and a `viddl://` handler) that turns a pasted video link or search phrase into a file by driving the `yt-dlp` and `ffmpeg` binaries. Roughly 16.7k lines of Python across 30 package modules, one runtime dependency (`textual>=3.0,<9`), `requires-python = ">=3.9"`, no framework beyond the standard library on the server side (`http.server`, `urllib`, `subprocess`). Architecture is a clean layered split: `appdata`/`config` (paths and preferences), `engine` (tool discovery, verified downloads), `formats`/`errors`/`download`/`queue` (parsing and running work), `protocol`/`shortcut`/`web`/`cli`/`plain`, and `tui` (Textual screens).
 
-First impression: this is unusually disciplined code. Boundaries that usually leak (untrusted metadata, argv construction, file permissions, log redaction) are each handled by a named module with a docstring that explains the threat, and the test suite has a coverage floor, property-based parser tests and a weekly mutation run. The weaknesses that remain are concentrated in the newest OS-integration surface — the `viddl://` handlers and the Windows shortcut — where OS-supplied strings are still turned into script or batch syntax, plus a handful of robustness gaps that the rest of the codebase already knows how to avoid. Both handler findings are now closed (kept below, marked fixed); the remaining highs are a Windows program-lookup gap and a notifier that blocks the UI thread.
+First impression: this is unusually disciplined code. Boundaries that usually leak (untrusted metadata, argv construction, file permissions, log redaction) are each handled by a named module with a docstring that explains the threat, and the test suite has a coverage floor, property-based parser tests and a weekly mutation run. The weaknesses that remain are concentrated in the newest OS-integration surface — the `viddl://` handlers and the Windows shortcut — where OS-supplied strings are still turned into script or batch syntax, plus a handful of robustness gaps that the rest of the codebase already knows how to avoid. The handler and program-lookup findings are now closed (kept below, marked fixed); the remaining high is a notifier that blocks the UI thread.
 
 ---
 
@@ -55,25 +55,30 @@ First impression: this is unusually disciplined code. Boundaries that usually le
   winreg.SetValueEx(command_key, "", 0, winreg.REG_SZ, handler)
   ```
 
-**🟠 High**
-
-#### 🟠 Security — `which()` can return a program from the current directory on Windows
+#### ✅ Fixed (was 🟠 High) — `which()` no longer searches the working directory
 - **Location**: `viddl/appdata.py:205-224` (the promise), `viddl/appdata.py:660-664` (the implementation), consumed by `Engine.find_ytdlp`
+- **Status**: Fixed — `which()` walks a `PATH` with empty and working-directory entries removed and completes names with `PATHEXT` on Windows itself, because `shutil.which` prepends the working directory even when given a path. `Engine.find_ytdlp` and `program_override` both route through it unchanged.
 - **Problem**: `program_override` documents and partially enforces "a plain name means the `PATH` and never the working directory", but the actual lookup is `shutil.which(program)` — and on Windows `shutil.which` prepends the current directory when it is not on `PATH`. So `viddl` started in a folder containing `yt-dlp.exe` (a Downloads folder full of downloaded junk is the obvious case) runs that binary. The same helper is used for the automatic `which("yt-dlp")` fallback, so this is not limited to the environment override.
-- **Fix**: Search an explicit `PATH` that has the working directory removed, and keep the OS from adding it back.
+- **Fix**: Walk the `PATH` yourself, skipping empty and working-directory entries, and complete names with `PATHEXT` on Windows — `shutil.which` prepends the working directory even when handed a path.
   ```python
-  def _search_path() -> str:
-      entries = [part for part in os.environ.get("PATH", "").split(os.pathsep) if part]
-      cwd = os.path.normcase(os.path.abspath(os.curdir))
-      return os.pathsep.join(
-          part for part in entries
-          if os.path.normcase(os.path.abspath(part)) != cwd
-      )
+  def _search_dirs() -> List[Path]:
+      cwd = Path.cwd().resolve()
+      return [
+          Path(entry)
+          for entry in (os.environ.get("PATH") or os.defpath).split(os.pathsep)
+          if entry.strip() and Path(entry).resolve() != cwd
+      ]
 
   def which(program: str) -> Optional[Path]:
-      found = shutil.which(program, path=_search_path())
-      ...
+      for folder in [*_search_dirs(), *_EXTRA_BIN]:
+          for name in _executable_names(program):
+              candidate = folder / name
+              if candidate.is_file() and os.access(candidate, os.X_OK):
+                  return candidate
+      return None
   ```
+
+**🟠 High**
 
 #### 🟠 Performance / UX — A notification blocks the UI thread for up to five seconds
 - **Location**: `viddl/notify.py:185-212` (`send`), called from `viddl/tui/app.py:3086-3108` (`_tell`)
@@ -223,12 +228,12 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 
 ### Overall Score: 9/10
 
-This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and mostly enforced, and the test discipline is above what most applications of this size carry. With both handler findings closed, the remaining drag is the Windows program lookup, the Medium lifecycle gaps, and a few of the codebase's own lessons (finite-number guards, cross-process writes, stale locks) not being applied consistently across modules. None of the issues require redesign; the two handler fixes are local, and the rest are the kind of hardening a follow-up patch covers.
+This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and mostly enforced, and the test discipline is above what most applications of this size carry. With the security highs closed, the remaining drag is the notifier blocking the UI thread, the Medium lifecycle gaps, and a few of the codebase's own lessons (finite-number guards, cross-process writes, stale locks) not being applied consistently across modules. None of the issues require redesign; the two handler fixes are local, and the rest are the kind of hardening a follow-up patch covers.
 
 ### Top 3 Priority Fixes
 
-1. **Make `which()` keep its promise.** Search a `PATH` with the working directory removed (`appdata.py:660-664`); otherwise a dropped `yt-dlp.exe` beside the user's shell is executed as Viddl's engine, with checksum verification applying only to copies Viddl downloaded itself.
+1. **Take the notifier off the UI thread.** `notify.send` runs a subprocess with a five-second timeout from `finish_ok` (`notify.py:185-212`, `tui/app.py:3086-3108`), so a slow toast freezes the frame that says "Saved".
 
 2. **Fix the lifecycle gaps that turn a crash into permanent breakage.** Reap stale `.viddl-busy` claims with a PID/TTL check (`download.py:747-781`), bound the web job table, and give `history`/`config` per-process temporary names so two windows cannot erase each other's rows.
 
-3. **Take the notifier off the UI thread.** `notify.send` runs a subprocess with a five-second timeout from `finish_ok` (`notify.py:185-212`, `tui/app.py:3086-3108`), so a slow toast freezes the frame that says "Saved".
+3. **Guard the numbers that come from elsewhere.** `_to_int`/`_to_float` lack the `isfinite` check their sibling in `formats._num` has (`download.py:191-205`), and `history._as_float` lets `inf` into the recent list — a malformed progress line or a hand-edited file should not end a download or a screen.

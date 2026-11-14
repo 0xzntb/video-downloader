@@ -36,7 +36,6 @@ from __future__ import annotations
 import math
 import os
 import shlex
-import shutil
 import stat
 import sys
 from dataclasses import dataclass
@@ -657,20 +656,61 @@ def downloads_dir() -> Path:
     return path
 
 
-def which(program: str) -> Optional[Path]:
-    """``shutil.which`` that also looks in a few places GUI apps often miss."""
-    found = shutil.which(program)
-    if found:
-        return Path(found)
+def _search_dirs() -> List[Path]:
+    """The ``PATH``, without the entries that mean the working directory.
 
+    An empty entry is the working directory in every shell, and Windows'
+    ``shutil.which`` prepends it even when it is handed an explicit path — so
+    this walk exists instead of a single call to it. A plain program name is
+    documented as meaning the ``PATH`` and never the working directory:
+    whoever can write to the folder a shell was started in could otherwise
+    choose the engine Viddl runs.
+    """
+    try:
+        cwd: Optional[Path] = Path.cwd().resolve()
+    except OSError:  # pragma: no cover - a working directory that is gone
+        cwd = None
+    folders: List[Path] = []
+    for entry in (os.environ.get("PATH") or os.defpath).split(os.pathsep):
+        if not entry.strip():
+            continue
+        folder = Path(entry)
+        if cwd is not None:
+            try:
+                if folder.resolve() == cwd:
+                    continue
+            except OSError:  # pragma: no cover - an entry that cannot be read
+                continue
+        folders.append(folder)
+    return folders
+
+
+def _executable_names(program: str) -> List[str]:
+    """What ``program`` may be called on disk, ``PATHEXT`` included on Windows."""
+    if not _is_windows():
+        return [program]
+    extensions = (os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(";")
+    if Path(program).suffix.lower() in {extension.lower() for extension in extensions}:
+        return [program]
+    return [program + extension.lower() for extension in extensions]
+
+
+def which(program: str) -> Optional[Path]:
+    """A program on the ``PATH``, or in a few places GUI apps often miss.
+
+    The working directory is never searched, on any platform (see
+    :func:`_search_dirs`), and on Windows the name is completed with
+    ``PATHEXT`` the way the shell would complete it.
+    """
     extra = [
         Path.home() / ".local" / "bin",
         Path("/opt/homebrew/bin"),
         Path("/usr/local/bin"),
         Path("/snap/bin"),
     ]
-    for folder in extra:
-        candidate = folder / program
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return candidate
+    for folder in [*_search_dirs(), *extra]:
+        for name in _executable_names(program):
+            candidate = folder / name
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate
     return None

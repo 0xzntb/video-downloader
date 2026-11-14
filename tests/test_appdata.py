@@ -312,7 +312,10 @@ def test_a_program_override_may_be_a_path(no_environment, tmp_path, monkeypatch)
 
 def test_a_bare_program_name_comes_from_the_path(no_environment, tmp_path, monkeypatch):
     """``yt-dlp`` means the PATH, not whatever is in the working directory."""
-    planted = write_executable(tmp_path / "yt-dlp", "#!/bin/sh\necho PLANTED\n")
+    # Windows finds programs by the names PATHEXT knows, so the stand-in has to
+    # carry one of those extensions there.
+    name = "yt-dlp.exe" if sys.platform.startswith("win") else "yt-dlp"
+    planted = write_executable(tmp_path / name, "#!/bin/sh\necho PLANTED\n")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("VIDDL_YTDLP", "yt-dlp")
 
@@ -320,9 +323,22 @@ def test_a_bare_program_name_comes_from_the_path(no_environment, tmp_path, monke
     assert planted.exists(), "the test needs the planted file to be there"
     assert appdata.program_override("VIDDL_YTDLP") is None
 
-    genuine = write_executable(tmp_path / "real" / "yt-dlp", "#!/bin/sh\n")
+    genuine = write_executable(tmp_path / "real" / name, "#!/bin/sh\n")
     monkeypatch.setenv("PATH", str(tmp_path / "real"))
     assert appdata.program_override("VIDDL_YTDLP") == genuine
+
+
+def test_an_empty_path_entry_does_not_mean_the_working_directory(
+    no_environment, tmp_path, monkeypatch
+):
+    """``PATH=:dir:`` used to put the shell's folder ahead of every real entry."""
+    name = "yt-dlp.exe" if sys.platform.startswith("win") else "yt-dlp"
+    write_executable(tmp_path / name, "#!/bin/sh\necho PLANTED\n")
+    genuine = write_executable(tmp_path / "real" / name, "#!/bin/sh\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", f"{os.pathsep}{genuine.parent}{os.pathsep}")
+
+    assert appdata.which("yt-dlp") == genuine
 
 
 @needs_posix_permissions
@@ -600,7 +616,9 @@ def test_which_also_looks_where_gui_apps_do_not(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     local_bin = Path.home() / ".local" / "bin"
     local_bin.mkdir(parents=True, exist_ok=True)
-    tool = local_bin / "viddl-fake"
+    # Windows only runs what PATHEXT names, so the stand-in carries .exe there.
+    name = "viddl-fake.exe" if sys.platform.startswith("win") else "viddl-fake"
+    tool = local_bin / name
     tool.write_text("#!/bin/sh\n", encoding="utf-8")
     tool.chmod(0o755)
     assert appdata.which("viddl-fake") == tool
