@@ -33,6 +33,7 @@ rather than as an instruction.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 import shlex
@@ -629,6 +630,10 @@ def downloads_dir() -> Path:
     Downloads folder. An environment variable that cannot be used is still an
     answer — it falls back to the default, not to the file — because a run that
     was told something is not a run that was told nothing.
+
+    A path always comes back, even when no folder could be made: this is a
+    question about where things go, and the download that finds it unusable
+    says so in its own words instead of a traceback leaving here.
     """
     override = folder_override(ENV_DOWNLOAD_DIR)
     configured = config.download_dir()
@@ -649,9 +654,13 @@ def downloads_dir() -> Path:
             raise OSError("not writable")
     except OSError:
         # Our own folder is the fallback, and it is ours to lock down too: what
-        # is downloaded here is nobody else's business.
+        # is downloaded here is nobody else's business. Creating it is still a
+        # best effort: if the home directory is read-only or full, the download
+        # job will say so with its own message rather than a traceback escaping
+        # a function documented as returning a path.
         fallback = data_dir() / "Downloads"
-        _secure_dir(fallback)
+        with contextlib.suppress(OSError):
+            _secure_dir(fallback)
         return fallback
     return path
 

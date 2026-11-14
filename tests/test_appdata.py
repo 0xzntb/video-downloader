@@ -583,6 +583,18 @@ def test_downloads_dir_falls_back_when_there_is_nowhere_to_write(
     assert (home / "Downloads").is_dir()
 
 
+def test_a_fallback_that_cannot_be_made_is_still_an_answer(tmp_path, monkeypatch):
+    """A read-only home gets a path back, not a traceback out of a getter."""
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a folder", encoding="utf-8")
+    monkeypatch.setenv("VIDDL_DOWNLOAD_DIR", str(blocker / "Downloads"))
+    home = tmp_path / "read-only"
+    home.write_text("not a folder", encoding="utf-8")
+    monkeypatch.setattr(appdata, "data_dir", lambda: home)
+
+    assert appdata.downloads_dir() == home / "Downloads"
+
+
 @needs_posix_permissions
 def test_the_fallback_downloads_folder_is_owner_only(tmp_path, monkeypatch):
     """The last resort sits inside our own folder, so it gets the same treatment."""

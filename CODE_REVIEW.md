@@ -153,22 +153,20 @@ First impression: this is unusually disciplined code. Boundaries that usually le
       self._jobs[record.id] = record
   ```
 
-**🟡 Medium**
-
-#### 🟡 Bug — The Downloads fallback can itself raise
-- **Location**: `viddl/appdata.py:645-657`
+#### ✅ Fixed (was 🟡 Bug) — The Downloads fallback keeps its promise
+- **Location**: `viddl/appdata.py:655-664`
+- **Status**: Fixed — the fallback is created inside `contextlib.suppress(OSError)`, so a read-only or full home directory still gets a path back; `tests/test_appdata.py` blocks both folders and asserts the getter answers instead of raising.
 - **Problem**: When the Downloads folder is unusable the code falls back to `data_dir()/Downloads` and calls `_secure_dir(fallback)` inside the `except OSError` block. `_secure_dir` re-raises if `mkdir` fails, so on a read-only or full home directory `downloads_dir()` raises instead of returning the fallback it promises. Callers such as `viddl/web.py:220` and the TUI do not guard it, so the whole screen fails with a traceback rather than a sentence.
 - **Fix**:
   ```python
   except OSError:
       fallback = data_dir() / "Downloads"
-      # The fallback is a best effort: if it cannot be created either, the
-      # download job will say so with its own message rather than a traceback
-      # escaping a function documented as returning a path.
       with contextlib.suppress(OSError):
           _secure_dir(fallback)
       return fallback
   ```
+
+**🟡 Medium**
 
 #### 🟡 Bug — Two Viddl windows can clobber the recent list and the settings file
 - **Location**: `viddl/history.py:58` and `viddl/history.py:112-145`; the same pattern at `viddl/config.py:394-420`
@@ -232,6 +230,6 @@ This is comfortably production-grade for a desktop tool: the failure modes are e
 
 1. **Give `history` and `config` per-process temporary files.** Both write through a fixed neighbour name (`recent.json.tmp`, `config.toml.tmp`) that two windows can truncate at once (`history.py:58`, `config.py:394-420`), so a supported two-window session can lose rows or mix a file.
 
-2. **Make the Downloads fallback keep its promise.** `downloads_dir()` calls `_secure_dir` inside its own `except OSError`, so a read-only home directory raises instead of returning the path it documents (`appdata.py:645-657`) — wrap the fallback creation and let the job report the problem in its own sentence.
+2. **Close the delivery window that leaves an empty "finished" file.** The destination is created zero-byte and filled by `os.replace` (`download.py:1276-1302`), so a kill in between leaves a file that looks like a successful download; claim under a dot name and rename onto the final name only after the move.
 
-3. **Close the delivery window that leaves an empty "finished" file.** The destination is created zero-byte and filled by `os.replace` (`download.py:1276-1302`), so a kill in between leaves a file that looks like a successful download; claim under a dot name and rename onto the final one only after the move.
+3. **Give the recent list the same float guard as progress.** `history._as_float` accepts `inf`, and `datetime.fromtimestamp(inf)` raises wherever a hand-edited row is rendered (`history.py:263-270`) — one `math.isfinite` call, the same lesson already applied in `formats` and `download`.
