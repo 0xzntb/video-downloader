@@ -1606,6 +1606,10 @@ class DownloadJob:
                         continue
                 except OSError:  # pragma: no cover - a file that vanished
                     continue
+                # The claim names this run; it is the one thing in the folder
+                # that is certainly not a recording.
+                if entry.name == _CLAIM_NAME:
+                    continue
                 if entry.name.endswith((".ytdl", ".temp", ".tmp")):
                     continue
                 if _FRAGMENT_RE.search(entry.name.rsplit(".", 1)[0]):
