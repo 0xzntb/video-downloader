@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import zipfile
@@ -336,6 +337,63 @@ def test_the_macos_runner_script_is_valid_shell(monkeypatch):
     assert "--uri" in body
     # The link is single-quoted for the generated command file.
     assert "--uri '" in body
+    # A guessable name written with a plain redirect can be pointed at somebody
+    # else's file by a symlink, so the scratch script comes from mktemp.
+    assert "mktemp" in body
+    assert "$$" not in body
+
+
+@pytest.mark.skipif(
+    shutil.which("sh") is None or os.name == "nt",
+    reason="needs a POSIX shell that can run the generated handler",
+)
+def test_a_hostile_uri_cannot_add_commands_to_the_macos_runner(tmp_path, monkeypatch):
+    """The URI is data: a line break in it must not become another command.
+
+    The real runner is run, with the real template, because the escaping is the
+    thing being tested — a stand-in for the script would only test the stand-in.
+    """
+    recorder = tmp_path / "record.sh"
+    recorder.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$RECORD_FILE"\n', encoding="utf-8"
+    )
+    recorder.chmod(0o755)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(protocol, "launch_command", lambda: [str(recorder)])
+    register()
+
+    runner = _macos_bundle() / "Contents" / "MacOS" / "viddl-open"
+    hostile = "viddl://download?url=ok\ntouch INJECTED\n"
+    environment = dict(
+        os.environ,
+        TMPDIR=str(tmp_path),
+        RECORD_FILE=str(tmp_path / "argv.txt"),
+    )
+    # /usr/bin/open is not on Linux, so this ends by failing to open Terminal —
+    # after the generated script has been written, which is what the test reads.
+    subprocess.run(
+        ["sh", str(runner), hostile],
+        cwd=str(tmp_path),
+        env=environment,
+        capture_output=True,
+        check=False,
+    )
+
+    scripts = list(tmp_path.glob("viddl-run-*.command"))
+    assert len(scripts) == 1, "the runner writes exactly one script"
+    body = scripts[0].read_text(encoding="utf-8")
+    # The shebang, the one launch line, and the cleanup: nothing the URI added.
+    assert len(body.splitlines()) == 3
+    assert "\ntouch" not in body
+    assert stat.S_IMODE(scripts[0].stat().st_mode) == 0o700
+
+    subprocess.run(["sh", str(scripts[0])], cwd=str(tmp_path), env=environment, check=False)
+
+    assert not (tmp_path / "INJECTED").exists(), "the URI must not run anything"
+    assert (tmp_path / "argv.txt").read_text(encoding="utf-8").splitlines() == [
+        "--uri",
+        "viddl://download?url=oktouchINJECTED",
+    ]
 
 
 def test_macos_unregistration_removes_the_bundle(monkeypatch):

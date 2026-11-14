@@ -4,16 +4,19 @@
 
 Viddl is a terminal application (plus `--plain`, `--web` and a `viddl://` handler) that turns a pasted video link or search phrase into a file by driving the `yt-dlp` and `ffmpeg` binaries. Roughly 16.7k lines of Python across 30 package modules, one runtime dependency (`textual>=3.0,<9`), `requires-python = ">=3.9"`, no framework beyond the standard library on the server side (`http.server`, `urllib`, `subprocess`). Architecture is a clean layered split: `appdata`/`config` (paths and preferences), `engine` (tool discovery, verified downloads), `formats`/`errors`/`download`/`queue` (parsing and running work), `protocol`/`shortcut`/`web`/`cli`/`plain`, and `tui` (Textual screens).
 
-First impression: this is unusually disciplined code. Boundaries that usually leak (untrusted metadata, argv construction, file permissions, log redaction) are each handled by a named module with a docstring that explains the threat, and the test suite has a coverage floor, property-based parser tests and a weekly mutation run. The weaknesses that remain are concentrated in the newest OS-integration surface — the `viddl://` handlers and the Windows shortcut — where OS-supplied strings are still turned into script or batch syntax, plus a handful of robustness gaps that the rest of the codebase already knows how to avoid.
+First impression: this is unusually disciplined code. Boundaries that usually leak (untrusted metadata, argv construction, file permissions, log redaction) are each handled by a named module with a docstring that explains the threat, and the test suite has a coverage floor, property-based parser tests and a weekly mutation run. The weaknesses that remain are concentrated in the newest OS-integration surface — the `viddl://` handlers and the Windows shortcut — where OS-supplied strings are still turned into script or batch syntax, plus a handful of robustness gaps that the rest of the codebase already knows how to avoid. A follow-up has since closed the macOS handler finding (kept below, marked fixed); the Windows handler, which is the same class of bug, is still open.
 
 ---
 
 ### Issues Found
 
-**🔴 Critical**
+**🔴 Critical — none open.** The one found here is fixed; it stays in place, with what changed, because the reasoning still describes the boundary.
 
-#### 🔴 Security — A `viddl://` URI can inject shell commands on macOS
+**✅ Fixed since the review**
+
+#### ✅ Fixed (was 🔴 Critical) — A `viddl://` URI can no longer inject shell commands on macOS
 - **Location**: `viddl/protocol.py:53-63` (runner template), used at `viddl/protocol.py:365-368`
+- **Status**: Fixed — `_MACOS_RUNNER` filters the URI to characters a URL may hold and writes the scratch script with `mktemp` and `chmod 700`. `tests/test_protocol.py::test_a_hostile_uri_cannot_add_commands_to_the_macos_runner` runs the real handler with a newline payload and asserts only the sanitized URL reaches the launch line (it runs wherever `sh` can execute the generated `.command`).
 - **Problem**: The handler is a generated `/bin/sh` script. It takes the OS-supplied URI, removes only the single quote (`tr -d "'"`), and interpolates it into a script body that Terminal then executes:
   ```sh
   URL=$(printf '%s' "$URL" | tr -d "'")
@@ -27,7 +30,8 @@ First impression: this is unusually disciplined code. Boundaries that usually le
   [ -z "$URL" ] && exit 0
   # Only characters a URL may hold. Anything else — a quote, a newline, a
   # control byte — would become shell syntax in the script written below.
-  URL=$(printf '%s' "$URL" | tr -cd 'A-Za-z0-9._~:/?#@!$&()*+,;=%[]-')
+  URL=$(printf '%s' "$URL" | tr -cd 'A-Za-z0-9._~:/?#@!$&()*+,;=%-')
+  [ -n "$URL" ] || exit 0
   RUNNER=$(mktemp "${TMPDIR:-/tmp}/viddl-run-XXXXXX.command") || exit 0
   chmod 700 "$RUNNER"
   LINE="__LAUNCH__ --uri '$URL'"
@@ -198,10 +202,10 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 - **Problem**: One class builds the argv, parses progress, claims folders, retries, downloads, merges, delivers, writes history and handles live recordings — 1,100 lines and a broad state machine. It is well documented, but the retry policy, the delivery/claim protocol and the progress parser are independently testable and currently only reachable through a real subprocess.
 - **Fix**: Extract `ProgressParser`, `OutputClaimer` and `RetryPolicy` as small collaborators; `DownloadJob` then composes them. This also makes the stale-claim and 0-byte-file fixes above unit-testable without a fake engine.
 
-#### 🟢 Tests — No adversarial test for the handler scripts
+#### 🟢 Tests — The Windows handler has no adversarial test
 - **Location**: `tests/test_protocol.py` (runner escaping), `tests/test_shortcut.py`
-- **Problem**: The suite checks that a single quote is stripped and that the batch file is written, but nothing feeds the handlers a URI with a newline, `"`/`&`, or a `%` and asserts that the generated script cannot run anything else. Those are the two paths where the codebase stops being safe by construction, so they deserve the hypothesis-style treatment the parsers already get.
-- **Fix**: Add a `@given(st.text())` test that builds the macOS and Windows handler strings and asserts the URI survives only inside the data position (e.g. no raw newline, no unescaped quote in the emitted command), plus a test that `build_scheme_url` round-trips a hostile URL into something `parse_scheme` refuses without side effects.
+- **Problem**: The macOS runner now has one: `test_a_hostile_uri_cannot_add_commands_to_the_macos_runner` runs the real handler with a newline payload and asserts that only the filtered URL reaches the launch line. The batch handler is still only checked for being written — nothing feeds it a URI with a quote or `&` and asserts that cmd.exe cannot run anything else.
+- **Fix**: Add a `@given(st.text())` test that builds the Windows handler string and asserts the URI survives only inside the data position (e.g. no raw newline, no unescaped quote in the emitted command), plus a test that `build_scheme_url` round-trips a hostile URL into something `parse_scheme` refuses without side effects.
 
 ---
 
@@ -215,10 +219,10 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 
 ### Overall Score: 8/10
 
-This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and mostly enforced, and the test discipline is above what most applications of this size carry. What holds it back from a 9 is that the newest, least-reviewed surface — the OS protocol handlers — turns untrusted strings into script syntax in two places, and the codebase's own hard-won lessons (finite-number guards, cross-process writes, stale locks) were not applied consistently across modules. None of the issues require redesign; the two handler fixes are local, and the rest are the kind of hardening a follow-up patch covers.
+This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and mostly enforced, and the test discipline is above what most applications of this size carry. What holds it back from a 9 is that the Windows protocol handler still turns untrusted strings into batch syntax, and the codebase's own hard-won lessons (finite-number guards, cross-process writes, stale locks) were not applied consistently across modules. None of the issues require redesign; the two handler fixes are local, and the rest are the kind of hardening a follow-up patch covers.
 
 ### Top 3 Priority Fixes
 
-1. **Stop letting the OS-supplied URI become script syntax.** Harden the macOS runner (`protocol.py:53-63`) to whitelist URL characters and use `mktemp`, and replace the Windows `.cmd` handler with a direct executable registration (`protocol.py:397-437`). Both are remote-input paths that bypass every guard in `safe_video_link`.
+1. **Register an executable for `viddl://` on Windows, not a `.cmd`** (`protocol.py:397-437`). The batch handler still lets `cmd.exe` expand an OS-supplied URI, which is remote-input code execution if the URI carries a quote and a metacharacter; the macOS equivalent is fixed above.
 2. **Make `which()` keep its promise.** Search a `PATH` with the working directory removed (`appdata.py:660-664`); otherwise a dropped `yt-dlp.exe` beside the user's shell is executed as Viddl's engine, with checksum verification applying only to copies Viddl downloaded itself.
 3. **Fix the lifecycle gaps that turn a crash into permanent breakage.** Reap stale `.viddl-busy` claims with a PID/TTL check (`download.py:747-781`), bound the web job table, and give `history`/`config` per-process temporary names so two windows cannot erase each other's rows.

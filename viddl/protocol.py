@@ -50,17 +50,26 @@ _MACOS_LSREGISTER = (
 
 # Written into the app bundle as Contents/MacOS/viddl-open. __LAUNCH__ is
 # replaced with the already-quoted command that starts the terminal app.
+#
+# Everything else here is about the URI, which is not ours to trust: any page can
+# ask the system to open one, so it is data and never syntax. Two rules follow.
+# Only characters a URL may hold survive — a quote, a line break or a control
+# byte would otherwise end the quoted argument in the generated script and become
+# a command of its own. And the script is written to a fresh ``mktemp`` file
+# rather than a name built from ``$$``, because a plain ``>`` redirect follows a
+# symlink that somebody else may have planted.
 _MACOS_RUNNER = '''#!/bin/sh
 # macOS runs this when a viddl:// link is opened.
 URL="$1"
 [ -z "$URL" ] && exit 0
-# The extension percent-encodes URLs, so single-quoting is safe; strip the
-# one character that could still break out of the quotes.
-URL=$(printf '%s' "$URL" | tr -d "'")
-RUNNER="${TMPDIR:-/tmp}/viddl-run-$$.command"
+# The filter is the boundary: what comes out is URL-shaped, and it is the only
+# thing that reaches the generated script.
+URL=$(printf '%s' "$URL" | tr -cd 'A-Za-z0-9._~:/?#@!$&()*+,;=%-')
+[ -n "$URL" ] || exit 0
+RUNNER=$(mktemp "${TMPDIR:-/tmp}/viddl-run-XXXXXX.command") || exit 0
+chmod 700 "$RUNNER"
 LINE="__LAUNCH__ --uri '$URL'"
 printf '#!/bin/sh\n%s\nrm -f "$0"\n' "$LINE" > "$RUNNER"
-chmod +x "$RUNNER"
 exec /usr/bin/open -a Terminal "$RUNNER"
 '''
 
