@@ -135,24 +135,25 @@ First impression: this is unusually disciplined code. Boundaries that usually le
   ```
   ``_process_alive`` uses ``os.kill(pid, 0)`` on POSIX and ``OpenProcess`` on Windows, where signal 0 is a termination request rather than a probe.
 
-**🟡 Medium**
-
-#### 🟡 Bug — The web page's job table only ever grows
+#### ✅ Fixed (was 🟡 Bug) — The web page's job table is bounded
 - **Location**: `viddl/web.py:144`, insertion at `viddl/web.py:236-241`
+- **Status**: Fixed — `start` evicts the oldest finished record before inserting and refuses once `MAX_JOBS` (50) downloads are running, so a page left open holds a recent window rather than its whole history. `tests/test_web.py` covers both the window and the refusal.
 - **Problem**: `self._jobs` keeps every `_Job` — with its `Progress`, paths and error object — for the lifetime of the server, and each `start` also spawns an unthrottled thread. A `--web` session left open (the intended usage) grows without bound while the page polls `/api/jobs/<id>`.
-- **Fix**: Keep the recent window and refuse work beyond a small cap.
+- **Fix**: Keep a recent window, and refuse a start when there is nothing finished left to drop.
   ```python
   MAX_JOBS = 50
-  ...
+
   with self._lock:
+      self._forget_finished()
+      if len(self._jobs) >= MAX_JOBS:
+          raise Refused(
+              f"Too many downloads are already open ({MAX_JOBS}).",
+              "Wait for one to finish, or stop one you no longer need.",
+          )
       self._jobs[record.id] = record
-      while len(self._jobs) > MAX_JOBS:
-          stale = next((key for key, item in self._jobs.items()
-                        if item.state != "running"), None)
-          if stale is None:
-              break
-          del self._jobs[stale]
   ```
+
+**🟡 Medium**
 
 #### 🟡 Bug — The Downloads fallback can itself raise
 - **Location**: `viddl/appdata.py:645-657`
@@ -225,11 +226,11 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 
 ### Overall Score: 9/10
 
-This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical and High closed, the remaining drag is the Medium lifecycle gaps — the unbounded web job table, cross-process writes, the delivery window — and a few of the codebase's own lessons (delivery windows, option-shaped values, the recent list's own float guard) not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
+This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical and High closed, the remaining drag is the Medium lifecycle gaps — cross-process writes, the delivery window — and a few of the codebase's own lessons (delivery windows, option-shaped values, the recent list's own float guard) not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
 
 ### Top 3 Priority Fixes
 
-1. **Finish the lifecycle gaps that turn a crash into permanent breakage.** Stale claims are reaped now; what remains is the unbounded web job table (`web.py:144`) and the fixed temporary names `history`/`config` share between windows (`history.py:58`, `config.py:394-420`).
+1. **Give `history` and `config` per-process temporary files.** Both write through a fixed neighbour name (`recent.json.tmp`, `config.toml.tmp`) that two windows can truncate at once (`history.py:58`, `config.py:394-420`), so a supported two-window session can lose rows or mix a file.
 
 2. **Make the Downloads fallback keep its promise.** `downloads_dir()` calls `_secure_dir` inside its own `except OSError`, so a read-only home directory raises instead of returning the path it documents (`appdata.py:645-657`) — wrap the fallback creation and let the job report the problem in its own sentence.
 

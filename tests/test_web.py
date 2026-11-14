@@ -610,6 +610,40 @@ def test_stopping_a_live_recording_keeps_what_arrived(out_dir):
         assert state["size"] == 2048
 
 
+def test_the_job_table_keeps_only_a_recent_window(out_dir):
+    """A page left open all day must not hold every job it ever started."""
+    app = WebApp(
+        token="t" * 32, probe=FakeProbe(), make_job=FakeJob, downloads_dir=lambda: out_dir
+    )
+    for _ in range(web.MAX_JOBS + 5):
+        app.start(URL, "137+140")
+
+    app.stop_all(wait=10)
+
+    assert len(app._jobs) <= web.MAX_JOBS
+    newest = list(app._jobs)[-1]
+    assert app.snapshot(newest)["state"] in ("done", "stopped", "failed")
+
+
+def test_more_running_downloads_than_the_cap_is_refused(out_dir):
+    """Nothing is evicted while it is running, so the cap refuses instead."""
+    FakeJob.wait = True
+    app = WebApp(
+        token="t" * 32, probe=FakeProbe(), make_job=FakeJob, downloads_dir=lambda: out_dir
+    )
+    try:
+        for _ in range(web.MAX_JOBS):
+            app.start(URL, "137+140")
+
+        with pytest.raises(Refused):
+            app.start(URL, "137+140")
+    finally:
+        app.stop_all(wait=10)
+
+    assert len(app._jobs) == web.MAX_JOBS
+    assert all(record.state != "running" for record in app._jobs.values())
+
+
 def test_a_failed_download_carries_the_reason(out_dir):
     FakeJob.failure = ToolError("The site refused the download.", "Try again in a minute.")
     with serving(probe=FakeProbe(), make_job=FakeJob, downloads_dir=lambda: out_dir) as (_, client):

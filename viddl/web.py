@@ -63,6 +63,11 @@ _ASSETS = {
     "app.css": "text/css; charset=utf-8",
 }
 
+#: How many downloads the page remembers. It asks about one at a time, so a
+#: recent window is enough — a page left open all day must not hold every
+#: progress snapshot, path and error it ever produced.
+MAX_JOBS = 50
+
 
 class Refused(Exception):
     """A request the page made that cannot be answered as asked.
@@ -233,6 +238,12 @@ class WebApp:
         record = _Job(id=secrets.token_hex(8), url=resolved, title=info.title, option=option, job=job)
         box["record"] = record
         with self._lock:
+            self._forget_finished()
+            if len(self._jobs) >= MAX_JOBS:
+                raise Refused(
+                    f"Too many downloads are already open ({MAX_JOBS}).",
+                    "Wait for one to finish, or stop one you no longer need.",
+                )
             self._jobs[record.id] = record
         record.thread = threading.Thread(
             target=self._work, args=(record,), name=f"viddl-web-{record.id}", daemon=True
@@ -244,6 +255,24 @@ class WebApp:
             "option": option.label,
             "live": live,
         }
+
+    def _forget_finished(self) -> None:
+        """Make room for one more job by dropping the oldest finished ones.
+
+        The page asks about a download by id and never lists the table, so a
+        finished record is only kept for the answer it still gives. Without
+        this, a page left open all day would hold every ``Progress``, path and
+        error it ever produced; a start with nothing finished left to drop is
+        refused rather than letting the table grow past :data:`MAX_JOBS`.
+        """
+        while len(self._jobs) >= MAX_JOBS:
+            finished = next(
+                (key for key, item in self._jobs.items() if item.state != "running"),
+                None,
+            )
+            if finished is None:
+                return
+            del self._jobs[finished]
 
     def _work(self, record: _Job) -> None:
         """Run one download, and turn its ending into something the page shows."""
