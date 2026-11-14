@@ -3311,7 +3311,10 @@ def test_show_in_folder_picks_the_file_out_where_the_desktop_can(monkeypatch, tm
     assert launched == [
         ["xdg-open", str(inside.parent)],
         ["open", "-R", str(inside)],
-        ["explorer", f"/select,{inside}"],
+        # A string, not a list: Explorer parses its own command line, and a
+        # path with a space in it must be quoted on its own so that the
+        # ``/select,`` switch stays outside the quotes (U3).
+        f'explorer /select,"{inside}"',
     ]
 
 
@@ -3993,7 +3996,9 @@ async def test_a_finished_download_tells_the_desktop_when_asked(tmp_path, monkey
         screen.finish_ok(Path("/tmp/clip.mp4"))
         await pilot.pause()
 
-    assert told and told[0]["saved"] == "/tmp/clip.mp4"
+    # The string the notification gets is the platform's own spelling of the
+    # path, which is not the POSIX literal on Windows.
+    assert told and told[0]["saved"] == str(Path("/tmp/clip.mp4"))
 
 
 @pytest.mark.asyncio

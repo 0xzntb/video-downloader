@@ -226,8 +226,13 @@ def _plain(value: Any) -> str:
     return escape(str(value))
 
 
-def _launch(command: List[str]) -> Optional[str]:
-    """Start a desktop program without waiting for it. Returns why, on failure."""
+def _launch(command: List[str] | str) -> Optional[str]:
+    """Start a desktop program without waiting for it. Returns why, on failure.
+
+    A list is the safer spelling everywhere: no shell, no quoting rules of our
+    own. Windows Explorer is the exception — it parses the command line itself,
+    see :func:`_reveal_in_folder` — so a ready-made string is accepted too.
+    """
     import subprocess
 
     try:
@@ -268,8 +273,15 @@ def _reveal_in_folder(path: Path) -> Optional[str]:
     """
     import sys
 
+    command: List[str] | str
     if sys.platform.startswith("win"):
-        command = ["explorer", f"/select,{path}"]
+        # Explorer reads its own command line, and it only honours ``/select,``
+        # when the switch is outside the quotes. Handing the pieces to
+        # subprocess separately makes it quote the whole token —
+        # ``"/select,C:\Users\me\Downloads\A Video.mp4"`` — which Explorer
+        # reads as a plain path and answers by opening Documents, i.e. not the
+        # folder the video is in. So the quote goes around the path alone.
+        command = f'explorer /select,"{path}"'
     elif sys.platform == "darwin":
         command = ["open", "-R", str(path)]
     else:
