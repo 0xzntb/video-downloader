@@ -422,16 +422,51 @@ def test_windows_registration_writes_the_registry_entry(monkeypatch):
     assert fake.values[(root, "URL Protocol")] == ""
 
     command = fake.values[(rf"{root}\shell\open\command", "")]
-    assert "viddl-open.cmd" in command
-    assert "%1" in command
+    assert command == r'"C:\Program Files\Viddl\viddl.exe" --uri "%1"'
+    # Nothing between the OS and Viddl: no batch file, no cmd.exe, and no
+    # quoting rules of our own that a URI could walk out of.
+    assert ".cmd" not in command.lower()
+    assert "cmd.exe" not in command.lower()
+    assert not (Path(os.environ["VIDDL_HOME"]) / "viddl-open.cmd").exists()
 
-    launcher = Path(os.environ["VIDDL_HOME"]) / "viddl-open.cmd"
-    assert launcher.is_file()
-    body = launcher.read_text(encoding="utf-8")
-    assert "--uri %1" in body
-    assert body.startswith("@echo off")
-    # A path with a space in it has to stay quoted or Windows will split it.
-    assert r'"C:\Program Files\Viddl\viddl.exe"' in body
+
+def test_a_windows_handler_never_registers_a_batch_file(monkeypatch):
+    """The installer's launcher is a .cmd, and ShellExecute hands that to cmd.exe."""
+    fake = FakeWinreg()
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        protocol,
+        "launch_command",
+        lambda: [r"C:\Users\me\AppData\Local\viddl\bin\viddl.cmd"],
+    )
+    register()
+
+    root = rf"HKEY_CURRENT_USER\Software\Classes\{URL_SCHEME}"
+    command = fake.values[(rf"{root}\shell\open\command", "")]
+    assert ".cmd" not in command.lower()
+    assert command == (
+        subprocess.list2cmdline([sys.executable, "-m", "viddl", "--uri"]) + ' "%1"'
+    )
+
+
+def test_registering_removes_the_batch_file_an_older_version_wrote(monkeypatch):
+    """An unreferenced script is still a script, and this one took a URI."""
+    fake = FakeWinreg()
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(protocol, "launch_command", lambda: [r"C:\Viddl\viddl.exe"])
+
+    legacy = Path(os.environ["VIDDL_HOME"]) / "viddl-open.cmd"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("@echo off\r\n", encoding="utf-8")
+
+    register()
+    assert not legacy.exists(), "the batch handler an older version wrote is gone"
+
+    legacy.write_text("@echo off\r\n", encoding="utf-8")
+    unregister()
+    assert not legacy.exists()
 
 
 def test_windows_unregistration_removes_the_keys(monkeypatch):

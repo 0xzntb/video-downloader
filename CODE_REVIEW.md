@@ -4,7 +4,7 @@
 
 Viddl is a terminal application (plus `--plain`, `--web` and a `viddl://` handler) that turns a pasted video link or search phrase into a file by driving the `yt-dlp` and `ffmpeg` binaries. Roughly 16.7k lines of Python across 30 package modules, one runtime dependency (`textual>=3.0,<9`), `requires-python = ">=3.9"`, no framework beyond the standard library on the server side (`http.server`, `urllib`, `subprocess`). Architecture is a clean layered split: `appdata`/`config` (paths and preferences), `engine` (tool discovery, verified downloads), `formats`/`errors`/`download`/`queue` (parsing and running work), `protocol`/`shortcut`/`web`/`cli`/`plain`, and `tui` (Textual screens).
 
-First impression: this is unusually disciplined code. Boundaries that usually leak (untrusted metadata, argv construction, file permissions, log redaction) are each handled by a named module with a docstring that explains the threat, and the test suite has a coverage floor, property-based parser tests and a weekly mutation run. The weaknesses that remain are concentrated in the newest OS-integration surface — the `viddl://` handlers and the Windows shortcut — where OS-supplied strings are still turned into script or batch syntax, plus a handful of robustness gaps that the rest of the codebase already knows how to avoid. A follow-up has since closed the macOS handler finding (kept below, marked fixed); the Windows handler, which is the same class of bug, is still open.
+First impression: this is unusually disciplined code. Boundaries that usually leak (untrusted metadata, argv construction, file permissions, log redaction) are each handled by a named module with a docstring that explains the threat, and the test suite has a coverage floor, property-based parser tests and a weekly mutation run. The weaknesses that remain are concentrated in the newest OS-integration surface — the `viddl://` handlers and the Windows shortcut — where OS-supplied strings are still turned into script or batch syntax, plus a handful of robustness gaps that the rest of the codebase already knows how to avoid. Both handler findings are now closed (kept below, marked fixed); the remaining highs are a Windows program-lookup gap and a notifier that blocks the UI thread.
 
 ---
 
@@ -39,19 +39,23 @@ First impression: this is unusually disciplined code. Boundaries that usually le
   exec /usr/bin/open -a Terminal "$RUNNER"
   ```
 
-**🟠 High**
-
-#### 🟠 Security — The Windows handler is a `.cmd`, so cmd.exe parses the URI
+#### ✅ Fixed (was 🟠 High) — The Windows handler no longer goes through cmd.exe
 - **Location**: `viddl/protocol.py:397-437`, batch body at `viddl/protocol.py:414-416`, registry value written just after
+- **Status**: Fixed — `_register_windows` registers an executable and appends `--uri "%1"`; a `.cmd`/`.bat`/`.py` launcher is replaced with `sys.executable -m viddl`, and the old `viddl-open.cmd` is deleted on register and unregister. `tests/test_protocol.py` covers both launcher shapes.
 - **Problem**: The registry entry points at `viddl-open.cmd`, and the batch file is `start "" <launcher> --uri %1`. `%1` is expanded by `cmd.exe`, and the URI is attacker-influenced (any page may navigate to `viddl://…`). A URI containing a double quote ends the quoted argument and lets `&`, `|` or `>` run as batch syntax — classic unquoted-`%1` batch injection. `safe_video_link` cannot help: it runs in Python, after cmd.exe has already parsed the line.
 - **Fix**: Register an executable, not a batch file, so no shell sits between the OS and the program. The URI then reaches `sys.argv` as one argument and is validated by `parse_scheme`/`safe_video_link` as designed.
   ```python
   # No .cmd, no cmd.exe, no batch quoting: ShellExecute starts the program
   # directly, and Windows performs the %1 substitution before argv exists.
   command = launch_command()          # ["…\\viddl.exe"] or [python, "-m", "viddl"]
-  handler = subprocess.list2cmdline([*command, "--uri", "%1"])
+  # A .cmd launcher (the installer's) would be run by cmd.exe again.
+  if Path(command[0]).suffix.lower() in (".cmd", ".bat", ".py"):
+      command = [sys.executable, "-m", "viddl"]
+  handler = subprocess.list2cmdline([*command, "--uri"]) + ' "%1"'
   winreg.SetValueEx(command_key, "", 0, winreg.REG_SZ, handler)
   ```
+
+**🟠 High**
 
 #### 🟠 Security — `which()` can return a program from the current directory on Windows
 - **Location**: `viddl/appdata.py:205-224` (the promise), `viddl/appdata.py:660-664` (the implementation), consumed by `Engine.find_ytdlp`
@@ -192,10 +196,10 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 - **Problem**: `python -O` / `PYTHONOPTIMIZE=1` removes both checks; `self._process.stdout` and `path` then flow on as `None` and fail further away with a less useful error.
 - **Fix**: Replace with an explicit `if … is None: raise ToolError(...)` (and the same for the screen's copy) or a `cast` plus a test-visible invariant.
 
-#### 🟢 Security — Three different command-line quoters
-- **Location**: `viddl/protocol.py:412-416`, `viddl/shortcut.py:93-94`, `viddl/logfile.py:104`
-- **Problem**: Each builds a Windows command line by hand (`f'"{part}"' if " " in part else part`), and none escapes cmd metacharacters (`&`, `^`, `%`). They already disagree (one quotes only on spaces, `shlex.join` is POSIX-only), so a fix in one place will not reach the others — which is how the handler issues above survived review.
-- **Fix**: One private helper next to `appdata`/`util` that takes a list and a platform and is used by all three; on Windows delegate to `subprocess.list2cmdline`, which is the documented implementation of those rules.
+#### 🟢 Security — One hand-rolled command-line quoter left
+- **Location**: `viddl/shortcut.py:93-94`
+- **Problem**: `_command_line` builds a Windows command line by hand (`f'"{part}"' if " " in part else part`) and does not escape cmd metacharacters (`&`, `^`, `%`). Everything that needs a command line for the `viddl://` handler now delegates to `subprocess.list2cmdline`; one home for the rule keeps the next launcher from inventing a third spelling.
+- **Fix**: Route `shortcut._command_line` through `subprocess.list2cmdline` as the handler now does, so the next launcher cannot invent a fourth spelling of the same rule.
 
 #### 🟢 Code quality — `DownloadJob` owns too many responsibilities
 - **Location**: `viddl/download.py:600-1708`
@@ -217,12 +221,14 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 4. **The failure vocabulary is data-driven and testable.** `errors.py` keeps 21 ordered rules separate from the sentences in `i18n`, with `temporary` beside each message so "try again" and the retry policy cannot drift apart; the same table serves the CLI, the app and the web page.
 5. **Verification is aimed at the right things.** Helpers are checksum-verified against published sums before being made executable, the recorded hash is re-checked by `--doctor`, `_extract_member` writes to a fixed destination (no archive path traversal), and the suite has a 94% floor, hypothesis-based parser properties and a weekly mutation job.
 
-### Overall Score: 8/10
+### Overall Score: 9/10
 
-This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and mostly enforced, and the test discipline is above what most applications of this size carry. What holds it back from a 9 is that the Windows protocol handler still turns untrusted strings into batch syntax, and the codebase's own hard-won lessons (finite-number guards, cross-process writes, stale locks) were not applied consistently across modules. None of the issues require redesign; the two handler fixes are local, and the rest are the kind of hardening a follow-up patch covers.
+This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and mostly enforced, and the test discipline is above what most applications of this size carry. With both handler findings closed, the remaining drag is the Windows program lookup, the Medium lifecycle gaps, and a few of the codebase's own lessons (finite-number guards, cross-process writes, stale locks) not being applied consistently across modules. None of the issues require redesign; the two handler fixes are local, and the rest are the kind of hardening a follow-up patch covers.
 
 ### Top 3 Priority Fixes
 
-1. **Register an executable for `viddl://` on Windows, not a `.cmd`** (`protocol.py:397-437`). The batch handler still lets `cmd.exe` expand an OS-supplied URI, which is remote-input code execution if the URI carries a quote and a metacharacter; the macOS equivalent is fixed above.
-2. **Make `which()` keep its promise.** Search a `PATH` with the working directory removed (`appdata.py:660-664`); otherwise a dropped `yt-dlp.exe` beside the user's shell is executed as Viddl's engine, with checksum verification applying only to copies Viddl downloaded itself.
-3. **Fix the lifecycle gaps that turn a crash into permanent breakage.** Reap stale `.viddl-busy` claims with a PID/TTL check (`download.py:747-781`), bound the web job table, and give `history`/`config` per-process temporary names so two windows cannot erase each other's rows.
+1. **Make `which()` keep its promise.** Search a `PATH` with the working directory removed (`appdata.py:660-664`); otherwise a dropped `yt-dlp.exe` beside the user's shell is executed as Viddl's engine, with checksum verification applying only to copies Viddl downloaded itself.
+
+2. **Fix the lifecycle gaps that turn a crash into permanent breakage.** Reap stale `.viddl-busy` claims with a PID/TTL check (`download.py:747-781`), bound the web job table, and give `history`/`config` per-process temporary names so two windows cannot erase each other's rows.
+
+3. **Take the notifier off the UI thread.** `notify.send` runs a subprocess with a five-second timeout from `finish_ok` (`notify.py:185-212`, `tui/app.py:3086-3108`), so a slow toast freezes the frame that says "Saved".

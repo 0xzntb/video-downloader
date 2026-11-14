@@ -15,6 +15,7 @@ puts before the link.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
@@ -40,6 +41,11 @@ from .util import safe_video_link
 # without a chosen quality) is enforced regardless of how often a page asks.
 HANDOFF_COOLDOWN_SECONDS = 3
 _STAMP = "last-handoff"
+
+# What ShellExecute would hand to cmd.exe rather than start itself. A handler
+# must never name one of these: cmd.exe would parse the URI as batch syntax
+# instead of passing it to Viddl as an argument.
+_WINDOWS_SCRIPTS = (".bat", ".cmd", ".py")
 
 _DESKTOP_FILE = "viddl-handler.desktop"
 _APP_BUNDLE = "Viddl URL Handler.app"
@@ -403,6 +409,29 @@ def _unregister_macos() -> RegistrationResult:
     return RegistrationResult(True, "Removed the Viddl URL handler.")
 
 
+def _windows_handler_command(command: List[str]) -> str:
+    """The registry line for a ``viddl://`` link, aimed at an executable.
+
+    ShellExecute starts the named program itself, so no ``cmd.exe`` sits
+    between the operating system and Viddl: ``%1`` is substituted before argv
+    exists, and the URI arrives as one argument that :func:`parse_scheme` can
+    refuse. ``launch_command`` can name the ``.cmd`` the installer puts on
+    PATH, and a batch file would be parsed as batch syntax — a quote in the URI
+    ends the quoted argument and lets ``&`` or ``|`` run as a command — so a
+    script is replaced with the interpreter that can run Viddl.
+    """
+    target = list(command)
+    if Path(target[0]).suffix.lower() in _WINDOWS_SCRIPTS:
+        target = [sys.executable, "-m", "viddl"]
+    return subprocess.list2cmdline([*target, "--uri"]) + ' "%1"'
+
+
+def _remove_old_windows_launcher() -> None:
+    """Delete the batch handler an earlier version wrote, if it is still there."""
+    with contextlib.suppress(OSError):
+        (appdata.data_dir() / "viddl-open.cmd").unlink(missing_ok=True)
+
+
 def _register_windows() -> RegistrationResult:
     try:
         import winreg as _winreg
@@ -414,35 +443,25 @@ def _register_windows() -> RegistrationResult:
     # it as ``Any`` is what says so to a checker running on Linux (E5).
     winreg: Any = _winreg
 
-    command = launch_command()
-    launcher = appdata.data_dir() / "viddl-open.cmd"
-    quoted = " ".join(f'"{part}"' if " " in part else part for part in command)
-    try:
-        appdata.data_dir().mkdir(parents=True, exist_ok=True)
-        body = (
-            "@echo off\r\n"
-            "rem Opened by the browser extension via the viddl:// protocol.\r\n"
-            f'start "" {quoted} --uri %1\r\n'
-        )
-        launcher.write_text(body, encoding="utf-8")
-    except OSError as exc:
-        return RegistrationResult(False, f"Could not write {launcher}: {exc}")
+    handler = _windows_handler_command(launch_command())
 
     try:
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{URL_SCHEME}") as key:
             winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f"URL:{URL_SCHEME} protocol")
             winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
             with winreg.CreateKey(key, r"shell\open\command") as command_key:
-                winreg.SetValueEx(
-                    command_key, "", 0, winreg.REG_SZ, f'"{launcher}" "%1"'
-                )
+                winreg.SetValueEx(command_key, "", 0, winreg.REG_SZ, handler)
     except OSError as exc:
         return RegistrationResult(False, f"Could not write the registry entry: {exc}")
+
+    # Nothing refers to the old batch file now, and a script that turns a URI
+    # into batch syntax is not worth leaving on disk.
+    _remove_old_windows_launcher()
 
     return RegistrationResult(
         True,
         "Done — links from the browser extension will now open Viddl.",
-        [f"Wrote {launcher}", "Registered viddl:// under HKEY_CURRENT_USER"],
+        [f"Registered: {handler}", "Registered viddl:// under HKEY_CURRENT_USER"],
     )
 
 
@@ -463,6 +482,7 @@ def _unregister_windows() -> RegistrationResult:
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{URL_SCHEME}")
     except OSError as exc:
         return RegistrationResult(False, f"Could not remove the registry entry: {exc}")
+    _remove_old_windows_launcher()
     return RegistrationResult(True, "Removed the viddl:// handler.")
 
 
