@@ -1639,8 +1639,44 @@ def test_a_claimed_name_is_never_handed_out_twice(tmp_path):
         "A Video [abc] (3).mp4",
         "A Video [abc] (4).mp4",
     ]
-    # Every claim is a real, empty reservation on disk.
-    assert all(path.is_file() and path.stat().st_size == 0 for path in claimed)
+    # Nothing is created under those names: a claim must never look like a
+    # finished, empty video if the run that took it never comes back.
+    assert not any(path.exists() for path in claimed)
+    # The reservations are real files on disk, hidden beside the names.
+    hidden = [path.name for path in out.iterdir() if path.name.startswith(".")]
+    assert len(hidden) == 4
+    assert all(name.startswith(".viddl-name-") for name in hidden)
+
+
+def test_a_run_killed_between_claiming_and_moving_leaves_no_empty_video(
+    tmp_path, monkeypatch
+):
+    """The claim is a hidden reservation, so the name only holds a real file."""
+    out = tmp_path / "Downloads"
+    out.mkdir()
+    killed = DownloadJob(FakeEngine(["/fake"]), "u", video_option(), out)
+    reserved = killed._claim_name("A Real Video [dQw4w9WgXcQ].mp4")
+
+    # The run died here, before the move: no zero-byte video was ever made.
+    assert not reserved.exists()
+    assert [path.name for path in out.iterdir() if not path.name.startswith(".")] == []
+
+    # The next run for the same video takes the name over, because the run that
+    # reserved it is gone — and it delivers a whole file, not an empty one.
+    monkeypatch.setattr(download_mod, "_process_alive", lambda pid: False)
+    job = DownloadJob(
+        engine_for(tmp_path, "fake_ok.py", SUCCESS_SCRIPT),
+        "https://x.invalid/v",
+        video_option(),
+        out,
+    )
+
+    finished = job.run()
+
+    assert finished.name == "A Real Video [dQw4w9WgXcQ].mp4"
+    assert finished.read_bytes() == b"v" * 4096
+    # Nothing is left beside it: the reservation went with the delivery.
+    assert [path.name for path in out.iterdir()] == ["A Real Video [dQw4w9WgXcQ].mp4"]
 
 
 def test_the_working_folder_is_gone_once_the_file_is_delivered(tmp_path):

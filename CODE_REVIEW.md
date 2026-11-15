@@ -4,7 +4,7 @@
 
 Viddl is a terminal application (plus `--plain`, `--web` and a `viddl://` handler) that turns a pasted video link or search phrase into a file by driving the `yt-dlp` and `ffmpeg` binaries. Roughly 16.7k lines of Python across 30 package modules, one runtime dependency (`textual>=3.0,<9`), `requires-python = ">=3.9"`, no framework beyond the standard library on the server side (`http.server`, `urllib`, `subprocess`). Architecture is a clean layered split: `appdata`/`config` (paths and preferences), `engine` (tool discovery, verified downloads), `formats`/`errors`/`download`/`queue` (parsing and running work), `protocol`/`shortcut`/`web`/`cli`/`plain`, and `tui` (Textual screens).
 
-First impression: this is unusually disciplined code. Boundaries that usually leak (untrusted metadata, argv construction, file permissions, log redaction) are each handled by a named module with a docstring that explains the threat, and the test suite has a coverage floor, property-based parser tests and a weekly mutation run. The weaknesses that remain are concentrated in the newest OS-integration surface — the `viddl://` handlers and the Windows shortcut — where OS-supplied strings are still turned into script or batch syntax, plus a handful of robustness gaps that the rest of the codebase already knows how to avoid. No Critical or High findings remain (kept below, marked fixed); what is left is the Medium lifecycle and robustness gaps the rest of the codebase already knows how to avoid.
+First impression: this is unusually disciplined code. Boundaries that usually leak (untrusted metadata, argv construction, file permissions, log redaction) are each handled by a named module with a docstring that explains the threat, and the test suite has a coverage floor, property-based parser tests and a weekly mutation run. The weaknesses that remain are concentrated in the newest OS-integration surface — the `viddl://` handlers and the Windows shortcut — where OS-supplied strings are still turned into script or batch syntax, plus a handful of robustness gaps that the rest of the codebase already knows how to avoid. No Critical, High or Medium findings remain (kept below, marked fixed); what is left is the Low robustness and code-quality gaps listed at the end.
 
 ---
 
@@ -184,12 +184,26 @@ First impression: this is unusually disciplined code. Boundaries that usually le
   ```
   `filelock.held` uses `fcntl.flock` on POSIX and `msvcrt.locking` on Windows, on a sibling `<file>.lock` so that `os.replace` cannot swap the locked inode out from under it.
 
-**🟡 Medium**
+**🟡 Medium — none open.** Every issue found here is fixed and kept above with what changed.
 
-#### 🟡 Bug — A crash between claiming and moving leaves an empty "finished" file
-- **Location**: `viddl/download.py:1276-1302` (`_deliver`)
-- **Problem**: The destination name is claimed by creating a zero-byte file, then `os.replace` fills it. The `except OSError` path cleans up, but a process kill in between does not: the user is left with `Title.mp4` at 0 bytes in Downloads, which looks like a successful download of a broken video.
-- **Fix**: Record claimed names in the job's working folder before the move, and reap zero-byte orphans for that job on the next run — or claim under a dot-prefixed name and rename onto the final name only after the move succeeds.
+#### ✅ Fixed (was 🟡 Bug) — A crash between claiming and moving no longer leaves an empty "finished" file
+- **Location**: `viddl/download.py:1408-1445` (`_deliver`), `viddl/download.py:1479-1525` (`_claim_name`), `viddl/download.py:1527-1537` (`_release_name`), helpers at `viddl/download.py:320-343`
+- **Status**: Fixed — the destination name is still claimed with `O_EXCL`, but what is created is a hidden reservation *beside* the name (`.viddl-name-<hash of the name>`, mode `0600`, holding the pid and birth time) rather than an empty file under it. `os.replace` is now the only thing that ever creates the visible name, and the reservation is dropped once the move has either filled the name or failed. A reservation whose owner is gone, or that has outlived `_CLAIM_TTL`, is reaped instead of respected, so a crashed run cannot block the name for the runs after it either. `tests/test_download.py::test_a_run_killed_between_claiming_and_moving_leaves_no_empty_video` claims a name, abandons it the way a killed run would, and asserts the next run takes that same name back and delivers a whole file; `test_a_claimed_name_is_never_handed_out_twice` still proves four claims get four names, and now also proves nothing is created under any of them.
+- **Problem**: The destination name was claimed by creating a zero-byte file, then `os.replace` filled it. The `except OSError` path cleaned up, but a process kill in between did not: the user was left with `Title.mp4` at 0 bytes in Downloads, which looks like a successful download of a broken video. Nothing reaped it either, because the claim was already gone and the name was taken forever.
+- **Fix**: Claim the name with a hidden reservation, and let the move be the only thing that creates the file.
+  ```python
+  target = self.out_dir / name
+  reservation = _name_claim(self.out_dir, name)   # .viddl-name-<sha1(name)[:12]>
+  if target.exists():
+      _reap_name_claim(reservation)               # litter left by the run that delivered
+      continue
+  try:
+      handle = os.open(reservation, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+  except FileExistsError:
+      if not _reap_name_claim(reservation):       # a live run is delivering this name
+          continue
+      handle = os.open(reservation, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+  ```
 
 **🟢 Low**
 
@@ -230,12 +244,12 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 
 ### Overall Score: 9/10
 
-This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical and High closed, the remaining drag is the one Medium lifecycle gap left — the delivery window — and a few of the codebase's own lessons (delivery windows, option-shaped values, the recent list's own float guard) not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
+This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical, High and Medium closed, the remaining drag is a short list of Low findings — the recent list's own float guard, two `assert`s on production paths, one hand-rolled command-line quoter and one class holding too much — each one the codebase's own lesson not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
 
 ### Top 3 Priority Fixes
 
-1. **Close the delivery window that leaves an empty "finished" file.** The destination is created zero-byte and filled by `os.replace` (`download.py:1276-1302`), so a kill in between leaves a file that looks like a successful download; claim under a dot name and rename onto the final name only after the move.
+1. **Give the recent list the same float guard as progress.** `history._as_float` accepts `inf`, and `datetime.fromtimestamp(inf)` raises wherever a hand-edited row is rendered (`history.py:263-270`) — one `math.isfinite` call, the same lesson already applied in `formats` and `download`.
 
-2. **Give the recent list the same float guard as progress.** `history._as_float` accepts `inf`, and `datetime.fromtimestamp(inf)` raises wherever a hand-edited row is rendered (`history.py:263-270`) — one `math.isfinite` call, the same lesson already applied in `formats` and `download`.
+2. **Replace the `assert`s on production paths.** `python -O` / `PYTHONOPTIMIZE=1` removes the checks at `download.py:1164` and `tui/app.py:3355`, so `self._process.stdout` and `path` flow on as `None` and fail further away with a less useful error; an explicit `if … is None: raise ToolError(...)` keeps the message where the cause is.
 
-3. **Replace the `assert`s on production paths.** `python -O` / `PYTHONOPTIMIZE=1` removes the checks at `download.py:1164` and `tui/app.py:3355`, so `self._process.stdout` and `path` flow on as `None` and fail further away with a less useful error; an explicit `if … is None: raise ToolError(...)` keeps the message where the cause is.
+3. **Finish consolidating the command-line rule.** `shortcut._command_line` (`shortcut.py:93-94`) still builds a Windows command line by hand while everything that needs one for the `viddl://` handler delegates to `subprocess.list2cmdline`; one home for the rule keeps the next launcher from inventing a third spelling.

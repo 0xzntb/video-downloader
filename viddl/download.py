@@ -96,6 +96,11 @@ _RETRY_SLICE_SECONDS = 0.1
 #: test and the claim in one step, which is what keeps two windows apart.
 _CLAIM_NAME = ".viddl-busy"
 
+#: Marks the right to deliver a name in the downloads folder. Kept beside that
+#: name rather than on it, so a run killed between claiming and moving leaves
+#: nothing a person would mistake for a finished video.
+_NAME_CLAIM_PREFIX = ".viddl-name-"
+
 #: How long a claim is believed when its owner cannot be checked. A process id
 #: can be reused by an unrelated program, and versions before this one wrote no
 #: owner at all, so age is the fallback that cannot be fooled.
@@ -310,6 +315,31 @@ def _claim_is_stale(claim: Path) -> bool:
         return now - claim.stat().st_mtime > _CLAIM_TTL
     except OSError:
         return False
+
+
+def _name_claim(out_dir: Path, filename: str) -> Path:
+    """Where the right to deliver ``filename`` in ``out_dir`` is written down.
+
+    A hidden neighbour, hashed so that a long or awkward title cannot make a
+    name this module has to quote or truncate, and dot-prefixed so that it is
+    never the name the user is looking for.
+    """
+    digest = hashlib.sha1(filename.encode("utf-8")).hexdigest()[:12]
+    return out_dir / f"{_NAME_CLAIM_PREFIX}{digest}"
+
+
+def _reap_name_claim(reservation: Path) -> bool:
+    """Throw away a reservation left by a run that is gone; is the name free?
+
+    ``False`` means somebody may still be delivering that name — the run
+    holding the reservation wrote it a moment ago — and it must not be taken
+    from under them.
+    """
+    if not _claim_is_stale(reservation):
+        return False
+    with contextlib.suppress(OSError):
+        reservation.unlink()
+    return True
 
 
 def stop_process_tree(process: subprocess.Popen, force: bool = False) -> None:
@@ -1381,9 +1411,12 @@ class DownloadJob:
         The name is claimed with an exclusive create *before* the move, so two
         windows finishing at the same instant take ``Title.mp4`` and
         ``Title (2).mp4`` rather than one overwriting the other. ``os.replace``
-        then puts our bytes where the claim is, atomically: a reader either sees
-        the claim (an empty file, for a moment) or the finished file, never half
-        of one download and half of another.
+        then puts our bytes where the claim is, atomically.
+
+        The claim is a hidden reservation *beside* the name, not an empty file
+        in its place: the move is the only thing that ever creates the name, so
+        a run killed between the two leaves a dot-file the next run reaps rather
+        than a zero-byte video that reads as a download that worked.
 
         ``announce=False`` delivers without claiming the progress bar reached
         the end: a live recording stopped on purpose is a file the user asked
@@ -1393,14 +1426,15 @@ class DownloadJob:
         try:
             os.replace(source, target)
         except OSError:
-            # Nothing else can be done with a name we could not fill; leaving an
-            # empty file behind under a real name would be the worse outcome.
-            with contextlib.suppress(OSError):
-                target.unlink()
+            # Nothing can be done with a name we could not fill; the reservation
+            # goes with it, so the next attempt may take the name. Nothing was
+            # ever created under the name itself, so nothing is left behind.
+            self._release_name(target)
             # The finished file is still in the working folder, so let the next
             # run have it back rather than keeping the folder claimed for ever.
             self._release_claim()
             raise
+        self._release_name(target)
         self._deliver_attachments(source, target)
         self._discard_work()
         if announce:
@@ -1435,11 +1469,11 @@ class DownloadJob:
             try:
                 os.replace(sibling, claimed)
             except OSError as exc:
-                with contextlib.suppress(OSError):
-                    claimed.unlink()
+                self._release_name(claimed)
                 if self.on_log:
                     self.on_log(f"Could not save the cover image: {exc}")
                 continue
+            self._release_name(claimed)
             self.attachments.append(claimed)
 
     def _claim_name(self, filename: str) -> Path:
@@ -1447,21 +1481,58 @@ class DownloadJob:
 
         O_EXCL is the whole point: the check and the claim are one step, so no
         two jobs can both decide a name is free and then both write to it.
+
+        What is created is the hidden reservation beside the name, not an empty
+        file under it — see :meth:`_deliver`. A reservation whose owner is gone
+        is reaped rather than respected, so a crash cannot block the name for
+        the runs that come after it.
         """
         stem, suffix = os.path.splitext(filename)
         for number in range(1, 1000):
             name = filename if number == 1 else f"{stem} ({number}){suffix}"
             target = self.out_dir / name
-            try:
-                handle = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            except FileExistsError:
+            reservation = _name_claim(self.out_dir, name)
+            if target.exists():
+                # A finished file owns the name. A reservation beside it was
+                # left by the run that delivered it, and is litter now.
+                _reap_name_claim(reservation)
                 continue
+            try:
+                handle = os.open(
+                    reservation, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+                )
+            except FileExistsError:
+                # Somebody is delivering this name right now, or a run that is
+                # gone reserved it and never came back.
+                if not _reap_name_claim(reservation):
+                    continue
+                try:
+                    handle = os.open(
+                        reservation, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+                    )
+                except OSError:
+                    # Two runs noticed the same dead reservation; the other won.
+                    continue
+            with contextlib.suppress(OSError):
+                # The file's existence is the reservation; the owner and its
+                # age only let a later run tell a live one from one left behind.
+                os.write(handle, f"{os.getpid()} {time.time():.0f}\n".encode("ascii"))
             os.close(handle)
             return target
         raise ToolError(
             "There are already too many files with that name.",
             f"Tidy up the ones you do not need in {self.out_dir} and try again.",
         )
+
+    def _release_name(self, target: Path) -> None:
+        """Give up the reservation for ``target``: the file itself holds it now.
+
+        Called once the move has either filled the name or failed, so a
+        delivery that worked does not leave a hidden reservation behind and one
+        that did not keeps the name free for the next attempt.
+        """
+        with contextlib.suppress(OSError):
+            _name_claim(self.out_dir, target.name).unlink()
 
     # -- internals ----------------------------------------------------------
     def _retry_wait(self, attempt: int) -> float:
