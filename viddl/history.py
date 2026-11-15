@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import threading
 import time
@@ -275,11 +276,18 @@ def _as_int(value: object) -> int:
 
 
 def _as_float(value: object) -> float:
+    """A finite, positive number from whatever the file held, or 0 — never `inf`.
+
+    ``1e400`` is a valid JSON number and parses to ``inf``, which passes a bare
+    ``> 0`` and then makes every render of the row nonsense (``inf`` is not a
+    time). 0 is the same answer the module gives a row with no date at all, so
+    a hand-edited list skips a field rather than failing the screen.
+    """
     try:
         number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return 0.0
-    return number if number > 0 else 0.0
+    return number if math.isfinite(number) and number > 0 else 0.0
 
 
 # --------------------------------------------------------------------------- the archive

@@ -199,6 +199,22 @@ def test_a_row_with_no_when_says_nothing_about_it(tmp_path):
     assert entry.row_note == ""
 
 
+def test_a_hand_edited_when_that_is_enormous_is_no_date_rather_than_a_lie(tmp_path):
+    """``1e400`` is valid JSON, parses to ``inf``, and is not a time."""
+    appdata.history_path().parent.mkdir(parents=True, exist_ok=True)
+    row = json.dumps({"path": str(tmp_path / "x.mp4"), "title": "Far Too Old"})
+    appdata.history_path().write_text(
+        "[" + row[:-1] + ', "when": 1e400}]', encoding="utf-8"
+    )
+
+    (found,) = history.entries()
+
+    assert found.when == 0.0
+    # Not a crash, and not the "just now" an infinity would otherwise report.
+    assert found.when_text == ""
+    assert found.row_note == "file is gone"
+
+
 # ---------------------------------------------------------------------------
 # the download archive
 # ---------------------------------------------------------------------------

@@ -207,10 +207,14 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 
 **🟢 Low**
 
-#### 🟢 Bug — `_as_float` lets `inf` into the recent list
-- **Location**: `viddl/history.py:263-270`
-- **Problem**: `float("inf") > 0` is true, so a hand-edited `"when": 1e400` survives parsing. `datetime.fromtimestamp(inf)` raises `OverflowError`/`OSError` wherever the row is rendered — the module's own docstring says hand editing is expected.
-- **Fix**: `return number if math.isfinite(number) and number > 0 else 0.0`
+#### ✅ Fixed (was 🟢 Bug) — A hand-edited `when` of `inf` no longer reaches the recent list
+- **Location**: `viddl/history.py:278-289` (`_as_float`)
+- **Status**: Fixed — `_as_float` now requires `math.isfinite` as well as `> 0`, so `1e400` reads as "no date" (0, which the row already renders as nothing) instead of a number that is not a time. `tests/test_history.py::test_a_hand_edited_when_that_is_enormous_is_no_date_rather_than_a_lie` writes a real `1e400` row into the list and asserts the row still renders — with no date and no invented "just now" — instead of raising.
+- **Problem**: `float("inf") > 0` is true, so a hand-edited `"when": 1e400` survived parsing. The row then rendered as "just now" (`time.time() - inf` clamps to 0) or, on a platform that reached the long-age branch, made `time.localtime(inf)` raise — the module's own docstring says hand editing is expected.
+- **Fix**:
+  ```python
+  return number if math.isfinite(number) and number > 0 else 0.0
+  ```
 
 #### 🟢 Bug — `assert` used on production paths
 - **Location**: `viddl/download.py:1164`, `viddl/tui/app.py:3355`
@@ -244,12 +248,12 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 
 ### Overall Score: 9/10
 
-This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical, High and Medium closed, the remaining drag is a short list of Low findings — the recent list's own float guard, two `assert`s on production paths, one hand-rolled command-line quoter and one class holding too much — each one the codebase's own lesson not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
+This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical, High and Medium closed, the remaining drag is a short list of Low findings — two `assert`s on production paths, one hand-rolled command-line quoter and one class holding too much — each one the codebase's own lesson not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
 
 ### Top 3 Priority Fixes
 
-1. **Give the recent list the same float guard as progress.** `history._as_float` accepts `inf`, and `datetime.fromtimestamp(inf)` raises wherever a hand-edited row is rendered (`history.py:263-270`) — one `math.isfinite` call, the same lesson already applied in `formats` and `download`.
+1. **Replace the `assert`s on production paths.** `python -O` / `PYTHONOPTIMIZE=1` removes the checks at `download.py:1164` and `tui/app.py:3355`, so `self._process.stdout` and `path` flow on as `None` and fail further away with a less useful error; an explicit `if … is None: raise ToolError(...)` keeps the message where the cause is.
 
-2. **Replace the `assert`s on production paths.** `python -O` / `PYTHONOPTIMIZE=1` removes the checks at `download.py:1164` and `tui/app.py:3355`, so `self._process.stdout` and `path` flow on as `None` and fail further away with a less useful error; an explicit `if … is None: raise ToolError(...)` keeps the message where the cause is.
+2. **Finish consolidating the command-line rule.** `shortcut._command_line` (`shortcut.py:93-94`) still builds a Windows command line by hand while everything that needs one for the `viddl://` handler delegates to `subprocess.list2cmdline`; one home for the rule keeps the next launcher from inventing a third spelling.
 
-3. **Finish consolidating the command-line rule.** `shortcut._command_line` (`shortcut.py:93-94`) still builds a Windows command line by hand while everything that needs one for the `viddl://` handler delegates to `subprocess.list2cmdline`; one home for the rule keeps the next launcher from inventing a third spelling.
+3. **Split `DownloadJob` into its collaborators.** The retry policy, the delivery/claim protocol and the progress parser are independently testable and currently only reachable through a real subprocess (`download.py:600-1720`); extracting them is what makes the stale-claim and 0-byte-file fixes unit-testable without a fake engine.
