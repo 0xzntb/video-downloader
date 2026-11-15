@@ -1293,8 +1293,19 @@ class DownloadJob:
                 raw=str(exc),
             ) from exc
 
-        assert self._process.stdout is not None
-        for line in self._process.stdout:
+        stream = self._process.stdout
+        if stream is None:  # pragma: no cover - ``stdout=PIPE`` above always gives one
+            # An ``assert`` here would be gone under ``python -O``, and the
+            # ``None`` would then fail inside the loop below with a message that
+            # says nothing about where it came from. Unreachable as written, and
+            # said plainly anyway: the invariant is answered, not crashed on.
+            self._signal_tree(self._process, force=True)
+            self._stop_watchdog()
+            raise ToolError(
+                "The video engine could not be read.",
+                "Try running Viddl again.",
+            )
+        for line in stream:
             self._handle_line(line.rstrip("\n"))
             if self._cancelled.is_set():
                 break

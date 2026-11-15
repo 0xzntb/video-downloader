@@ -3368,7 +3368,15 @@ class ResultScreen(ViddlScreen):
             )
             return
         path = self.saved_path
-        assert path is not None
+        if path is None:
+            # ``compose`` above chose the saved layout, so this is a state that
+            # should not exist. Said on the screen rather than left to an
+            # ``assert``, which ``python -O`` would drop: ``path.stat()`` below
+            # would then fail with an AttributeError that names nothing.
+            self.query_one("#result-sub", Static).update(
+                _plain("The download finished, but no file was recorded.")
+            )
+            return
         option = self.app.state.option
         label = option.label if option is not None else "File"
         size = human_size(path.stat().st_size) if path.exists() else "?"

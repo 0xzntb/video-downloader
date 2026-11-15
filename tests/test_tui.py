@@ -3211,6 +3211,19 @@ async def test_the_done_screen_names_the_container_and_the_length(tmp_path):
         assert "KB" in sub
 
 
+@pytest.mark.asyncio
+async def test_a_result_screen_with_no_path_says_so_instead_of_crashing(tmp_path):
+    """No file and no error is a state that should not exist — but it cannot crash."""
+    app = ViddlApp(initial_url=URL, services=make_services(tmp_path))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await settle(pilot)
+        app.switch_screen(ResultScreen(saved_path=None))
+        await settle(pilot)
+
+        assert isinstance(app.screen, ResultScreen)
+        assert "no file was recorded" in shown(app.screen, "#result-sub")
+
+
 class Mp3Job(FakeJob):
     """A download that really lands an .mp3, so the file agrees with the row."""
 

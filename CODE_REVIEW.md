@@ -216,10 +216,19 @@ First impression: this is unusually disciplined code. Boundaries that usually le
   return number if math.isfinite(number) and number > 0 else 0.0
   ```
 
-#### 🟢 Bug — `assert` used on production paths
-- **Location**: `viddl/download.py:1164`, `viddl/tui/app.py:3355`
-- **Problem**: `python -O` / `PYTHONOPTIMIZE=1` removes both checks; `self._process.stdout` and `path` then flow on as `None` and fail further away with a less useful error.
-- **Fix**: Replace with an explicit `if … is None: raise ToolError(...)` (and the same for the screen's copy) or a `cast` plus a test-visible invariant.
+#### ✅ Fixed (was 🟢 Bug) — No `assert` is left on a production path
+- **Location**: `viddl/download.py:1296-1308` (`_run_once`), `viddl/tui/app.py:3370-3379` (`ResultScreen.on_mount`)
+- **Status**: Fixed — the download path raises `ToolError("The video engine could not be read.")` after stopping the child it can no longer read, and the result screen says on screen that the download finished but no file was recorded, instead of indexing `None`. `tests/test_tui.py::test_a_result_screen_with_no_path_says_so_instead_of_crashing` puts the screen into that state on purpose and asserts the sentence appears; the download branch is `# pragma: no cover` because `stdout=PIPE` is what makes it unreachable, and the invariant is now an answer rather than a comment.
+- **Problem**: `python -O` / `PYTHONOPTIMIZE=1` removed both checks; `self._process.stdout` and `path` then flowed on as `None` and failed further away with a less useful error (a `TypeError` inside the read loop, an `AttributeError` on `path.stat()`).
+- **Fix**:
+  ```python
+  stream = self._process.stdout
+  if stream is None:  # pragma: no cover - ``stdout=PIPE`` above always gives one
+      self._signal_tree(self._process, force=True)
+      self._stop_watchdog()
+      raise ToolError("The video engine could not be read.", "Try running Viddl again.")
+  ```
+  and, in the screen, an early `return` after writing the sentence — the actions beside it already answer `saved_path is None` the same way (`Show in folder`, `Play` and `Copy` each return).
 
 #### 🟢 Security — One hand-rolled command-line quoter left
 - **Location**: `viddl/shortcut.py:93-94`
@@ -248,12 +257,12 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 
 ### Overall Score: 9/10
 
-This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical, High and Medium closed, the remaining drag is a short list of Low findings — two `assert`s on production paths, one hand-rolled command-line quoter and one class holding too much — each one the codebase's own lesson not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
+This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical, High and Medium closed, the remaining drag is a short list of Low findings — one hand-rolled command-line quoter and one class holding too much — each one the codebase's own lesson not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
 
 ### Top 3 Priority Fixes
 
-1. **Replace the `assert`s on production paths.** `python -O` / `PYTHONOPTIMIZE=1` removes the checks at `download.py:1164` and `tui/app.py:3355`, so `self._process.stdout` and `path` flow on as `None` and fail further away with a less useful error; an explicit `if … is None: raise ToolError(...)` keeps the message where the cause is.
+1. **Finish consolidating the command-line rule.** `shortcut._command_line` (`shortcut.py:93-94`) still builds a Windows command line by hand while everything that needs one for the `viddl://` handler delegates to `subprocess.list2cmdline`; one home for the rule keeps the next launcher from inventing a third spelling.
 
-2. **Finish consolidating the command-line rule.** `shortcut._command_line` (`shortcut.py:93-94`) still builds a Windows command line by hand while everything that needs one for the `viddl://` handler delegates to `subprocess.list2cmdline`; one home for the rule keeps the next launcher from inventing a third spelling.
+2. **Add the Windows handler's adversarial test.** The macOS runner now has one; the batch handler is still only checked for being written, with nothing feeding it a quote or a `&` and asserting that cmd.exe cannot run anything else.
 
 3. **Split `DownloadJob` into its collaborators.** The retry policy, the delivery/claim protocol and the progress parser are independently testable and currently only reachable through a real subprocess (`download.py:600-1720`); extracting them is what makes the stale-claim and 0-byte-file fixes unit-testable without a fake engine.
