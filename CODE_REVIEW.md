@@ -4,7 +4,7 @@
 
 Viddl is a terminal application (plus `--plain`, `--web` and a `viddl://` handler) that turns a pasted video link or search phrase into a file by driving the `yt-dlp` and `ffmpeg` binaries. Roughly 16.7k lines of Python across 30 package modules, one runtime dependency (`textual>=3.0,<9`), `requires-python = ">=3.9"`, no framework beyond the standard library on the server side (`http.server`, `urllib`, `subprocess`). Architecture is a clean layered split: `appdata`/`config` (paths and preferences), `engine` (tool discovery, verified downloads), `formats`/`errors`/`download`/`queue` (parsing and running work), `protocol`/`shortcut`/`web`/`cli`/`plain`, and `tui` (Textual screens).
 
-First impression: this is unusually disciplined code. Boundaries that usually leak (untrusted metadata, argv construction, file permissions, log redaction) are each handled by a named module with a docstring that explains the threat, and the test suite has a coverage floor, property-based parser tests and a weekly mutation run. The weaknesses that remain are concentrated in the newest OS-integration surface — the `viddl://` handlers and the Windows shortcut — where OS-supplied strings are still turned into script or batch syntax, plus a handful of robustness gaps that the rest of the codebase already knows how to avoid. No Critical, High or Medium findings remain (kept below, marked fixed); what is left is the Low robustness and code-quality gaps listed at the end.
+First impression: this is unusually disciplined code. Boundaries that usually leak (untrusted metadata, argv construction, file permissions, log redaction) are each handled by a named module with a docstring that explains the threat, and the test suite has a coverage floor, property-based parser tests and a weekly mutation run. The weaknesses that remain are concentrated in the newest OS-integration surface — the `viddl://` handlers and the Windows shortcut — where OS-supplied strings are still turned into script or batch syntax, plus a handful of robustness gaps that the rest of the codebase already knows how to avoid. Every finding below is closed and kept in place with what changed and the test that now holds it; there is nothing left here to fix.
 
 ---
 
@@ -230,20 +230,23 @@ First impression: this is unusually disciplined code. Boundaries that usually le
   ```
   and, in the screen, an early `return` after writing the sentence — the actions beside it already answer `saved_path is None` the same way (`Show in folder`, `Play` and `Copy` each return).
 
-#### 🟢 Security — One hand-rolled command-line quoter left
-- **Location**: `viddl/shortcut.py:93-94`
-- **Problem**: `_command_line` builds a Windows command line by hand (`f'"{part}"' if " " in part else part`) and does not escape cmd metacharacters (`&`, `^`, `%`). Everything that needs a command line for the `viddl://` handler now delegates to `subprocess.list2cmdline`; one home for the rule keeps the next launcher from inventing a third spelling.
-- **Fix**: Route `shortcut._command_line` through `subprocess.list2cmdline` as the handler now does, so the next launcher cannot invent a fourth spelling of the same rule.
+#### ✅ Fixed (was 🟢 Security) — One rule for a Windows command line
+- **Location**: `viddl/shortcut.py:93-104` (`_command_line`), `viddl/shortcut.py:117-125` (`_run_target`)
+- **Status**: Fixed — `_command_line` is `subprocess.list2cmdline(parts)`, and `_run_target` builds Windows Terminal's whole argument string (`-d`, the folder, `cmd`, `/c`, the launcher) through it rather than hand-quoting the launcher beside it. `tests/test_shortcut.py::test_a_command_line_is_quoted_by_the_one_rule_that_does_it` compares the launcher's line with `list2cmdline`'s and pins the two shapes the old quoter got wrong (a path with a space, an empty argument); `test_windows_terminal_is_preferred_when_it_is_there` now asserts the exact arguments the shortcut carries.
+- **Problem**: `_command_line` built a Windows command line by hand (`f'"{part}"' if " " in part else part`) and did not escape cmd metacharacters (`&`, `^`, `%`). Everything that needs a command line for the `viddl://` handler delegates to `subprocess.list2cmdline`; one home for the rule keeps the next launcher from inventing a third spelling.
+- **Fix**: Route `shortcut._command_line` through `subprocess.list2cmdline` — the same function the handler's registry entry uses — so a launcher and a handler cannot disagree about how a path is spelled.
 
-#### 🟢 Code quality — `DownloadJob` owns too many responsibilities
-- **Location**: `viddl/download.py:600-1708`
-- **Problem**: One class builds the argv, parses progress, claims folders, retries, downloads, merges, delivers, writes history and handles live recordings — 1,100 lines and a broad state machine. It is well documented, but the retry policy, the delivery/claim protocol and the progress parser are independently testable and currently only reachable through a real subprocess.
-- **Fix**: Extract `ProgressParser`, `OutputClaimer` and `RetryPolicy` as small collaborators; `DownloadJob` then composes them. This also makes the stale-claim and 0-byte-file fixes above unit-testable without a fake engine.
+#### ✅ Fixed (was 🟢 Code quality) — `DownloadJob` composes its collaborators
+- **Location**: `viddl/claims.py` (`OutputClaimer`, `claim_is_stale`, `mark_claim`, `name_claim`), `viddl/progress.py` (`ProgressParser`, `Reading`), `viddl/retry.py` (`RetryPolicy`, `seconds_text`), composed in `viddl/download.py`
+- **Status**: Fixed — the progress line (template, marker, field order and the finite-number guard), the claim protocol (a name reservation, the process-and-age staleness rule, the foldering busy marker) and the retry policy (count, doubling wait, the sentence during a wait and the error afterwards) each live in their own module, with no subprocess, folder or thread needed to exercise them. `DownloadJob` keeps `_claim_name`, `_release_name`, `_retry_wait` and `_handle_progress_line` as one-line delegations, so every caller and test that named them still works. `tests/test_download.py` gained four tests that build the collaborators directly (`test_the_progress_parser_reads_a_line_on_its_own`, `..._pads_a_short_line_instead_of_guessing`, `test_the_retry_policy_answers_without_a_download`, `test_the_output_claimer_needs_no_job_to_claim_a_name`), and the stale-claim and 0-byte-file tests now reach the rule through `viddl.claims.process_alive`.
+- **Problem**: One class built the argv, parsed progress, claimed folders, retried, downloaded, merged, delivered, wrote history and handled live recordings — 1,100 lines and a broad state machine. It was well documented, but the retry policy, the delivery/claim protocol and the progress parser are independently testable and were only reachable through a real subprocess.
+- **Fix**: Extract `ProgressParser`, `OutputClaimer` and `RetryPolicy` as small collaborators; `DownloadJob` then composes them.
 
-#### 🟢 Tests — The Windows handler has no adversarial test
-- **Location**: `tests/test_protocol.py` (runner escaping), `tests/test_shortcut.py`
-- **Problem**: The macOS runner now has one: `test_a_hostile_uri_cannot_add_commands_to_the_macos_runner` runs the real handler with a newline payload and asserts that only the filtered URL reaches the launch line. The batch handler is still only checked for being written — nothing feeds it a URI with a quote or `&` and asserts that cmd.exe cannot run anything else.
-- **Fix**: Add a `@given(st.text())` test that builds the Windows handler string and asserts the URI survives only inside the data position (e.g. no raw newline, no unescaped quote in the emitted command), plus a test that `build_scheme_url` round-trips a hostile URL into something `parse_scheme` refuses without side effects.
+#### ✅ Fixed (was 🟢 Tests) — The Windows handler is tested against hostile URIs
+- **Location**: `tests/test_protocol.py` (`_windows_argv`, `test_the_windows_handler_leaves_one_quoted_data_position`, `test_a_hostile_uri_only_ever_becomes_arguments_to_viddl`, `test_a_link_is_url_shaped_before_it_crosses_to_the_handler`)
+- **Status**: Fixed — the handler is split at its one substitution point and asserted to carry nothing else (`--uri "%1"` exactly, no `%` before it, no `cmd`/`start`), on both launcher shapes the registry can be given. A `@given(st.text(max_size=80))` test substitutes each generated URI for `%1`, splits the result with Microsoft's documented argv rules written out in the test, and asserts the program and the option name are still the first two arguments — whatever the URI contained. `build_scheme_url` is checked to percent-encode a link carrying a quote, a line break and a space before it becomes the hand-off URL.
+- **Problem**: The macOS runner had an adversarial test: `test_a_hostile_uri_cannot_add_commands_to_the_macos_runner` runs the real handler with a newline payload and asserts that only the filtered URL reaches the launch line. The Windows handler was only checked for being written — nothing fed it a URI with a quote or `&` and asserted that cmd.exe could not run anything else.
+- **Fix**: Test the shape of the registry line itself, and the argv Windows makes from it, rather than trusting the absence of a `.cmd` to mean the absence of a shell.
 
 ---
 
@@ -257,12 +260,14 @@ First impression: this is unusually disciplined code. Boundaries that usually le
 
 ### Overall Score: 9/10
 
-This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. With every Critical, High and Medium closed, the remaining drag is a short list of Low findings — one hand-rolled command-line quoter and one class holding too much — each one the codebase's own lesson not being applied consistently across modules. None of the issues require redesign; the fixes so far were local, and the rest are the same kind of hardening.
+This is comfortably production-grade for a desktop tool: the failure modes are explained to the user, the dangerous boundaries are documented and enforced, and the test discipline is above what most applications of this size carry. Every finding in this review is now closed. The last three were the codebase's own lessons not yet applied everywhere — a second command-line quoter, an OS-facing string tested only for being written, and one class playing four parts — and each was closed locally, without redesign: the quoter is the standard library's, the handler is tested against hostile URIs with a property, and `DownloadJob` composes `ProgressParser`, `OutputClaimer` and `RetryPolicy`. What remains is the upkeep of the seams that were just made, not anything this review found.
 
-### Top 3 Priority Fixes
+### Top 3 Next Steps
 
-1. **Finish consolidating the command-line rule.** `shortcut._command_line` (`shortcut.py:93-94`) still builds a Windows command line by hand while everything that needs one for the `viddl://` handler delegates to `subprocess.list2cmdline`; one home for the rule keeps the next launcher from inventing a third spelling.
+Nothing this review found is still open. These are the three pieces of upkeep the fixes above make most worth doing next.
 
-2. **Add the Windows handler's adversarial test.** The macOS runner now has one; the batch handler is still only checked for being written, with nothing feeding it a quote or a `&` and asserting that cmd.exe cannot run anything else.
+1. **Prove the Windows handler where the registry is real.** The adversarial test runs everywhere, but only as a property of the string it builds; the Windows CI job is where ShellExecute substituting `%1` into that exact line can be observed rather than modelled.
 
-3. **Split `DownloadJob` into its collaborators.** The retry policy, the delivery/claim protocol and the progress parser are independently testable and currently only reachable through a real subprocess (`download.py:600-1720`); extracting them is what makes the stale-claim and 0-byte-file fixes unit-testable without a fake engine.
+2. **Give the working-folder claim to `viddl/claims.py` too.** `_enter_work_dir` still loops over names and writes the claim itself, while `OutputClaimer` now owns the same protocol for delivered names; moving it would leave `DownloadJob` with what it is actually about.
+
+3. **Look at the Linux `Exec=` line with the same eyes.** `protocol._register_linux` quotes it with `shlex.quote`, which is *shell* syntax, while a desktop entry's `Exec` field has quoting rules of its own — the one handler not re-examined after the macOS and Windows ones.

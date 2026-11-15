@@ -128,7 +128,9 @@ falling out of step fails the pull request instead of somebody's install.
 | File | What lives there |
 | --- | --- |
 | `viddl/cli.py` | The arguments, `--doctor`, `--update`, and which front end runs |
-| `viddl/download.py` | The download job, progress parsing, probing a link, playlist listing |
+| `viddl/download.py` | The download job, probing a link, playlist listing |
+| `viddl/progress.py`, `viddl/retry.py` | The engine's progress line, and how a temporary failure is tried again |
+| `viddl/claims.py` | Claiming a name or a working folder, so two runs cannot collide |
 | `viddl/formats.py` | The quality menu: grouping rows, estimating sizes |
 | `viddl/engine.py` | Finding, installing, verifying and updating yt-dlp and ffmpeg |
 | `viddl/errors.py`, `viddl/i18n/` | The rules that turn engine output into a sentence, and their words |
