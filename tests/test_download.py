@@ -18,10 +18,13 @@ import pytest
 
 from viddl import appdata, history, logfile
 from viddl import download as download_mod
+from viddl.claims import CLAIM_TTL, OutputClaimer
 from viddl.download import DownloadCancelled, DownloadJob, ProbeCancelled, probe_video
 from viddl.engine import Tool, ToolError
 from viddl.formats import MediaOption
 from viddl.network import NetworkOptions
+from viddl.progress import ProgressParser
+from viddl.retry import RetryPolicy
 
 SUCCESS_SCRIPT = """\
 import os, pathlib, sys
@@ -1559,7 +1562,7 @@ def test_an_empty_claim_from_a_dead_version_expires(tmp_path):
     work.mkdir(parents=True)
     claim = work / ".viddl-busy"
     claim.write_text("", encoding="ascii")
-    old = time.time() - download_mod._CLAIM_TTL - 60
+    old = time.time() - CLAIM_TTL - 60
     os.utime(claim, (old, old))
 
     assert job._enter_work_dir() == work
@@ -1663,7 +1666,7 @@ def test_a_run_killed_between_claiming_and_moving_leaves_no_empty_video(
 
     # The next run for the same video takes the name over, because the run that
     # reserved it is gone — and it delivers a whole file, not an empty one.
-    monkeypatch.setattr(download_mod, "_process_alive", lambda pid: False)
+    monkeypatch.setattr("viddl.claims.process_alive", lambda pid: False)
     job = DownloadJob(
         engine_for(tmp_path, "fake_ok.py", SUCCESS_SCRIPT),
         "https://x.invalid/v",
@@ -2466,3 +2469,53 @@ def test_a_download_that_worked_writes_nothing(tmp_path, written_log):
     job.run()
 
     assert written_log() == ""
+
+
+# ---------------------------------------------------------------------------
+# the collaborators, without a download
+# ---------------------------------------------------------------------------
+
+
+def test_the_progress_parser_reads_a_line_on_its_own():
+    """The line is a small, complete thing: reading it needs no job (E9)."""
+    reading = ProgressParser().parse(
+        "VIDDLPROGRESS|42.5|1048576|75|500|1000|NA|/tmp/v.mp4"
+    )
+
+    assert reading.percent == 42.5
+    assert reading.speed == "1.0 MB/s"
+    assert reading.eta == "1:15"
+    assert (reading.downloaded, reading.total) == (500, 1000)
+    assert reading.total_is_estimate is False
+    assert reading.filename == "/tmp/v.mp4"
+
+
+def test_the_progress_parser_pads_a_short_line_instead_of_guessing():
+    reading = ProgressParser().parse("VIDDLPROGRESS|10")
+
+    assert reading.percent == 10.0
+    assert (reading.downloaded, reading.total) == (0, None)
+    assert reading.filename == ""
+
+
+def test_the_retry_policy_answers_without_a_download():
+    policy = RetryPolicy(attempts=3, delay=4.0)
+
+    assert [policy.wait_after(n) for n in (1, 2)] == [4.0, 8.0]
+    assert policy.label(1, 4.0) == "Retrying in 4s (attempt 2 of 3)…"
+    assert policy.will_retry(ToolError("busy", temporary=True), 1) is True
+    assert policy.will_retry(ToolError("private"), 1) is False
+    # The last attempt is not retried, even when the failure would allow it.
+    assert policy.will_retry(ToolError("busy", temporary=True), 3) is False
+
+
+def test_the_output_claimer_needs_no_job_to_claim_a_name(tmp_path):
+    claimer = OutputClaimer(tmp_path)
+
+    first = claimer.claim("A Video [abc].mp4")
+    second = OutputClaimer(tmp_path).claim("A Video [abc].mp4")
+
+    assert [first.name, second.name] == ["A Video [abc].mp4", "A Video [abc] (2).mp4"]
+    assert not first.exists() and not second.exists()
+    claimer.release(first)
+    assert OutputClaimer(tmp_path).claim("A Video [abc].mp4") == first

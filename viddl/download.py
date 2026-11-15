@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-import math
 import os
 import re
 import shutil
@@ -18,24 +17,19 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import appdata, history, logfile
+from .claims import FOLDER_CLAIM, OutputClaimer, claim_is_stale, mark_claim
 from .cookies import cookies_args
 from .engine import Engine, ToolError, is_windows
 from .errors import explain
 from .extras import Extras
 from .formats import MediaInfo, MediaOption, Playlist, parse_info, parse_playlist
 from .network import NetworkOptions
-
-# The line prefix yt-dlp prints our progress on.
-_PROGRESS_MARKER = "VIDDLPROGRESS"
-_PROGRESS_TEMPLATE = (
-    "download:" + _PROGRESS_MARKER + "|"
-    "%(progress._percent)s|"
-    "%(progress._speed)s|"
-    "%(progress._eta)s|"
-    "%(progress.downloaded_bytes)s|"
-    "%(progress.total_bytes)s|"
-    "%(progress.total_bytes_estimate)s|"
-    "%(progress.filename)s"
+from .progress import TEMPLATE, ProgressParser
+from .retry import (
+    DEFAULT_ATTEMPTS,
+    RETRY_BASE_SECONDS,
+    SLICE_SECONDS,
+    RetryPolicy,
 )
 
 # "Video title [dQw4w9WgXcQ].mp4" — readable, and never silently overwrites.
@@ -78,33 +72,6 @@ _PARTIAL_SUFFIXES = (".part", ".ytdl")
 #: How long a stopped download gets to put its things down before it is killed.
 #: yt-dlp answers a polite stop quickly; a wedged one never does.
 _STOP_GRACE_SECONDS = 5.0
-
-#: How many times one download is tried when the failure is the kind a second
-#: attempt may fix. Three goes: a rate limit or a dropped connection is usually
-#: gone by then, and a fourth would delay the bad news for nothing.
-DEFAULT_ATTEMPTS = 3
-
-#: The first wait after a temporary failure; each further wait doubles it, so a
-#: site having a bad minute is not hammered by the thing that is failing.
-RETRY_BASE_SECONDS = 4.0
-
-#: A wait is slept in slices this long, so a cancel is felt at once instead of
-#: whenever the wait happens to end. The user pressed stop; they mean now.
-_RETRY_SLICE_SECONDS = 0.1
-
-#: Marks a working folder as being written in right now. Creating it is the
-#: test and the claim in one step, which is what keeps two windows apart.
-_CLAIM_NAME = ".viddl-busy"
-
-#: Marks the right to deliver a name in the downloads folder. Kept beside that
-#: name rather than on it, so a run killed between claiming and moving leaves
-#: nothing a person would mistake for a finished video.
-_NAME_CLAIM_PREFIX = ".viddl-name-"
-
-#: How long a claim is believed when its owner cannot be checked. A process id
-#: can be reused by an unrelated program, and versions before this one wrote no
-#: owner at all, so age is the fallback that cannot be fooled.
-_CLAIM_TTL = 12 * 3600
 
 #: yt-dlp's own socket timeout, unless ``VIDDL_TIMEOUT`` says otherwise (R11).
 _SOCKET_TIMEOUT = 20
@@ -197,149 +164,6 @@ class Progress:
     #: so the screen can mark a figure that may still change (U8).
     total_is_estimate: bool = False
     phase: str = "download"
-
-
-def _to_float(value: str) -> Optional[float]:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    # ``"nan"`` and ``"inf"`` are floats to Python and nothing like a progress
-    # figure: ``int(inf)`` raises ``OverflowError``, which used to escape the
-    # progress parser and end a download that was otherwise fine. The quality
-    # list already rejects them the same way (``formats._num``).
-    if not math.isfinite(number) or number < 0:
-        return None
-    return number
-
-
-def _to_int(value: str) -> Optional[int]:
-    number = _to_float(value)
-    return int(number) if number is not None else None
-
-
-def _fmt_speed(bits_per_second: Optional[float]) -> str:
-    from .util import human_size
-
-    if not bits_per_second or bits_per_second <= 0:
-        return ""
-    return f"{human_size(bits_per_second)}/s"
-
-
-def _fmt_eta(seconds: Optional[float]) -> str:
-    from .util import human_duration
-
-    if seconds is None or seconds <= 0:
-        return ""
-    return human_duration(seconds)
-
-
-def seconds_text(seconds: float) -> str:
-    """"4s", not "4.0s" — this is read in passing, not studied."""
-    if abs(seconds - round(seconds)) < 1e-9:
-        return f"{round(seconds)}s"
-    return f"{seconds:.1f}s"
-
-
-def _windows_process_alive(pid: int) -> bool:
-    """Windows' answer to ``os.kill(pid, 0)``, without the kill.
-
-    ``OpenProcess`` succeeds on a process that has exited while its parent
-    still holds a handle to it, so the exit code decides: ``STILL_ACTIVE`` is
-    the only answer that means "running". A missing handle means either no such
-    process or (``ERROR_ACCESS_DENIED``) one that belongs to somebody else.
-    """
-    import ctypes
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
-    kernel32.GetExitCodeProcess.argtypes = [
-        wintypes.HANDLE,
-        ctypes.POINTER(wintypes.DWORD),
-    ]
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-
-    handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
-    if not handle:
-        return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: it exists
-    try:
-        code = wintypes.DWORD(0)
-        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-            return True
-        return code.value == 259  # STILL_ACTIVE
-    finally:
-        kernel32.CloseHandle(handle)
-
-
-def _process_alive(pid: int) -> bool:
-    """Whether a process with this id still exists, on either platform.
-
-    ``os.kill(pid, 0)`` is the POSIX way, but on Windows it is not a probe: a
-    signal other than the two console events terminates the process.
-    """
-    if pid <= 0:
-        return False
-    if is_windows():
-        return _windows_process_alive(pid)
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:  # pragma: no cover - a kernel that says something else
-        return True
-    return True
-
-
-def _claim_is_stale(claim: Path) -> bool:
-    """Whether a claim was left by a run that is no longer writing here.
-
-    The claim names its process and the time it was made. One whose process has
-    exited is free immediately; one that cannot be read (older versions wrote an
-    empty file) or that has outlived :data:`_CLAIM_TTL` is written off as well,
-    because a process id may have been reused since.
-    """
-    try:
-        pid_text, born_text = claim.read_text(encoding="ascii").split()
-        pid, born = int(pid_text), float(born_text)
-    except (OSError, ValueError):
-        pid, born = 0, 0.0
-    now = time.time()
-    if pid > 0 and math.isfinite(born) and now - born <= _CLAIM_TTL:
-        return not _process_alive(pid)
-    try:
-        return now - claim.stat().st_mtime > _CLAIM_TTL
-    except OSError:
-        return False
-
-
-def _name_claim(out_dir: Path, filename: str) -> Path:
-    """Where the right to deliver ``filename`` in ``out_dir`` is written down.
-
-    A hidden neighbour, hashed so that a long or awkward title cannot make a
-    name this module has to quote or truncate, and dot-prefixed so that it is
-    never the name the user is looking for.
-    """
-    digest = hashlib.sha1(filename.encode("utf-8")).hexdigest()[:12]
-    return out_dir / f"{_NAME_CLAIM_PREFIX}{digest}"
-
-
-def _reap_name_claim(reservation: Path) -> bool:
-    """Throw away a reservation left by a run that is gone; is the name free?
-
-    ``False`` means somebody may still be delivering that name — the run
-    holding the reservation wrote it a moment ago — and it must not be taken
-    from under them.
-    """
-    if not _claim_is_stale(reservation):
-        return False
-    with contextlib.suppress(OSError):
-        reservation.unlink()
-    return True
 
 
 def stop_process_tree(process: subprocess.Popen, force: bool = False) -> None:
@@ -797,19 +621,36 @@ class DownloadJob:
         # Retrying is on by default, because a temporary failure that nobody
         # retried is indistinguishable, from where the user sits, from the site
         # being broken. Callers that want one go can ask for one.
-        self.attempts = max(1, int(attempts))
-        self.retry_delay = max(0.0, float(retry_delay))
+        # The count and the wait belong to the policy (``viddl.retry``), which
+        # is also where "is this worth another go" is answered. The two names
+        # stay readable on the job because they are the policy's settings.
+        self.retry = RetryPolicy(attempts=attempts, delay=retry_delay)
 
         self._process: Optional[subprocess.Popen] = None
         self._escalation: Optional[threading.Timer] = None
         self._cancelled = threading.Event()
         self._work_dir: Optional[Path] = None
         self._claim: Optional[Path] = None
+        # The two collaborators that need no download to be themselves: the
+        # reader of yt-dlp's progress line, and what may deliver a name in the
+        # output folder.
+        self._parser = ProgressParser()
+        self._claimer = OutputClaimer(self.out_dir)
         self._started = False
         self._lines: List[str] = []
         self._paths: List[Path] = []
         self.progress = Progress()
         self.started_at = time.time()
+
+    @property
+    def attempts(self) -> int:
+        """How many times this download may be tried, from its policy."""
+        return self.retry.attempts
+
+    @property
+    def retry_delay(self) -> float:
+        """The first wait between attempts, in seconds."""
+        return self.retry.delay
 
     # -- where the bytes go --------------------------------------------------
     def work_dir(self) -> Path:
@@ -877,14 +718,14 @@ class DownloadJob:
         base = self.work_dir()
         for number in range(1, 100):
             candidate = base if number == 1 else base.with_name(f"{base.name}-{number}")
-            claim = candidate / _CLAIM_NAME
+            claim = candidate / FOLDER_CLAIM
             try:
                 candidate.mkdir(parents=True, exist_ok=True)
                 handle = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             except FileExistsError:
                 # A file where the folder should be, or a claim somebody else
                 # holds. Only a claim left by a run that is gone may be taken.
-                if not _claim_is_stale(claim):
+                if not claim_is_stale(claim):
                     continue
                 with contextlib.suppress(OSError):
                     claim.unlink()
@@ -901,10 +742,9 @@ class DownloadJob:
                     f"It is not allowed to write in {self.out_dir}: {exc}",
                     raw=str(exc),
                 ) from exc
-            with contextlib.suppress(OSError):
-                # The file's existence is the claim; the owner and its age only
-                # let a later run tell a live claim from one left behind.
-                os.write(handle, f"{os.getpid()} {time.time():.0f}\n".encode("ascii"))
+            # The file's existence is the claim; the owner and its age only let
+            # a later run tell a live claim from one left behind.
+            mark_claim(handle)
             os.close(handle)
             self._work_dir = candidate
             self._claim = claim
@@ -983,7 +823,7 @@ class DownloadJob:
             *(["--live-from-start"] if self.live_from_start else []),
             "--progress",
             "--progress-template",
-            _PROGRESS_TEMPLATE,
+            TEMPLATE,
             "--trim-filenames",
             "150",
         ]
@@ -1113,7 +953,7 @@ class DownloadJob:
             if self.on_log:
                 self.on_log("$ " + " ".join(args))
 
-            for attempt in range(1, self.attempts + 1):
+            for attempt in range(1, self.retry.attempts + 1):
                 try:
                     finished = self._attempt(args, before)
                 except ToolError as exc:
@@ -1122,8 +962,8 @@ class DownloadJob:
                         # asked to stop, which is what this is — not a failure
                         # to explain to them.
                         raise DownloadCancelled() from exc
-                    if exc.temporary and attempt < self.attempts:
-                        wait = self._retry_wait(attempt)
+                    if self.retry.will_retry(exc, attempt):
+                        wait = self.retry.wait_after(attempt)
                         self._announce_retry(exc, attempt, wait)
                         if not self._wait(wait):
                             raise DownloadCancelled() from exc
@@ -1490,65 +1330,20 @@ class DownloadJob:
     def _claim_name(self, filename: str) -> Path:
         """Reserve the first free name for ``filename`` in the output folder.
 
-        O_EXCL is the whole point: the check and the claim are one step, so no
-        two jobs can both decide a name is free and then both write to it.
-
-        What is created is the hidden reservation beside the name, not an empty
-        file under it — see :meth:`_deliver`. A reservation whose owner is gone
-        is reaped rather than respected, so a crash cannot block the name for
-        the runs that come after it.
+        The claiming itself belongs to :class:`viddl.claims.OutputClaimer`,
+        which needs no download to be tested; this is the job's name for it,
+        because a download is what asks for a name.
         """
-        stem, suffix = os.path.splitext(filename)
-        for number in range(1, 1000):
-            name = filename if number == 1 else f"{stem} ({number}){suffix}"
-            target = self.out_dir / name
-            reservation = _name_claim(self.out_dir, name)
-            if target.exists():
-                # A finished file owns the name. A reservation beside it was
-                # left by the run that delivered it, and is litter now.
-                _reap_name_claim(reservation)
-                continue
-            try:
-                handle = os.open(
-                    reservation, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
-                )
-            except FileExistsError:
-                # Somebody is delivering this name right now, or a run that is
-                # gone reserved it and never came back.
-                if not _reap_name_claim(reservation):
-                    continue
-                try:
-                    handle = os.open(
-                        reservation, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
-                    )
-                except OSError:
-                    # Two runs noticed the same dead reservation; the other won.
-                    continue
-            with contextlib.suppress(OSError):
-                # The file's existence is the reservation; the owner and its
-                # age only let a later run tell a live one from one left behind.
-                os.write(handle, f"{os.getpid()} {time.time():.0f}\n".encode("ascii"))
-            os.close(handle)
-            return target
-        raise ToolError(
-            "There are already too many files with that name.",
-            f"Tidy up the ones you do not need in {self.out_dir} and try again.",
-        )
+        return self._claimer.claim(filename)
 
     def _release_name(self, target: Path) -> None:
-        """Give up the reservation for ``target``: the file itself holds it now.
-
-        Called once the move has either filled the name or failed, so a
-        delivery that worked does not leave a hidden reservation behind and one
-        that did not keeps the name free for the next attempt.
-        """
-        with contextlib.suppress(OSError):
-            _name_claim(self.out_dir, target.name).unlink()
+        """Give up the reservation for ``target``: the file itself holds it now."""
+        self._claimer.release(target)
 
     # -- internals ----------------------------------------------------------
     def _retry_wait(self, attempt: int) -> float:
-        """How long to wait after ``attempt`` failed: the base, then doubled."""
-        return self.retry_delay * (2 ** (attempt - 1))
+        """How long to wait after ``attempt`` failed (see :class:`RetryPolicy`)."""
+        return self.retry.wait_after(attempt)
 
     def _announce_retry(self, exc: ToolError, attempt: int, wait: float) -> None:
         """Say, on the progress screen, that waiting is happening and why.
@@ -1557,10 +1352,7 @@ class DownloadJob:
         The bar keeps the place it had reached, because the wait is not progress
         and feeling the work start over would be untrue.
         """
-        status = (
-            f"Retrying in {seconds_text(wait)} "
-            f"(attempt {attempt + 1} of {self.attempts})…"
-        )
+        status = self.retry.label(attempt, wait)
         self._emit(status=status, speed="", eta="", phase="retry")
         if self.on_log:
             self.on_log(f"{exc.message} {status}")
@@ -1579,25 +1371,11 @@ class DownloadJob:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return True
-            time.sleep(min(_RETRY_SLICE_SECONDS, remaining))
+            time.sleep(min(SLICE_SECONDS, remaining))
 
     def _after_failure(self, exc: ToolError, attempt: int) -> ToolError:
-        """The error to show once trying again is no longer an option.
-
-        Saying how many times Viddl tried matters: "the site is busy" reads
-        differently when the user knows it was already asked three times, and
-        the next sensible step is to wait rather than press the button again.
-        """
-        if attempt <= 1:
-            # Tried once: there was no wait to explain, and "tried 1 times"
-            # would be a strange thing to read.
-            return exc
-        note = (
-            f"Viddl tried {attempt} times, waiting longer between each attempt, and "
-            "the site answered the same way every time."
-        )
-        hint = f"{exc.hint}\n{note}" if exc.hint else note
-        return ToolError(exc.message, hint, raw=exc.raw, temporary=exc.temporary)
+        """The error to show once trying again is no longer an option."""
+        return self.retry.exhausted(exc, attempt)
 
     def _stop_watchdog(self) -> None:
         timer = self._escalation
@@ -1690,7 +1468,7 @@ class DownloadJob:
                     continue
                 # The claim names this run; it is the one thing in the folder
                 # that is certainly not a recording.
-                if entry.name == _CLAIM_NAME:
+                if entry.name == FOLDER_CLAIM:
                     continue
                 if entry.name.endswith((".ytdl", ".temp", ".tmp")):
                     continue
@@ -1758,7 +1536,7 @@ class DownloadJob:
     def _handle_line(self, line: str) -> None:
         if line:
             self._lines.append(line)
-        if line.startswith(_PROGRESS_MARKER):
+        if self._parser.handles(line):
             self._handle_progress_line(line)
             return
 
@@ -1810,31 +1588,23 @@ class DownloadJob:
                 self._emit(status="Already downloaded — using the existing file.", percent=100.0)
 
     def _handle_progress_line(self, line: str) -> None:
-        payload = line[len(_PROGRESS_MARKER):].lstrip("|")
-        parts = payload.split("|")
-        while len(parts) < 7:
-            parts.append("NA")
-        percent = _to_float(parts[0])
-        speed = _to_float(parts[1])
-        eta = _to_float(parts[2])
-        downloaded = _to_int(parts[3]) or 0
-        # The size the site stated when there is one, its estimate otherwise —
-        # and which of the two it was is kept, because an estimate is the figure
-        # that can be replaced halfway through (U8).
-        known_total = _to_int(parts[4])
-        total = known_total if known_total else _to_int(parts[5])
-        filename = parts[6].strip()
-        if filename and filename != "NA":
-            self._remember_path(filename)
+        """Show what one machine-readable progress line says.
 
+        The reading is the parser's (``viddl.progress``): this decides that a
+        line naming a file is worth remembering, and tells the screen what the
+        numbers were.
+        """
+        reading = self._parser.parse(line)
+        if reading.filename:
+            self._remember_path(reading.filename)
         self._emit(
             status="Downloading…",
-            percent=percent,
-            speed=_fmt_speed(speed),
-            eta=_fmt_eta(eta),
-            downloaded=downloaded,
-            total=total,
-            total_is_estimate=not known_total and bool(total),
+            percent=reading.percent,
+            speed=reading.speed,
+            eta=reading.eta,
+            downloaded=reading.downloaded,
+            total=reading.total,
+            total_is_estimate=reading.total_is_estimate,
             phase="download",
         )
 
