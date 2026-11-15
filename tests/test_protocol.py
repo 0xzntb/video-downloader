@@ -12,6 +12,8 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from viddl import URL_SCHEME, appdata, protocol
 from viddl.protocol import (
@@ -448,6 +450,117 @@ def test_a_windows_handler_never_registers_a_batch_file(monkeypatch):
     assert command == (
         subprocess.list2cmdline([sys.executable, "-m", "viddl", "--uri"]) + ' "%1"'
     )
+
+
+# ---------------------------------------------------------------------------
+# nothing between the operating system and Viddl (S6)
+# ---------------------------------------------------------------------------
+
+
+def _windows_argv(command_line: str) -> list:
+    """Split a Windows command line the way the program receiving it does.
+
+    There is no way to ask the standard library to run CreateProcess' rules
+    backwards, so this is Microsoft's documented rule written out: a run of
+    backslashes before a quote is halved, an odd one escapes the quote, and a
+    quote only groups. It is the piece of the test that says what a URI can and
+    cannot become once Windows has put it in place of ``%1``.
+    """
+    argv: list = []
+    argument: list = []
+    backslashes = 0
+    quoted = False
+    started = False
+    for character in command_line:
+        if character == "\\":
+            backslashes += 1
+            continue
+        if character == '"':
+            argument.append("\\" * (backslashes // 2))
+            if backslashes % 2:
+                argument.append('"')
+            else:
+                quoted = not quoted
+            backslashes = 0
+            started = True
+            continue
+        argument.append("\\" * backslashes)
+        backslashes = 0
+        if character in " \t" and not quoted:
+            if started:
+                argv.append("".join(argument))
+                argument, started = [], False
+            continue
+        argument.append(character)
+        started = True
+    argument.append("\\" * backslashes)
+    if started:
+        argv.append("".join(argument))
+    return argv
+
+
+@pytest.mark.parametrize(
+    "launcher",
+    [
+        [r"C:\Program Files\Viddl\viddl.exe"],
+        [r"C:\Users\me\AppData\Local\viddl\bin\viddl.cmd"],
+    ],
+)
+def test_the_windows_handler_leaves_one_quoted_data_position(launcher):
+    """``%1`` is the only variable part, and it is quoted data (S6).
+
+    The URI is written by the operating system, not by this program, so the
+    handler must not carry a second thing a page could reach: one substitution
+    point, quoted, at the end, and no batch syntax anywhere before it.
+    """
+    handler = protocol._windows_handler_command(launcher)
+
+    prefix, marker, suffix = handler.partition("--uri")
+    assert marker == "--uri"
+    assert suffix == ' "%1"', "one quoted substitution point, and nothing after it"
+    assert "%" not in prefix, "%* and %PATH% would need cmd.exe to expand"
+    assert not any(word.lower() in ("cmd", "cmd.exe", "start") for word in prefix.split())
+
+
+@given(st.text(max_size=80))
+def test_a_hostile_uri_only_ever_becomes_arguments_to_viddl(uri):
+    """Whatever the page put in the URI, Viddl's own argv is unchanged.
+
+    A quote in the URI ends the quoted argument, so Windows may hand Viddl
+    further arguments — but only to Viddl, whose parser refuses what it was not
+    given. Nothing sits between the OS and the program to run a command, and
+    the program and the option name are the parts substitution cannot reach.
+    """
+    launcher = r"C:\Program Files\Viddl\viddl.exe"
+    handler = protocol._windows_handler_command([launcher])
+    argv = _windows_argv(handler.replace("%1", uri))
+
+    assert argv[0] == launcher
+    assert argv[1] == "--uri"
+    assert argv.count("--uri") == 1
+    # Everything the URI added after that is data for that one option: even a
+    # URI that ends the quotes cannot change the program being started.
+    assert all(argument.lower() != "cmd.exe" for argument in argv[1:])
+
+
+def test_a_link_is_url_shaped_before_it_crosses_to_the_handler():
+    """``build_scheme_url`` encodes what a URL may not carry (S6).
+
+    The extension builds the hand-off from whatever the page's link is, and the
+    registry entry on the other side is one quoted argument: a raw quote, a
+    line break or a space in that URL would be the end of it. Percent encoding
+    is what keeps the hand-off URL-shaped whatever the link held.
+    """
+    hostile = 'https://example.com/watch?v=1"\r\ncalc.exe & echo hi'
+    url = build_scheme_url(hostile)
+
+    assert url.startswith("viddl://download?url=https%3A%2F%2Fexample.com%2Fwatch")
+    for character in '"\' \r\n\t&|<>^':
+        assert character not in url
+
+    # And what comes back is a link or nothing, never a command.
+    request = parse_scheme(url)
+    assert request is None or request.url.startswith("https://example.com/watch")
 
 
 def test_registering_removes_the_batch_file_an_older_version_wrote(monkeypatch):
