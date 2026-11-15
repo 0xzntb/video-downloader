@@ -91,7 +91,14 @@ def _windows_terminal() -> str:
 
 
 def _command_line(parts: List[str]) -> str:
-    return " ".join(f'"{part}"' if " " in part else part for part in parts)
+    """The command line Windows splits back into ``parts``.
+
+    ``subprocess.list2cmdline`` is the one home for the rule, and it is the same
+    function the ``viddl://`` handler builds its registry entry with. A local
+    quoter that only reacted to a space was a second spelling of it, and one
+    that missed everything else Windows treats specially.
+    """
+    return subprocess.list2cmdline(parts)
 
 
 def _ensure_launcher() -> Tuple[Path, bool]:
@@ -129,10 +136,12 @@ def _ensure_launcher() -> Tuple[Path, bool]:
 def _run_target(launcher: Path) -> Tuple[str, str, str]:
     """The target, arguments and working folder the shortcut starts."""
     folder = str(appdata.data_dir())
-    command = f'"{launcher}"'
     terminal = _windows_terminal()
     if terminal:
-        return terminal, f'-d "{folder}" cmd /c {command}', folder
+        # Windows Terminal's own arguments, then ``cmd`` running the launcher:
+        # one command line, quoted once, by the rule above.
+        arguments = _command_line(["-d", folder, "cmd", "/c", str(launcher)])
+        return terminal, arguments, folder
     return str(launcher), "", folder
 
 

@@ -7,6 +7,7 @@ they start, and that a shell that refuses is reported rather than raised.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -87,9 +88,29 @@ def test_windows_terminal_is_preferred_when_it_is_there(monkeypatch, tmp_path):
     assert result.ok is True
     environment = calls[0][1]
     assert environment["VIDDL_SHORTCUT_TARGET"] == r"C:\WindowsApps\wt.exe"
-    assert 'cmd /c "' in environment["VIDDL_SHORTCUT_ARGS"]
+    assert environment["VIDDL_SHORTCUT_ARGS"] == shortcut._command_line(
+        ["-d", environment["VIDDL_SHORTCUT_DIR"], "cmd", "/c", str(launcher)]
+    )
     assert str(launcher) in environment["VIDDL_SHORTCUT_ARGS"]
     assert environment["VIDDL_SHORTCUT_ICON"] == r"C:\WindowsApps\wt.exe"
+
+
+def test_a_command_line_is_quoted_by_the_one_rule_that_does_it():
+    """The launcher and the ``viddl://`` handler must spell a path the same way.
+
+    ``subprocess.list2cmdline`` is what the Windows handler builds its registry
+    entry with. A hand-rolled quoter beside it was a second spelling of a rule
+    that has to agree with the first, and the one that only looked for a space
+    said nothing about a quote or an empty argument.
+    """
+    parts = [r"C:\Program Files\Viddl\viddl.exe", "-m", "viddl", "a b", ""]
+    assert shortcut._command_line(parts) == subprocess.list2cmdline(parts)
+    assert shortcut._command_line([r"C:\Program Files\Viddl\viddl.exe"]) == (
+        r'"C:\Program Files\Viddl\viddl.exe"'
+    )
+    # No space, no quotes: quoting an argument that does not need it would make
+    # the quotes part of the argument.
+    assert shortcut._command_line(["viddl", "--plain"]) == "viddl --plain"
 
 
 def test_a_wheel_install_gets_a_launcher_of_its_own(monkeypatch, tmp_path):
